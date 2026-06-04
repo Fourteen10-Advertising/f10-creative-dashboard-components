@@ -35,6 +35,8 @@ html, body { height: 100%; font-family: 'Archivo', system-ui, sans-serif; backgr
 
 /* Weekly controls bar */
 .controls-bar { background: var(--white); border-bottom: 1px solid var(--paper-dark); padding: 14px 32px; display: flex; flex-wrap: wrap; gap: 22px; align-items: flex-end; position: sticky; top: 59px; z-index: 90; }
+.ctrl-groups, .weekly-controls { display: flex; flex-wrap: wrap; gap: 22px; align-items: flex-end; }
+.ctrl-groups:empty { display: none; }
 .ctrl { display: flex; flex-direction: column; gap: 5px; }
 .ctrl label { font-size: 9px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--grey); }
 .ctrl select, .ctrl input[type=date], .ctrl input[type=number] { font-family: inherit; font-size: 12px; padding: 6px 8px; border: 1px solid var(--paper-dark); border-radius: 4px; background: var(--white); color: var(--ink); }
