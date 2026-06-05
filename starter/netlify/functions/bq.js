@@ -1,12 +1,35 @@
 const { BigQuery } = require('@google-cloud/bigquery');
 
+/* Cost + safety guardrails (all optional, sensible defaults).
+ *   BQ_MAX_BYTES_BILLED — max bytes BigQuery may bill per query (default ~2 GB).
+ *                         Queries that would scan more are rejected by BigQuery.
+ *   BQ_TIMEOUT_MS       — per-query timeout in ms (default 30000).
+ *   ALLOWED_ORIGIN      — if set, the only cross-origin allowed to call this
+ *                         endpoint from a browser. The dashboard calls its own
+ *                         function same-origin, so this can stay unset. */
+const MAX_BYTES_BILLED = process.env.BQ_MAX_BYTES_BILLED || String(2 * 1024 * 1024 * 1024);
+const TIMEOUT_MS       = Number(process.env.BQ_TIMEOUT_MS || 30000);
+const ALLOWED_ORIGIN   = process.env.ALLOWED_ORIGIN || '';
+
+// CORS: echo the configured origin only when it matches; otherwise send no
+// allow-origin header. Same-origin requests (the dashboard) work without it.
+function corsHeaders(event) {
+  const origin = (event.headers && (event.headers.origin || event.headers.Origin)) || '';
+  if (ALLOWED_ORIGIN && origin === ALLOWED_ORIGIN) {
+    return { 'Access-Control-Allow-Origin': ALLOWED_ORIGIN, Vary: 'Origin' };
+  }
+  return {};
+}
+
 exports.handler = async function (event) {
+  const cors = corsHeaders(event);
+
   // CORS pre-flight
   if (event.httpMethod === 'OPTIONS') {
     return {
       statusCode: 204,
       headers: {
-        'Access-Control-Allow-Origin': '*',
+        ...cors,
         'Access-Control-Allow-Methods': 'POST, OPTIONS',
         'Access-Control-Allow-Headers': 'Content-Type',
       },
@@ -15,14 +38,14 @@ exports.handler = async function (event) {
   }
 
   if (event.httpMethod !== 'POST') {
-    return { statusCode: 405, body: 'Method Not Allowed' };
+    return { statusCode: 405, headers: cors, body: 'Method Not Allowed' };
   }
 
   const saJson = process.env.GOOGLE_SERVICE_ACCOUNT;
   if (!saJson) {
     return {
       statusCode: 500,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...cors, 'Content-Type': 'application/json' },
       body: JSON.stringify({ error: 'GOOGLE_SERVICE_ACCOUNT environment variable is not set.' }),
     };
   }
@@ -33,7 +56,7 @@ exports.handler = async function (event) {
   } catch (e) {
     return {
       statusCode: 500,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...cors, 'Content-Type': 'application/json' },
       body: JSON.stringify({ error: 'Failed to parse GOOGLE_SERVICE_ACCOUNT JSON: ' + e.message }),
     };
   }
@@ -44,7 +67,7 @@ exports.handler = async function (event) {
   } catch (e) {
     return {
       statusCode: 400,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...cors, 'Content-Type': 'application/json' },
       body: JSON.stringify({ error: 'Invalid request body.' }),
     };
   }
@@ -53,7 +76,7 @@ exports.handler = async function (event) {
   if (!query || typeof query !== 'string') {
     return {
       statusCode: 400,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...cors, 'Content-Type': 'application/json' },
       body: JSON.stringify({ error: 'Missing or invalid "query" field.' }),
     };
   }
@@ -69,13 +92,15 @@ exports.handler = async function (event) {
       query,
       location: 'australia-southeast1',
       useLegacySql: false,
+      maximumBytesBilled: MAX_BYTES_BILLED,
+      jobTimeoutMs: TIMEOUT_MS,
     });
 
     return {
       statusCode: 200,
       headers: {
+        ...cors,
         'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
       },
       body: JSON.stringify(rows),
     };
@@ -83,7 +108,7 @@ exports.handler = async function (event) {
     console.error('BigQuery error:', err);
     return {
       statusCode: 500,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...cors, 'Content-Type': 'application/json' },
       body: JSON.stringify({ error: err.message }),
     };
   }
