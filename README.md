@@ -23,7 +23,7 @@ The entire dashboard body is `<div id="app"></div>`. Define config, load the fou
 ```html
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@300;400;500;600&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.2.0/f10-shared.css" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.3.0/f10-shared.css" />
 ```
 
 ### 2. Body + scripts:
@@ -53,10 +53,10 @@ The entire dashboard body is `<div id="app"></div>`. Define config, load the fou
   /* Optional per-client Ad Production thresholds — see "Thresholds" below. */
   // const THRESHOLDS = { HR_SPEND: 8000, HR_CPA: 90 };
 </script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.2.0/f10-utils.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.2.0/f10-weekly.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.2.0/f10-monthly.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.2.0/f10-layout.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.3.0/f10-utils.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.3.0/f10-weekly.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.3.0/f10-monthly.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.3.0/f10-layout.js"></script>
 <script>
   renderLayout();
   wireControls();
@@ -93,8 +93,11 @@ Ad Production classification (Home Run / On Base / Strike Out) uses these defaul
 | `HR_SPEND` | 5000 | Home Run min lifetime spend |
 | `HR_CPA` | 70 | Home Run max CPA |
 | `OB_SPEND` | 1000 | On Base min lifetime spend |
+| `OB_CPA` | 100 | On Base max CPA |
 | `SO_SPEND` | 500 | Strike Out min lifetime spend |
 | `SO_CPA` | 140 | Strike Out CPA above which an ad strikes out |
+
+Classification (top-down): **Home Run** = `spend ≥ HR_SPEND AND 0 < CPA < HR_CPA`; **On Base** = `spend ≥ OB_SPEND AND 0 < CPA < OB_CPA`; **Strike Out** = `spend ≥ SO_SPEND AND CPA > SO_CPA`; otherwise **Unclassified**.
 
 To change them per client, define a `THRESHOLDS` config object (any subset) **before** the scripts load:
 
