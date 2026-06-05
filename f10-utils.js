@@ -8,12 +8,17 @@
 /* Movement classification band (10% threshold) */
 const BAND = 0.10;
 
-/* Ad Production thresholds — override in dashboard config if needed */
-const HR_SPEND = 5000;
-const HR_CPA   = 70;
-const OB_SPEND = 1000;
-const SO_SPEND = 500;
-const SO_CPA   = 140;
+/* Ad Production thresholds. Defaults below; a dashboard may override any subset
+ * by defining a THRESHOLDS config object BEFORE this script loads, e.g.
+ *   const THRESHOLDS = { HR_SPEND: 8000, HR_CPA: 90 };
+ * (Use a config object — do NOT redeclare HR_SPEND etc directly, as that would
+ * collide with these const declarations in the shared global scope.) */
+const _TH = (typeof THRESHOLDS !== 'undefined' && THRESHOLDS) ? THRESHOLDS : {};
+const HR_SPEND = _TH.HR_SPEND ?? 5000;
+const HR_CPA   = _TH.HR_CPA   ?? 70;
+const OB_SPEND = _TH.OB_SPEND ?? 1000;
+const SO_SPEND = _TH.SO_SPEND ?? 500;
+const SO_CPA   = _TH.SO_CPA   ?? 140;
 
 /* Weekly efficiency metric definitions */
 const METRICS = {

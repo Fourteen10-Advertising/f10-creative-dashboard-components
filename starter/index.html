@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CLIENT_NAME | Creative Reporting</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@300;400;500;600&family=Bodoni+Moda:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.2.0/f10-shared.css" />
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+/* ───────────────────────────────────────────────────────────────────────────
+   CLIENT CONFIG — this is the only file you edit to stand up a new dashboard.
+   ─────────────────────────────────────────────────────────────────────────── */
+const BQ_FUNCTION = '/.netlify/functions/bq';     /* leave as-is */
+const PROJECT     = 'mcc-poc-477801';             /* GCP project */
+const DATASET     = 'your_dataset';               /* e.g. 'acme_clean' */
+const TABLE       = 'meta_creative_reporting';    /* leave as-is unless renamed */
+const CONV_EXPR   = 'purchase';                   /* conversion expr, e.g. '(lead + signup)' */
+const CLIENT_NAME = 'Client Name';                /* shown in the sidebar */
+
+/* Top-level segment filters — one dropdown per entry, applied across all tabs.
+   Values are queried dynamically and default to "All". Leave [] for none. */
+const GROUP_FILTERS = [
+  // { col: 'campaign_group', label: 'Product / Group' },
+  // { col: 'marketplace',    label: 'Marketplace' },
+];
+
+/* Optional per-client Ad Production thresholds (defaults shown). Uncomment to override
+   any subset; the SQL, scatter lines, and the displayed benchmark copy all follow these. */
+// const THRESHOLDS = { HR_SPEND: 5000, HR_CPA: 70, OB_SPEND: 1000, SO_SPEND: 500, SO_CPA: 140 };
+</script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.2.0/f10-utils.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.2.0/f10-weekly.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.2.0/f10-monthly.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.2.0/f10-layout.js"></script>
+<script>
+  renderLayout();
+  wireControls();
+  initWeekly();
+</script>
+</body>
+</html>

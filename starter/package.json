@@ -1,0 +1,8 @@
+{
+  "name": "creative-dashboard",
+  "version": "1.0.0",
+  "description": "Creative Reporting Dashboard — F10",
+  "dependencies": {
+    "@google-cloud/bigquery": "^7.9.1"
+  }
+}
