@@ -52,6 +52,35 @@ function showEl(id){ document.getElementById(id).style.display=''; }
 function hideEl(id){ document.getElementById(id).style.display='none'; }
 function getCSS(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
 
+/* ── Group filters ──
+ * Dashboards may define GROUP_FILTERS = [{ col, label }, ...] to expose top-level
+ * segment dropdowns (e.g. product line, marketplace). Selections scope every query
+ * across all tabs. An unset/'__all__' selection means no filter on that dimension.
+ */
+const GROUP_ALL = '__all__';
+const groupSelections = {}; /* col -> selected value (or GROUP_ALL) */
+
+function groupFilters(){ return (typeof GROUP_FILTERS !== 'undefined' && Array.isArray(GROUP_FILTERS)) ? GROUP_FILTERS : []; }
+
+/* SQL-escape a value for inlining inside single quotes (double any single quotes). */
+function sqlQuote(v){ return "'" + String(v).replace(/'/g, "''") + "'"; }
+
+/* Build a SQL fragment for the active group selections.
+ * Pass { lead:'AND' } (default) to prefix each clause, or { lead:'WHERE' } to
+ * start a WHERE block (subsequent clauses still use AND). Returns '' when nothing
+ * is selected. */
+function groupClauses(){
+  return groupFilters()
+    .filter(f => groupSelections[f.col] && groupSelections[f.col] !== GROUP_ALL)
+    .map(f => `${f.col} = ${sqlQuote(groupSelections[f.col])}`);
+}
+function groupWhere(lead){
+  const parts = groupClauses();
+  if(!parts.length) return '';
+  const prefix = lead === 'WHERE' ? 'WHERE' : 'AND';
+  return ' ' + prefix + ' ' + parts.join(' AND ');
+}
+
 /* ── BQ fetch — expects BQ_FUNCTION to be defined by the dashboard ── */
 async function runQuery(sql){ const r=await fetch(BQ_FUNCTION,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:sql})}); if(!r.ok) throw new Error(await r.text()); return r.json(); }
 
@@ -92,4 +121,12 @@ function classify(ad, c){
   return { ...ad, qCur, qPri, sCur, sPri, mCur, mPri, improvePct, state,
     spendDelta: sCur-sPri,
     metricDelta: (mCur!=null&&mPri!=null) ? mCur-mPri : null };
+}
+
+/* ── Scatter axis ── */
+/* Upper bound for the Production spend axis, as a function of the top spender:
+ * if the biggest spender clears the Home Run threshold, give it $1,000 of
+ * headroom; otherwise frame the chart around the threshold itself. */
+function scatterMaxSpend(topSpend){
+  return topSpend > HR_SPEND ? topSpend + 1000 : HR_SPEND * 1.2;
 }

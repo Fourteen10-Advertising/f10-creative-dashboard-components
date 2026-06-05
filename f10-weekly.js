@@ -66,7 +66,7 @@ async function fetchWindows(c){
       SUM(IF(date_start BETWEEN '${priStart}' AND '${priEnd}', clicks, 0))        AS pri_clicks,
       SUM(IF(date_start BETWEEN '${priStart}' AND '${priEnd}', ${CONV_EXPR}, 0))  AS pri_conv
     FROM \`${PROJECT}.${DATASET}.${TABLE}\`
-    WHERE date_start BETWEEN '${priStart}' AND '${curEnd}'
+    WHERE date_start BETWEEN '${priStart}' AND '${curEnd}'${groupWhere()}
     GROUP BY ad_id
     HAVING cur_spend > 0 OR pri_spend > 0`;
   const rows = await runQuery(sql);
@@ -81,6 +81,56 @@ async function fetchWindows(c){
     };
   });
   return { ads, curStart, curEnd, priStart, priEnd };
+}
+
+/* ── Group filters (top-level segment dropdowns, apply to all tabs) ── */
+
+/* Render one dropdown per GROUP_FILTERS entry into #ctrl-groups, then populate
+ * each with its distinct values. Selections re-scope every query across all tabs. */
+async function initGroupFilters(){
+  const host = document.getElementById('ctrl-groups');
+  const filters = groupFilters();
+  if(!host || !filters.length) return;
+  host.innerHTML = filters.map(f =>
+    `<div class="ctrl"><label>${f.label}</label>
+       <select id="ctrl-group-${f.col}" data-col="${f.col}">
+         <option value="${GROUP_ALL}" selected>All</option>
+       </select>
+     </div>`
+  ).join('');
+  filters.forEach(f => {
+    groupSelections[f.col] = GROUP_ALL;
+    document.getElementById(`ctrl-group-${f.col}`)
+      .addEventListener('change', onGroupChange);
+  });
+  await Promise.all(filters.map(async f => {
+    try {
+      const rows = await runQuery(
+        `SELECT DISTINCT ${f.col} AS v FROM \`${PROJECT}.${DATASET}.${TABLE}\` WHERE ${f.col} IS NOT NULL ORDER BY v`
+      );
+      const sel = document.getElementById(`ctrl-group-${f.col}`);
+      rows.forEach(r => { const v = bqStr(r.v); if(v){ const o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o); } });
+    } catch(err){ console.error('Group filter load error ('+f.col+'):', err); }
+  }));
+}
+
+/* A group selection changed: re-query the active view and invalidate cached
+ * monthly tabs so they re-query when next opened. fetchMaxDate stays global. */
+function onGroupChange(e){
+  groupSelections[e.target.dataset.col] = e.target.value;
+  Object.keys(loadedTabs).forEach(t => { if(!isWeekly(t)) delete loadedTabs[t]; });
+  loadWindows();
+  if(!isWeekly(activeTab) && typeof loadMonthlyTab === 'function') loadMonthlyTab(activeTab);
+}
+
+/* Controls-bar visibility: weekly-only controls show on weekly tabs; the bar
+ * itself stays visible on every tab when group filters exist. */
+function applyControlsVisibility(){
+  const showWeekly = isWeekly(activeTab);
+  const showBar = showWeekly || groupFilters().length > 0;
+  document.getElementById('controls-bar').style.display = showBar ? 'flex' : 'none';
+  const wc = document.getElementById('weekly-controls');
+  if(wc) wc.style.display = showWeekly ? 'flex' : 'none';
 }
 
 /* ── Controls ── */
@@ -252,8 +302,8 @@ function selectTab(tab){
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   document.getElementById('tab-'+tab).classList.add('active');
   document.getElementById('page-title').textContent = tabTitles[tab];
-  document.getElementById('controls-bar').style.display = (isWeekly(tab) && WIN) ? 'flex' : 'none';
   activeTab = tab;
+  applyControlsVisibility();
   if(!isWeekly(tab) && !loadedTabs[tab]) loadMonthlyTab(tab);
 }
 
@@ -288,10 +338,11 @@ function wireControls(){
 async function initWeekly(){
   try {
     document.getElementById('controls-bar').style.display = 'none';
+    await initGroupFilters();
     MAXDATE = await fetchMaxDate();
     const ed = document.getElementById('ctrl-enddate');
     if(MAXDATE){ ed.value = MAXDATE; ed.max = MAXDATE; }
-    if(isWeekly(activeTab)) document.getElementById('controls-bar').style.display = 'flex';
+    applyControlsVisibility();
     await loadWindows();
   } catch(err) {
     console.error(err);
