@@ -107,7 +107,7 @@ async function loadProduction(){
       ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend, ROUND(ANY_VALUE(lifetime_cpa), 2) AS lifetime_cpa,
       ROUND(SUM(${CONV_EXPR}), 0) AS total_conversions,
       CASE WHEN ANY_VALUE(lifetime_spend) >= ${HR_SPEND} AND ANY_VALUE(lifetime_cpa) > 0 AND ANY_VALUE(lifetime_cpa) < ${HR_CPA} THEN 'Home Run'
-           WHEN ANY_VALUE(lifetime_spend) >= ${OB_SPEND} THEN 'On Base'
+           WHEN ANY_VALUE(lifetime_spend) >= ${OB_SPEND} AND ANY_VALUE(lifetime_cpa) > 0 AND ANY_VALUE(lifetime_cpa) < ${OB_CPA} THEN 'On Base'
            WHEN ANY_VALUE(lifetime_spend) >= ${SO_SPEND} AND ANY_VALUE(lifetime_cpa) > ${SO_CPA} THEN 'Strike Out' ELSE 'Unclassified' END AS classification
     FROM \`${PROJECT}.${DATASET}.${TABLE}\`${groupWhere('WHERE')} GROUP BY 1 ORDER BY lifetime_spend DESC`;
   const monthlySQL = `
@@ -115,7 +115,7 @@ async function loadProduction(){
       SELECT ad_id, MIN(min_date) AS launch_date, ROUND(ANY_VALUE(lifetime_spend),2) AS lifetime_spend, ROUND(ANY_VALUE(lifetime_cpa),2) AS lifetime_cpa,
         ROUND(SUM(spend),2) AS period_spend, ROUND(SUM(${CONV_EXPR}),0) AS total_conversions
       FROM \`${PROJECT}.${DATASET}.${TABLE}\`${groupWhere('WHERE')} GROUP BY 1 ),
-    classified AS ( SELECT *, CASE WHEN lifetime_spend>=${HR_SPEND} AND lifetime_cpa>0 AND lifetime_cpa<${HR_CPA} THEN 'Home Run' WHEN lifetime_spend>=${OB_SPEND} THEN 'On Base' WHEN lifetime_spend>=${SO_SPEND} AND lifetime_cpa>${SO_CPA} THEN 'Strike Out' ELSE 'Unclassified' END AS classification FROM unique_ads )
+    classified AS ( SELECT *, CASE WHEN lifetime_spend>=${HR_SPEND} AND lifetime_cpa>0 AND lifetime_cpa<${HR_CPA} THEN 'Home Run' WHEN lifetime_spend>=${OB_SPEND} AND lifetime_cpa>0 AND lifetime_cpa<${OB_CPA} THEN 'On Base' WHEN lifetime_spend>=${SO_SPEND} AND lifetime_cpa>${SO_CPA} THEN 'Strike Out' ELSE 'Unclassified' END AS classification FROM unique_ads )
     SELECT FORMAT_DATE('%b %Y', launch_date) AS launch_month, DATE_TRUNC(launch_date, MONTH) AS launch_month_sort,
       COUNT(*) AS ads_launched, COUNTIF(classification='Home Run') AS home_runs, COUNTIF(classification='On Base') AS on_base, COUNTIF(classification='Strike Out') AS strike_outs,
       ROUND(SUM(period_spend),0) AS total_spend, ROUND(SAFE_DIVIDE(SUM(period_spend), NULLIF(SUM(total_conversions),0)),0) AS avg_cpa, ROUND(SUM(total_conversions),0) AS total_conversions

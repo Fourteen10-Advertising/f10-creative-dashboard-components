@@ -17,6 +17,7 @@ const _TH = (typeof THRESHOLDS !== 'undefined' && THRESHOLDS) ? THRESHOLDS : {};
 const HR_SPEND = _TH.HR_SPEND ?? 5000;
 const HR_CPA   = _TH.HR_CPA   ?? 70;
 const OB_SPEND = _TH.OB_SPEND ?? 1000;
+const OB_CPA   = _TH.OB_CPA   ?? 100;
 const SO_SPEND = _TH.SO_SPEND ?? 500;
 const SO_CPA   = _TH.SO_CPA   ?? 140;
 

@@ -1,6 +1,6 @@
 /**
  * f10-layout.js — F10 Creative Dashboard markup generator
- * Load via: <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.2.0/f10-layout.js"></script>
+ * Load via: <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.3.0/f10-layout.js"></script>
  *
  * Must be loaded AFTER f10-utils.js (it reads HR_SPEND/HR_CPA/... for the
  * Production benchmark copy). Renders the sidebar, controls bar, and all seven
@@ -23,7 +23,7 @@ function renderLayout(){
 
   const prodBenchmark =
     `<span class="bm-item"><strong>Home Run:</strong> Spend &ge; ${fmt$(HR_SPEND)} &amp; CPA &lt; ${fmt$(HR_CPA)}</span>` +
-    `<span class="bm-item"><strong>On Base:</strong> Spend &ge; ${fmt$(OB_SPEND)}</span>` +
+    `<span class="bm-item"><strong>On Base:</strong> Spend &ge; ${fmt$(OB_SPEND)} &amp; CPA &lt; ${fmt$(OB_CPA)}</span>` +
     `<span class="bm-item"><strong>Strike Out:</strong> Spend &ge; ${fmt$(SO_SPEND)} &amp; CPA &gt; ${fmt$(SO_CPA)}</span>`;
 
   document.getElementById('app').innerHTML = `
