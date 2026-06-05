@@ -134,6 +134,18 @@ Use semver: patch for fixes, minor for new config/behaviour (e.g. a new threshol
 
 > Note: these repos squash-merge, so after a components release the feature branch must be rebased onto the updated `main` (`git fetch origin main && git reset --soft origin/main && git commit`) before the next PR, or GitHub will report a phantom merge conflict.
 
+## Creating a dashboard with the skill
+
+A Claude Code skill lives in [`skills/create-creative-dashboard/`](./skills/create-creative-dashboard). It scaffolds a new client dashboard from the starter at the latest release tag, fills in the config from a short Q&A, commits it, and prints the GitHub + Netlify deploy steps.
+
+To make it available, register it as a skill (e.g. as an organisation skill shared with the team, or copy the `create-creative-dashboard/` folder into `~/.claude/skills/`). Then in any project run:
+
+```
+/create-creative-dashboard
+```
+
+The skill only produces a small config-only repo — the UI and logic still come from this library via jsDelivr.
+
 ## Dashboards using this library
 
 - `fourteen10-advertising/bridgit-creative-dashboard`
