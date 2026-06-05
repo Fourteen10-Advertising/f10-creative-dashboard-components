@@ -109,9 +109,30 @@ The SQL classification, the scatter threshold lines, and the displayed benchmark
 
 ## Versioning
 
-Each release is tagged (e.g. `v1.2.0`). Update the tag in the jsDelivr URLs across all dashboards to pick up changes. jsDelivr caches tags immutably, so always cut a new tag rather than re-pointing an existing one.
+Each release is tagged (e.g. `v1.3.0`). Dashboards pin to a tag in their jsDelivr URLs and bump it to pick up changes. jsDelivr caches tags immutably, so always cut a **new** tag rather than re-pointing an existing one.
 
-To cut a new release: merge to `main`, then create a GitHub tag.
+## Release process
+
+Because the components and the dashboards are pinned to a tag, the order matters: a dashboard pointing at `@vX.Y.Z` will 404 its assets (and break) if that tag does not exist yet. Follow this sequence for every release:
+
+1. **Merge the components PR** to `main`.
+2. **Create and publish the tag** on `main` at the merge commit:
+   ```sh
+   git tag vX.Y.Z <merge-commit-sha>
+   git push origin vX.Y.Z
+   ```
+   (or GitHub → Releases → Draft new release → choose tag `vX.Y.Z` on `main` → Publish.)
+   This step must be done by someone with push access to tags — it cannot be done from the Claude Code web sandbox, which is restricted to feature-branch pushes.
+3. **Verify the tag resolves** before touching the dashboards:
+   ```sh
+   git ls-remote --tags origin | grep vX.Y.Z
+   ```
+4. **Bump and merge the dashboard PRs** — update the `@vX.Y.Z` references in each dashboard's `index.html`, then merge. Netlify redeploys each site automatically.
+5. **Smoke-test** each deployed dashboard (it loads, the relevant tabs render).
+
+Use semver: patch for fixes, minor for new config/behaviour (e.g. a new threshold), major for breaking config changes.
+
+> Note: these repos squash-merge, so after a components release the feature branch must be rebased onto the updated `main` (`git fetch origin main && git reset --soft origin/main && git commit`) before the next PR, or GitHub will report a phantom merge conflict.
 
 ## Dashboards using this library
 
