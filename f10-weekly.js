@@ -241,7 +241,7 @@ function renderBoard(movers, c){
   if(!rows.length){
     body.innerHTML = `<tr><td colspan="9" class="no-data">No ads cleared the noise floor in this window. Lower the floor or widen the window.</td></tr>`;
   } else {
-    body.innerHTML = rows.map(a => {
+    renderPagedTable('board-body', rows.map(a => {
       const sm=STATE_META[a.state], sd=a.spendDelta;
       const sdCls=Math.abs(sd)<1?'delta-flat':(sd>0?'delta-good':'delta-bad');
       let mdHtml='–';
@@ -257,7 +257,7 @@ function renderBoard(movers, c){
         <td class="num">${fmtNum(a.cur.impressions)}</td>
         <td>${a.creative_link?`<a class="preview-link" href="${a.creative_link}" target="_blank">View</a>`:'–'}</td>
       </tr>`;
-    }).join('');
+    }));
   }
   document.getElementById('board-title').textContent = `Ad Movement — ${rows.length} ads`;
   hideEl('board-loading'); showEl('board-table');
