@@ -58,6 +58,35 @@ function showEl(id){ document.getElementById(id).style.display=''; }
 function hideEl(id){ document.getElementById(id).style.display='none'; }
 function getCSS(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
 
+/* ── Table pagination ──
+ * renderPagedTable(tbodyId, rowsHtml, pageSize=20, footerHtml='')
+ * rowsHtml: array of <tr> HTML strings for data rows.
+ * footerHtml: optional pinned row (e.g. Grand Total) always shown after the page. */
+const _tablePages = {};
+function renderPagedTable(tbodyId, rowsHtml, pageSize, footerHtml){
+  pageSize = pageSize || 20;
+  footerHtml = footerHtml || '';
+  const tbody = document.getElementById(tbodyId);
+  if(!tbody) return;
+  if(!_tablePages[tbodyId] || _tablePages[tbodyId].rows !== rowsHtml){
+    _tablePages[tbodyId] = { rows: rowsHtml, page: 0 };
+  }
+  const totalRows = rowsHtml.length;
+  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+  const page = Math.max(0, Math.min(_tablePages[tbodyId].page, totalPages - 1));
+  _tablePages[tbodyId].page = page;
+  tbody.innerHTML = rowsHtml.slice(page * pageSize, page * pageSize + pageSize).join('') + footerHtml;
+  const tableCard = tbody.closest('.table-card');
+  if(!tableCard) return;
+  let pager = tableCard.querySelector('.table-pagination[data-for="'+tbodyId+'"]');
+  if(!pager){ pager = document.createElement('div'); pager.className='table-pagination'; pager.dataset.for=tbodyId; tableCard.appendChild(pager); }
+  if(totalPages <= 1){ pager.style.display='none'; return; }
+  pager.style.display='';
+  pager.innerHTML = `<button class="pg-btn"${page===0?' disabled':''} data-prev>&#8592; Prev</button><span class="pg-info">Page ${page+1} of ${totalPages} &middot; ${totalRows} rows</span><button class="pg-btn"${page>=totalPages-1?' disabled':''} data-next>Next &#8594;</button>`;
+  pager.querySelector('[data-prev]').addEventListener('click', ()=>{ _tablePages[tbodyId].page--; renderPagedTable(tbodyId,rowsHtml,pageSize,footerHtml); });
+  pager.querySelector('[data-next]').addEventListener('click', ()=>{ _tablePages[tbodyId].page++; renderPagedTable(tbodyId,rowsHtml,pageSize,footerHtml); });
+}
+
 /* ── Group filters ──
  * Dashboards may define GROUP_FILTERS = [{ col, label }, ...] to expose top-level
  * segment dropdowns (e.g. product line, marketplace). Selections scope every query
