@@ -76,7 +76,13 @@ html, body { height: 100%; font-family: 'Archivo', system-ui, sans-serif; backgr
 .table-card h3 { font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--grey); padding: 14px 20px 12px; border-bottom: 1px solid var(--paper-dark); }
 .table-scroll { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
-thead th { background: var(--paper); padding: 9px 12px; text-align: left; font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--grey); white-space: nowrap; }
+thead th { background: var(--paper); padding: 9px 12px; text-align: left; font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--grey); white-space: nowrap; cursor: pointer; user-select: none; }
+thead th:hover { color: var(--ink); }
+/* Sort indicator: a dim ↕ on hover, a solid ▲/▼ on the active column. */
+thead th::after { content: '\2195'; font-size: 9px; opacity: 0; margin-left: 5px; }
+thead th:hover::after { opacity: 0.35; }
+thead th.sorted-asc::after { content: '\25B2'; opacity: 1; }
+thead th.sorted-desc::after { content: '\25BC'; opacity: 1; }
 tbody tr { border-bottom: 1px solid var(--paper); }
 tbody tr:last-child { border-bottom: none; }
 tbody td { padding: 9px 12px; color: var(--ink); white-space: nowrap; }
