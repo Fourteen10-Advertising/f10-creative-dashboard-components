@@ -23,7 +23,7 @@ The entire dashboard body is `<div id="app"></div>`. Define config, load the fou
 ```html
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@300;400;500;600&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.4.0/f10-shared.css" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.4.1/f10-shared.css" />
 ```
 
 ### 2. Body + scripts:
@@ -53,10 +53,10 @@ The entire dashboard body is `<div id="app"></div>`. Define config, load the fou
   /* Optional per-client Ad Production thresholds — see "Thresholds" below. */
   // const THRESHOLDS = { HR_SPEND: 8000, HR_CPA: 90 };
 </script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.4.0/f10-utils.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.4.0/f10-weekly.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.4.0/f10-monthly.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.4.0/f10-layout.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.4.1/f10-utils.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.4.1/f10-weekly.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.4.1/f10-monthly.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.4.1/f10-layout.js"></script>
 <script>
   renderLayout();
   wireControls();
@@ -123,12 +123,19 @@ Because the components and the dashboards are pinned to a tag, the order matters
    ```
    (or GitHub → Releases → Draft new release → choose tag `vX.Y.Z` on `main` → Publish.)
    This step must be done by someone with push access to tags — it cannot be done from the Claude Code web sandbox, which is restricted to feature-branch pushes.
-3. **Verify the tag resolves** before touching the dashboards:
+3. **Purge the jsDelivr cache for the new tag** — do this immediately after publishing the tag and *before* any dashboard goes live on it. jsDelivr caches the list of available versions, so a brand-new tag can 404 for a while; if a dashboard requests it during that window, jsDelivr caches the 404 and the site shows a blank screen (`renderLayout is not defined`) until the cache clears. Purging forces a refetch:
+   ```sh
+   for f in f10-shared.css f10-utils.js f10-weekly.js f10-monthly.js f10-layout.js; do
+     curl -s "https://purge.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@vX.Y.Z/$f" -o /dev/null -w "$f -> %{http_code}\n"
+   done
+   ```
+4. **Verify the tag resolves on the CDN** (not just in git) before touching the dashboards:
    ```sh
    git ls-remote --tags origin | grep vX.Y.Z
+   curl -sI "https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@vX.Y.Z/f10-layout.js" | head -1   # expect 200
    ```
-4. **Bump and merge the dashboard PRs** — update the `@vX.Y.Z` references in each dashboard's `index.html`, then merge. Netlify redeploys each site automatically.
-5. **Smoke-test** each deployed dashboard (it loads, the relevant tabs render).
+5. **Bump and merge the dashboard PRs** — update the `@vX.Y.Z` references in each dashboard's `index.html`, then merge. Netlify redeploys each site automatically.
+6. **Smoke-test** each deployed dashboard (it loads, the relevant tabs render).
 
 Use semver: patch for fixes, minor for new config/behaviour (e.g. a new threshold), major for breaking config changes.
 
