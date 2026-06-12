@@ -1,6 +1,6 @@
 /**
  * f10-utils.js — F10 Creative Dashboard shared utilities
- * Load via: <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.0.0/f10-utils.js"></script>
+ * Load via: <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.4.0/f10-utils.js"></script>
  *
  * Expects nothing. Provides globals used by f10-weekly.js and each dashboard's monthly functions.
  */
@@ -135,4 +135,66 @@ function classify(ad, c){
  * headroom; otherwise frame the chart around the threshold itself. */
 function scatterMaxSpend(topSpend){
   return topSpend > HR_SPEND ? topSpend + 1000 : HR_SPEND * 1.2;
+}
+
+/* ── Universal table sorting ──────────────────────────────────────────────
+ * Click any column header to sort that table's rows; click again to reverse.
+ * On first click a numeric column sorts high→low and a text column A→Z. A
+ * ▲/▼ indicator marks the active column. Wired once via event delegation so
+ * it covers every table, including those re-rendered after data loads. Blank
+ * and "—" cells always sink to the bottom regardless of direction. */
+function cellSortValue(cell){
+  const txt = (cell ? cell.textContent : '').trim();
+  const empty = txt === '' || txt === '—';
+  const num = parseFloat(txt.replace(/[^0-9.\-]/g, ''));
+  const isNum = !empty && /[0-9]/.test(txt) && !isNaN(num);
+  return { txt, empty, num, isNum };
+}
+
+function sortTableByColumn(table, colIndex, ascending){
+  const tbody = table.tBodies[0];
+  if(!tbody) return;
+  const rows = Array.from(tbody.rows).filter(r => r.cells.length > colIndex);
+  rows.sort((ra, rb) => {
+    const a = cellSortValue(ra.cells[colIndex]);
+    const b = cellSortValue(rb.cells[colIndex]);
+    if(a.empty && b.empty) return 0;
+    if(a.empty) return 1;          /* blanks always last */
+    if(b.empty) return -1;
+    let cmp;
+    if(a.isNum && b.isNum) cmp = a.num - b.num;
+    else cmp = a.txt.localeCompare(b.txt, undefined, { numeric: true, sensitivity: 'base' });
+    return ascending ? cmp : -cmp;
+  });
+  rows.forEach(r => tbody.appendChild(r));
+}
+
+function initTableSorting(){
+  if(window.__f10SortWired) return;
+  window.__f10SortWired = true;
+  document.addEventListener('click', (e) => {
+    const th = e.target.closest('thead th');
+    if(!th) return;
+    const table = th.closest('table');
+    if(!table || !table.tBodies[0] || !table.tBodies[0].rows.length) return;
+    const headRow = th.parentElement;
+    const colIndex = Array.prototype.indexOf.call(headRow.cells, th);
+    if(colIndex < 0) return;
+    const prev = th.getAttribute('data-sort-dir');
+    let ascending;
+    if(prev === 'asc') ascending = false;
+    else if(prev === 'desc') ascending = true;
+    else {
+      /* first click: numeric → high-to-low, text → A-Z (infer from first data cell) */
+      const firstCell = table.tBodies[0].rows[0].cells[colIndex];
+      ascending = !cellSortValue(firstCell).isNum;
+    }
+    sortTableByColumn(table, colIndex, ascending);
+    headRow.querySelectorAll('th').forEach(h => {
+      h.removeAttribute('data-sort-dir');
+      h.classList.remove('sorted-asc', 'sorted-desc');
+    });
+    th.setAttribute('data-sort-dir', ascending ? 'asc' : 'desc');
+    th.classList.add(ascending ? 'sorted-asc' : 'sorted-desc');
+  });
 }

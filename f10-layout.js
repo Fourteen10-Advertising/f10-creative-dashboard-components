@@ -1,6 +1,6 @@
 /**
  * f10-layout.js — F10 Creative Dashboard markup generator
- * Load via: <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.3.1/f10-layout.js"></script>
+ * Load via: <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.4.0/f10-layout.js"></script>
  *
  * Must be loaded AFTER f10-utils.js (it reads HR_SPEND/HR_CPA/... for the
  * Production benchmark copy). Renders the sidebar, controls bar, and all seven
@@ -229,4 +229,5 @@ function renderLayout(){
     </div>
 
   </div>`;
+  initTableSorting();
 }
