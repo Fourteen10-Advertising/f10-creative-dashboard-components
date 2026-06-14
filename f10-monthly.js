@@ -1,6 +1,6 @@
 /**
  * f10-monthly.js — F10 Creative Dashboard monthly engine
- * Load via: <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.4.0/f10-monthly.js"></script>
+ * Load via: <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.4.1/f10-monthly.js"></script>
  *
  * Must be loaded AFTER f10-utils.js and f10-weekly.js.
  *

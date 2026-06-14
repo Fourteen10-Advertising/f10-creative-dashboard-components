@@ -1,6 +1,6 @@
 /**
  * f10-utils.js — F10 Creative Dashboard shared utilities
- * Load via: <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.4.0/f10-utils.js"></script>
+ * Load via: <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.4.1/f10-utils.js"></script>
  *
  * Expects nothing. Provides globals used by f10-weekly.js and each dashboard's monthly functions.
  */
@@ -63,14 +63,20 @@ function getCSS(v){ return getComputedStyle(document.documentElement).getPropert
  * rowsHtml: array of <tr> HTML strings for data rows.
  * footerHtml: optional pinned row (e.g. Grand Total) always shown after the page. */
 const _tablePages = {};
+const _tableSort = {};   /* tbodyId -> { colIndex, ascending } for the active sort */
 function renderPagedTable(tbodyId, rowsHtml, pageSize, footerHtml){
   pageSize = pageSize || 20;
   footerHtml = footerHtml || '';
   const tbody = document.getElementById(tbodyId);
   if(!tbody) return;
   if(!_tablePages[tbodyId] || _tablePages[tbodyId].rows !== rowsHtml){
-    _tablePages[tbodyId] = { rows: rowsHtml, page: 0 };
+    _tablePages[tbodyId] = { rows: rowsHtml, page: 0, pageSize: pageSize, footerHtml: footerHtml };
+    /* Fresh data: reapply any active sort so the user's chosen order — and the
+     * header ▲/▼ indicator — survive refreshes and filter changes. */
+    if(_tableSort[tbodyId]) applyTableSort(tbodyId, true);
   }
+  _tablePages[tbodyId].pageSize = pageSize;
+  _tablePages[tbodyId].footerHtml = footerHtml;
   const totalRows = rowsHtml.length;
   const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
   const page = Math.max(0, Math.min(_tablePages[tbodyId].page, totalPages - 1));
@@ -167,34 +173,83 @@ function scatterMaxSpend(topSpend){
 }
 
 /* ── Universal table sorting ──────────────────────────────────────────────
- * Click any column header to sort that table's rows; click again to reverse.
- * On first click a numeric column sorts high→low and a text column A→Z. A
- * ▲/▼ indicator marks the active column. Wired once via event delegation so
- * it covers every table, including those re-rendered after data loads. Blank
- * and "—" cells always sink to the bottom regardless of direction. */
+ * Click any column header to sort that table; click again to reverse. On the
+ * first click numeric and date columns sort high→low (newest first) and text
+ * columns A→Z. A ▲/▼ indicator marks the active column. Wired once via event
+ * delegation so it covers every table, including those re-rendered after data
+ * loads. Blank / "—" / "–" cells always sink to the bottom.
+ *
+ * For paginated tables the FULL dataset (_tablePages[id].rows) is sorted, not
+ * just the visible page, then the table jumps back to page 1. The active sort
+ * is remembered per table so it survives data refreshes. */
+const MONTH_IDX = { jan:0, feb:1, mar:2, apr:3, may:4, jun:5, jul:6, aug:7, sep:8, oct:9, nov:10, dec:11 };
+
+/* Classify a cell as date, number, or text so each sorts correctly. Dates use
+ * the formats this library renders: "12 Jun 2026", "Jun 2026", or ISO. */
 function cellSortValue(cell){
   const txt = (cell ? cell.textContent : '').trim();
-  const empty = txt === '' || txt === '—';
-  const num = parseFloat(txt.replace(/[^0-9.\-]/g, ''));
-  const isNum = !empty && /[0-9]/.test(txt) && !isNaN(num);
-  return { txt, empty, num, isNum };
+  const empty = txt === '' || txt === '—' || txt === '–';
+  let isDate = false, time = 0;
+  if(!empty){
+    let m = txt.match(/^(?:(\d{1,2})\s+)?([A-Za-z]{3})[A-Za-z]*\.?\s+(\d{4})$/); /* day-month-year or month-year */
+    if(m && MONTH_IDX[m[2].toLowerCase()] !== undefined){
+      isDate = true; time = Date.UTC(+m[3], MONTH_IDX[m[2].toLowerCase()], m[1] ? +m[1] : 1);
+    } else if((m = txt.match(/^(\d{4})-(\d{2})-(\d{2})$/))){          /* ISO yyyy-mm-dd */
+      isDate = true; time = Date.UTC(+m[1], +m[2] - 1, +m[3]);
+    }
+  }
+  /* Numeric only if the whole cell is a number (allowing $ , % . - and parens),
+   * so "12 Jun 2026" is never mistaken for 122026. */
+  const numericLike = !empty && !isDate && /^[-+]?\$?\(?-?[\d,]*\.?\d+\)?%?$/.test(txt.replace(/\s/g, ''));
+  const num = numericLike ? parseFloat(txt.replace(/[^0-9.\-]/g, '')) : NaN;
+  const isNum = numericLike && !isNaN(num);
+  return { txt, empty, isDate, time, num, isNum };
 }
 
+function compareSortValues(a, b, ascending){
+  if(a.empty && b.empty) return 0;
+  if(a.empty) return 1;            /* blanks always last, regardless of direction */
+  if(b.empty) return -1;
+  let cmp;
+  if(a.isDate && b.isDate) cmp = a.time - b.time;
+  else if(a.isNum && b.isNum) cmp = a.num - b.num;
+  else cmp = a.txt.localeCompare(b.txt, undefined, { numeric: true, sensitivity: 'base' });
+  return ascending ? cmp : -cmp;
+}
+
+/* First-click direction: text → ascending (A→Z); numbers/dates → descending. */
+function defaultAscending(sample){ return !(sample.isNum || sample.isDate); }
+
+/* Sort an array of <tr> HTML strings by a column. Cell values are parsed once. */
+function sortRowsHtml(rowsHtml, colIndex, ascending){
+  const holder = document.createElement('tbody');
+  const keyed = rowsHtml.map(html => {
+    holder.innerHTML = html;
+    const tr = holder.rows[0];
+    return { html, key: cellSortValue(tr ? tr.cells[colIndex] : null) };
+  });
+  keyed.sort((a, b) => compareSortValues(a.key, b.key, ascending));
+  return keyed.map(k => k.html);
+}
+
+/* Sort the full dataset behind a paginated table; re-render from page 1 unless
+ * skipRender (used when called mid-render to avoid recursion). */
+function applyTableSort(tbodyId, skipRender){
+  const st = _tablePages[tbodyId], s = _tableSort[tbodyId];
+  if(!st || !s) return;
+  const sorted = sortRowsHtml(st.rows, s.colIndex, s.ascending);
+  st.rows.length = 0;
+  for(let i = 0; i < sorted.length; i++) st.rows.push(sorted[i]);
+  st.page = 0;
+  if(!skipRender) renderPagedTable(tbodyId, st.rows, st.pageSize, st.footerHtml);
+}
+
+/* DOM fallback for tables that don't use pagination. */
 function sortTableByColumn(table, colIndex, ascending){
   const tbody = table.tBodies[0];
   if(!tbody) return;
   const rows = Array.from(tbody.rows).filter(r => r.cells.length > colIndex);
-  rows.sort((ra, rb) => {
-    const a = cellSortValue(ra.cells[colIndex]);
-    const b = cellSortValue(rb.cells[colIndex]);
-    if(a.empty && b.empty) return 0;
-    if(a.empty) return 1;          /* blanks always last */
-    if(b.empty) return -1;
-    let cmp;
-    if(a.isNum && b.isNum) cmp = a.num - b.num;
-    else cmp = a.txt.localeCompare(b.txt, undefined, { numeric: true, sensitivity: 'base' });
-    return ascending ? cmp : -cmp;
-  });
+  rows.sort((ra, rb) => compareSortValues(cellSortValue(ra.cells[colIndex]), cellSortValue(rb.cells[colIndex]), ascending));
   rows.forEach(r => tbody.appendChild(r));
 }
 
@@ -205,20 +260,37 @@ function initTableSorting(){
     const th = e.target.closest('thead th');
     if(!th) return;
     const table = th.closest('table');
-    if(!table || !table.tBodies[0] || !table.tBodies[0].rows.length) return;
+    if(!table || !table.tBodies[0]) return;
     const headRow = th.parentElement;
     const colIndex = Array.prototype.indexOf.call(headRow.cells, th);
     if(colIndex < 0) return;
+    const tbody = table.tBodies[0];
+    const paged = !!(tbody.id && _tablePages[tbody.id]);
+
+    /* toggle direction; first click uses the column-type default */
     const prev = th.getAttribute('data-sort-dir');
     let ascending;
     if(prev === 'asc') ascending = false;
     else if(prev === 'desc') ascending = true;
     else {
-      /* first click: numeric → high-to-low, text → A-Z (infer from first data cell) */
-      const firstCell = table.tBodies[0].rows[0].cells[colIndex];
-      ascending = !cellSortValue(firstCell).isNum;
+      let sample;
+      if(paged && _tablePages[tbody.id].rows.length){
+        const holder = document.createElement('tbody');
+        holder.innerHTML = _tablePages[tbody.id].rows[0];
+        sample = cellSortValue(holder.rows[0] ? holder.rows[0].cells[colIndex] : null);
+      } else if(tbody.rows.length){
+        sample = cellSortValue(tbody.rows[0].cells[colIndex]);
+      } else return;
+      ascending = defaultAscending(sample);
     }
-    sortTableByColumn(table, colIndex, ascending);
+
+    if(paged){
+      _tableSort[tbody.id] = { colIndex, ascending };  /* sort the whole dataset, then page 1 */
+      applyTableSort(tbody.id);
+    } else {
+      sortTableByColumn(table, colIndex, ascending);
+    }
+
     headRow.querySelectorAll('th').forEach(h => {
       h.removeAttribute('data-sort-dir');
       h.classList.remove('sorted-asc', 'sorted-desc');
