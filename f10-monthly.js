@@ -1,6 +1,6 @@
 /**
  * f10-monthly.js — F10 Creative Dashboard monthly engine
- * Load via: <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.4.1/f10-monthly.js"></script>
+ * Load via: <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.5.0/f10-monthly.js"></script>
  *
  * Must be loaded AFTER f10-utils.js and f10-weekly.js.
  *
@@ -17,6 +17,54 @@
 
 let decayChart = null, decayPctChart = null, ageChart = null,
     scatterChart = null, productionChart = null, powerLawChart = null;
+
+let productionControlsWired = false;
+
+/* Map of Ad Production threshold input ids → threshold keys. */
+const PRODUCTION_INPUT_MAP = {
+  'th-hr-spend': 'HR_SPEND', 'th-hr-cpa': 'HR_CPA',
+  'th-ob-spend': 'OB_SPEND', 'th-ob-cpa': 'OB_CPA',
+  'th-so-spend': 'SO_SPEND', 'th-so-cpa': 'SO_CPA',
+};
+
+/* Fill the threshold inputs from the active thresholds. */
+function fillProductionInputs(){
+  const th = getProductionThresholds();
+  for (const [id, key] of Object.entries(PRODUCTION_INPUT_MAP)){
+    const el = document.getElementById(id);
+    if (el) el.value = th[key];
+  }
+}
+
+/* Wire the Apply / Reset buttons once. Apply reads the inputs, updates the
+ * thresholds, refreshes the threshold copy and re-runs the production queries so
+ * the scorecards, scatter, chart and tables all re-classify against the new
+ * bands. Reset restores the client defaults. Edits are session-only. */
+function ensureProductionControls(){
+  if (productionControlsWired) return;
+  const apply = document.getElementById('th-apply');
+  const reset = document.getElementById('th-reset');
+  if (!apply || !reset) return; // tab markup not present yet
+  fillProductionInputs();
+  apply.addEventListener('click', () => {
+    const partial = {};
+    for (const [id, key] of Object.entries(PRODUCTION_INPUT_MAP)){
+      const el = document.getElementById(id);
+      if (el && el.value !== '') partial[key] = el.value;
+    }
+    setProductionThresholds(partial);
+    fillProductionInputs();            // reflect any values that were rejected
+    refreshProductionThresholdCopy();
+    loadProduction();
+  });
+  reset.addEventListener('click', () => {
+    resetProductionThresholds();
+    fillProductionInputs();
+    refreshProductionThresholdCopy();
+    loadProduction();
+  });
+  productionControlsWired = true;
+}
 
 function loadMonthlyTab(tab){
   loadedTabs[tab] = true;
@@ -100,6 +148,8 @@ async function loadAge(){
 /* ── Ad Production ── */
 
 async function loadProduction(){
+  ensureProductionControls();
+  fillProductionInputs();
   const scatterSQL = `
     SELECT ad_id, ANY_VALUE(ad_name) AS ad_name, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(adset_name) AS adset_name,
       MIN(min_date) AS launch_date, ANY_VALUE(creative_link) AS creative_link,

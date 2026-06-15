@@ -1,6 +1,6 @@
 /**
  * f10-utils.js — F10 Creative Dashboard shared utilities
- * Load via: <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.4.1/f10-utils.js"></script>
+ * Load via: <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.5.0/f10-utils.js"></script>
  *
  * Expects nothing. Provides globals used by f10-weekly.js and each dashboard's monthly functions.
  */
@@ -12,14 +12,57 @@ const BAND = 0.10;
  * by defining a THRESHOLDS config object BEFORE this script loads, e.g.
  *   const THRESHOLDS = { HR_SPEND: 8000, HR_CPA: 90 };
  * (Use a config object — do NOT redeclare HR_SPEND etc directly, as that would
- * collide with these const declarations in the shared global scope.) */
+ * collide with these declarations in the shared global scope.)
+ *
+ * As of v1.5.0 the Ad Production tab also lets a user tune these live in the
+ * dashboard. To support that, HR_SPEND/HR_CPA/... are mutable (let, not const)
+ * so render code that reads them picks up the active value. The per-client
+ * THRESHOLDS values above remain the backstop: they seed PRODUCTION_DEFAULTS
+ * and resetProductionThresholds() restores them. Live edits are session-only —
+ * a page reload reverts to these defaults. To change the saved defaults, edit
+ * the dashboard's THRESHOLDS config. */
 const _TH = (typeof THRESHOLDS !== 'undefined' && THRESHOLDS) ? THRESHOLDS : {};
-const HR_SPEND = _TH.HR_SPEND ?? 5000;
-const HR_CPA   = _TH.HR_CPA   ?? 70;
-const OB_SPEND = _TH.OB_SPEND ?? 1000;
-const OB_CPA   = _TH.OB_CPA   ?? 100;
-const SO_SPEND = _TH.SO_SPEND ?? 500;
-const SO_CPA   = _TH.SO_CPA   ?? 140;
+const PRODUCTION_DEFAULTS = Object.freeze({
+  HR_SPEND: _TH.HR_SPEND ?? 5000,
+  HR_CPA:   _TH.HR_CPA   ?? 70,
+  OB_SPEND: _TH.OB_SPEND ?? 1000,
+  OB_CPA:   _TH.OB_CPA   ?? 100,
+  SO_SPEND: _TH.SO_SPEND ?? 500,
+  SO_CPA:   _TH.SO_CPA   ?? 140,
+});
+let HR_SPEND = PRODUCTION_DEFAULTS.HR_SPEND;
+let HR_CPA   = PRODUCTION_DEFAULTS.HR_CPA;
+let OB_SPEND = PRODUCTION_DEFAULTS.OB_SPEND;
+let OB_CPA   = PRODUCTION_DEFAULTS.OB_CPA;
+let SO_SPEND = PRODUCTION_DEFAULTS.SO_SPEND;
+let SO_CPA   = PRODUCTION_DEFAULTS.SO_CPA;
+
+/* Read the active production thresholds as a plain object. */
+function getProductionThresholds(){
+  return { HR_SPEND, HR_CPA, OB_SPEND, OB_CPA, SO_SPEND, SO_CPA };
+}
+/* Apply a subset of thresholds. Only finite, non-negative numbers are accepted;
+ * anything else leaves that threshold unchanged. Returns the active set. */
+function setProductionThresholds(partial){
+  const next = partial || {};
+  for (const k of ['HR_SPEND','HR_CPA','OB_SPEND','OB_CPA','SO_SPEND','SO_CPA']){
+    if (!(k in next)) continue;
+    const v = Number(next[k]);
+    if (!Number.isFinite(v) || v < 0) continue;
+    if (k === 'HR_SPEND') HR_SPEND = v;
+    else if (k === 'HR_CPA') HR_CPA = v;
+    else if (k === 'OB_SPEND') OB_SPEND = v;
+    else if (k === 'OB_CPA') OB_CPA = v;
+    else if (k === 'SO_SPEND') SO_SPEND = v;
+    else if (k === 'SO_CPA') SO_CPA = v;
+  }
+  return getProductionThresholds();
+}
+/* Restore the per-client (or built-in) defaults. Returns the active set. */
+function resetProductionThresholds(){
+  ({ HR_SPEND, HR_CPA, OB_SPEND, OB_CPA, SO_SPEND, SO_CPA } = PRODUCTION_DEFAULTS);
+  return getProductionThresholds();
+}
 
 /* Weekly efficiency metric definitions */
 const METRICS = {

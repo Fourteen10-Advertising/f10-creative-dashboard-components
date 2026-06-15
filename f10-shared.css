@@ -125,3 +125,19 @@ tbody tr:hover { background: rgba(75,0,15,0.03); }
 .tl-item { display: flex; align-items: center; gap: 5px; }
 .tl-line { width: 24px; height: 2px; }
 .tl-line.dashed { background: repeating-linear-gradient(90deg, currentColor 0, currentColor 4px, transparent 4px, transparent 8px); }
+
+.threshold-controls { background: var(--white); border: 2px solid var(--paper-dark); border-radius: 8px; padding: 15px 18px; margin-bottom: 18px; }
+.threshold-controls .tc-header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.threshold-controls .tc-header strong { font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--young-blood); }
+.threshold-controls .tc-note { font-size: 11px; color: var(--grey); }
+.tc-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 20px; margin-bottom: 14px; }
+@media (max-width: 800px) { .tc-grid { grid-template-columns: 1fr 1fr; } }
+.tc-field { display: flex; flex-direction: column; gap: 5px; }
+.tc-field label { font-size: 9px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--grey); }
+.tc-field input[type=number] { font-family: inherit; font-size: 12px; padding: 6px 8px; border: 1px solid var(--paper-dark); border-radius: 4px; background: var(--white); color: var(--ink); }
+.tc-actions { display: flex; gap: 10px; }
+.tc-apply, .tc-reset { font-family: inherit; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; border-radius: 4px; padding: 7px 14px; cursor: pointer; }
+.tc-apply { background: var(--young-blood); color: var(--stabilo); border: none; }
+.tc-apply:hover { opacity: 0.85; }
+.tc-reset { background: var(--white); color: var(--young-blood); border: 1.5px solid var(--young-blood); }
+.tc-reset:hover { background: var(--young-blood); color: var(--stabilo); }
