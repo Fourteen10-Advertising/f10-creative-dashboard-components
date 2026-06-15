@@ -1,6 +1,6 @@
 /**
  * f10-utils.js — F10 Creative Dashboard shared utilities
- * Load via: <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.5.0/f10-utils.js"></script>
+ * Load via: <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.5.1/f10-utils.js"></script>
  *
  * Expects nothing. Provides globals used by f10-weekly.js and each dashboard's monthly functions.
  */
