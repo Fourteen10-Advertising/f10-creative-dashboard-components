@@ -1,6 +1,6 @@
 /**
  * f10-layout.js — F10 Creative Dashboard markup generator
- * Load via: <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.4.1/f10-layout.js"></script>
+ * Load via: <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.5.0/f10-layout.js"></script>
  *
  * Must be loaded AFTER f10-utils.js (it reads HR_SPEND/HR_CPA/... for the
  * Production benchmark copy). Renders the sidebar, controls bar, and all seven
@@ -17,14 +17,32 @@
  *   renderLayout();
  */
 
+/* Production threshold copy — built from the live HR_SPEND/HR_CPA/... globals so
+ * it can be regenerated whenever a user tunes the thresholds in the UI. */
+function prodBenchmarkHTML(){
+  return `<span class="bm-item"><strong>Home Run:</strong> Spend &ge; ${fmt$(HR_SPEND)} &amp; CPA &lt; ${fmt$(HR_CPA)}</span>` +
+    `<span class="bm-item"><strong>On Base:</strong> Spend &ge; ${fmt$(OB_SPEND)} &amp; CPA &lt; ${fmt$(OB_CPA)}</span>` +
+    `<span class="bm-item"><strong>Strike Out:</strong> Spend &ge; ${fmt$(SO_SPEND)} &amp; CPA &gt; ${fmt$(SO_CPA)}</span>`;
+}
+function prodThresholdLegendHTML(){
+  return `<span class="tl-item"><span class="tl-line dashed" style="color:#727272;"></span> CPA Limit (${fmt$(HR_CPA)})</span><span class="tl-item"><span class="tl-line dashed" style="color:#4a90e2;"></span> Ad Hit (${fmt$(HR_SPEND)})</span>`;
+}
+/* Refresh every piece of threshold-derived copy in the Ad Production tab from the
+ * current threshold values. Safe to call before the tab exists (guards on null). */
+function refreshProductionThresholdCopy(){
+  const bench = document.getElementById('prod-benchmark');
+  if (bench) bench.innerHTML = prodBenchmarkHTML();
+  const legend = document.getElementById('prod-threshold-legend');
+  if (legend) legend.innerHTML = prodThresholdLegendHTML();
+  const hit = document.getElementById('prod-hit-spend');
+  if (hit) hit.textContent = fmt$(HR_SPEND);
+}
+
 function renderLayout(){
   const client = (typeof CLIENT_NAME !== 'undefined' && CLIENT_NAME) ? CLIENT_NAME : 'Client';
   const report = (typeof REPORT_NAME !== 'undefined' && REPORT_NAME) ? REPORT_NAME : 'Creative Reporting';
 
-  const prodBenchmark =
-    `<span class="bm-item"><strong>Home Run:</strong> Spend &ge; ${fmt$(HR_SPEND)} &amp; CPA &lt; ${fmt$(HR_CPA)}</span>` +
-    `<span class="bm-item"><strong>On Base:</strong> Spend &ge; ${fmt$(OB_SPEND)} &amp; CPA &lt; ${fmt$(OB_CPA)}</span>` +
-    `<span class="bm-item"><strong>Strike Out:</strong> Spend &ge; ${fmt$(SO_SPEND)} &amp; CPA &gt; ${fmt$(SO_CPA)}</span>`;
+  const prodBenchmark = prodBenchmarkHTML();
 
   document.getElementById('app').innerHTML = `
   <div id="sidebar">
@@ -140,8 +158,26 @@ function renderLayout(){
 
     <!-- MONTHLY: AD PRODUCTION -->
     <div class="tab-panel" id="tab-production">
-      <div class="insight-box"><strong>Why it's important:</strong> This chart measures the number of ads launched and the percentage of those that become "hits" (spending more than ${fmt$(HR_SPEND)} lifetime).<br/><br/><strong>How to interpret it:</strong> Aim for a hit rate of 10&ndash;15%. A lower hit rate suggests a need for better ad quality, while a much higher hit rate might indicate you're not testing enough variety.<br/><br/><strong>Thresholds:</strong>
-        <div class="benchmark">${prodBenchmark}</div>
+      <div class="insight-box"><strong>Why it's important:</strong> This chart measures the number of ads launched and the percentage of those that become "hits" (spending more than <span id="prod-hit-spend">${fmt$(HR_SPEND)}</span> lifetime).<br/><br/><strong>How to interpret it:</strong> Aim for a hit rate of 10&ndash;15%. A lower hit rate suggests a need for better ad quality, while a much higher hit rate might indicate you're not testing enough variety.<br/><br/><strong>Thresholds:</strong>
+        <div class="benchmark" id="prod-benchmark">${prodBenchmark}</div>
+      </div>
+      <div class="threshold-controls" id="prod-threshold-controls">
+        <div class="tc-header">
+          <strong>Adjust thresholds</strong>
+          <span class="tc-note">Tune the classification bands for this session. Reset restores the client defaults; a page reload also reverts.</span>
+        </div>
+        <div class="tc-grid">
+          <div class="tc-field"><label for="th-hr-spend">Home Run — min spend ($)</label><input type="number" id="th-hr-spend" min="0" step="100" /></div>
+          <div class="tc-field"><label for="th-hr-cpa">Home Run — max CPA ($)</label><input type="number" id="th-hr-cpa" min="0" step="1" /></div>
+          <div class="tc-field"><label for="th-ob-spend">On Base — min spend ($)</label><input type="number" id="th-ob-spend" min="0" step="100" /></div>
+          <div class="tc-field"><label for="th-ob-cpa">On Base — max CPA ($)</label><input type="number" id="th-ob-cpa" min="0" step="1" /></div>
+          <div class="tc-field"><label for="th-so-spend">Strike Out — min spend ($)</label><input type="number" id="th-so-spend" min="0" step="100" /></div>
+          <div class="tc-field"><label for="th-so-cpa">Strike Out — min CPA ($)</label><input type="number" id="th-so-cpa" min="0" step="1" /></div>
+        </div>
+        <div class="tc-actions">
+          <button class="tc-apply" id="th-apply">Apply thresholds</button>
+          <button class="tc-reset" id="th-reset">Reset to defaults</button>
+        </div>
       </div>
       <div id="production-scorecards-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
       <div id="production-scorecards" style="display:none;">
@@ -157,7 +193,7 @@ function renderLayout(){
       </div>
       <div class="two-col">
         <div class="chart-card" style="margin-bottom:0;"><h3>Lifetime Spend vs CPA &mdash; All Ads</h3>
-          <div class="threshold-legend"><span class="tl-item"><span class="tl-line dashed" style="color:#727272;"></span> CPA Limit (${fmt$(HR_CPA)})</span><span class="tl-item"><span class="tl-line dashed" style="color:#4a90e2;"></span> Ad Hit (${fmt$(HR_SPEND)})</span></div>
+          <div class="threshold-legend" id="prod-threshold-legend">${prodThresholdLegendHTML()}</div>
           <div id="scatter-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <div class="chart-wrapper" id="scatter-wrapper" style="display:none; height:320px;"><canvas id="scatter-chart"></canvas></div>
         </div>
