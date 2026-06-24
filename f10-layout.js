@@ -266,4 +266,9 @@ function renderLayout(){
 
   </div>`;
   initTableSorting();
+
+  if (window.F10A) {
+    F10A.init({ client: client, dashboardType: 'creative' });
+    F10A.track('dashboard_loaded', { report: report });
+  }
 }
