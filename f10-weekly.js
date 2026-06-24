@@ -118,6 +118,7 @@ async function initGroupFilters(){
  * monthly tabs so they re-query when next opened. fetchMaxDate stays global. */
 function onGroupChange(e){
   groupSelections[e.target.dataset.col] = e.target.value;
+  if (window.F10A) F10A.track('filter_changed', { filter: e.target.dataset.col, value: e.target.value });
   Object.keys(loadedTabs).forEach(t => { if(!isWeekly(t)) delete loadedTabs[t]; });
   loadWindows();
   if(!isWeekly(activeTab) && typeof loadMonthlyTab === 'function') loadMonthlyTab(activeTab);
@@ -156,7 +157,11 @@ async function loadWindows(){
     showEl('map-loading');     hideEl('map-wrapper');
     WIN = await fetchWindows(getControls());
     renderWeekly();
-  } catch(err) { console.error(err); document.getElementById('summary-loading').innerHTML='Error loading data: '+err.message; }
+    if (window.F10A) F10A.track('data_loaded', { view: 'weekly', tab: activeTab });
+  } catch(err) {
+    if (window.F10A) F10A.track('data_error', { view: 'weekly', message: err && err.message ? err.message : String(err) });
+    console.error(err); document.getElementById('summary-loading').innerHTML='Error loading data: '+err.message;
+  }
 }
 
 function renderWeekly(){
@@ -303,6 +308,7 @@ function selectTab(tab){
   document.getElementById('tab-'+tab).classList.add('active');
   document.getElementById('page-title').textContent = tabTitles[tab];
   activeTab = tab;
+  if (window.F10A) F10A.track('tab_viewed', { tab: tab, tab_label: tabTitles[tab] });
   applyControlsVisibility();
   if(!isWeekly(tab) && !loadedTabs[tab]) loadMonthlyTab(tab);
 }
@@ -312,20 +318,28 @@ function selectTab(tab){
 function wireControls(){
   /* Window length / end date = new server query */
   ['ctrl-length','ctrl-enddate'].forEach(id =>
-    document.getElementById(id).addEventListener('change', loadWindows)
+    document.getElementById(id).addEventListener('change', () => {
+      if (window.F10A) F10A.track('control_changed', { control: id, value: document.getElementById(id).value });
+      loadWindows();
+    })
   );
   /* Metric / noise floor = client-side re-render only */
   ['ctrl-metric','ctrl-targetcpa','ctrl-mult','ctrl-fixedspend','ctrl-minconv'].forEach(id =>
-    document.getElementById(id).addEventListener('change', renderWeekly)
+    document.getElementById(id).addEventListener('change', () => {
+      if (window.F10A) F10A.track('control_changed', { control: id, value: document.getElementById(id).value });
+      renderWeekly();
+    })
   );
   document.querySelectorAll('#ctrl-floor button').forEach(b => b.addEventListener('click', () => {
     document.querySelectorAll('#ctrl-floor button').forEach(x => x.classList.remove('active'));
     b.classList.add('active');
     document.querySelectorAll('.floor-inputs > div').forEach(d => d.classList.remove('show'));
     document.getElementById('floor-'+b.dataset.floor).classList.add('show');
+    if (window.F10A) F10A.track('control_changed', { control: 'noise_floor', value: b.dataset.floor });
     renderWeekly();
   }));
   document.getElementById('refresh-btn').addEventListener('click', () => {
+    if (window.F10A) F10A.track('refresh_clicked', { tab: activeTab });
     if(isWeekly(activeTab)) initWeekly(); else { delete loadedTabs[activeTab]; loadMonthlyTab(activeTab); }
   });
   document.querySelectorAll('.nav-link').forEach(link =>
@@ -345,6 +359,7 @@ async function initWeekly(){
     applyControlsVisibility();
     await loadWindows();
   } catch(err) {
+    if (window.F10A) F10A.track('data_error', { view: 'boot', message: err && err.message ? err.message : String(err) });
     console.error(err);
     document.getElementById('summary-loading').innerHTML = 'Error loading data: ' + err.message;
   }
