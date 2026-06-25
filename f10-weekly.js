@@ -260,7 +260,7 @@ function renderBoard(movers, c){
         <td class="num delta-cell">${mdHtml}</td>
         <td class="num">${fmtNum(a.cur.conv)}</td>
         <td class="num">${fmtNum(a.cur.impressions)}</td>
-        <td>${a.creative_link?`<a class="preview-link" href="${a.creative_link}" target="_blank">View</a>`:'–'}</td>
+        <td>${a.creative_link?`<a class="preview-link" data-ad-id="${a.ad_id}" href="${a.creative_link}" target="_blank">View</a>`:'–'}</td>
       </tr>`;
     }));
   }
