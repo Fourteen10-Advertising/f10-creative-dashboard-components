@@ -1,8 +1,0 @@
-{
-  "name": "creative-dashboard-functions",
-  "version": "1.0.0",
-  "dependencies": {
-    "@google-cloud/bigquery": "^7.9.1",
-    "@google-cloud/storage": "^7.14.0"
-  }
-}
