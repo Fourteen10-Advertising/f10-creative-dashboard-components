@@ -23,7 +23,7 @@ The entire dashboard body is `<div id="app"></div>`. Define config, load the fou
 ```html
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@300;400;500;600&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.5.1/f10-shared.css" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.7.0/f10-shared.css" />
 ```
 
 ### 2. Body + scripts:
@@ -53,17 +53,27 @@ The entire dashboard body is `<div id="app"></div>`. Define config, load the fou
   /* Optional per-client Ad Production thresholds — see "Thresholds" below. */
   // const THRESHOLDS = { HR_SPEND: 8000, HR_CPA: 90 };
 </script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.5.1/f10-utils.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.5.1/f10-weekly.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.5.1/f10-monthly.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.5.1/f10-layout.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.7.0/f10-utils.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.7.0/f10-weekly.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.7.0/f10-monthly.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.7.0/f10-layout.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.7.0/f10-preview.js"></script>
 <script>
   renderLayout();
   wireControls();
   initWeekly();
+  initPreview();
 </script>
 </body>
 ```
+
+`initPreview()` turns every creative "View" / "Preview" link into a hover preview:
+the real image (or autoplaying muted video) is pulled from F10's creative-asset
+bucket via the `bq` function and shown in a floating card. Ads whose asset has not
+been stored fall back to the existing click-through Facebook link, so nothing breaks
+when a file is missing. The function signs a short-lived URL per asset, so the
+dashboard's service account needs `roles/storage.objectViewer` on
+`gs://f10-creative-assets`.
 
 `renderLayout()` generates all markup (including the `#ctrl-groups` / `#weekly-controls` containers), so dashboards no longer hand-maintain the HTML or the monthly loaders.
 

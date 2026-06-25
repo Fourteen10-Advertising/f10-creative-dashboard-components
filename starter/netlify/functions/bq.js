@@ -1,4 +1,5 @@
 const { BigQuery } = require('@google-cloud/bigquery');
+const { Storage } = require('@google-cloud/storage');
 
 /* Cost + safety guardrails (all optional, sensible defaults).
  *   BQ_MAX_BYTES_BILLED — max bytes BigQuery may bill per query (default ~2 GB).
@@ -72,6 +73,15 @@ exports.handler = async function (event) {
     };
   }
 
+  // ── Media resolve: map ad_id(s) to a short-lived signed GCS preview URL ──
+  // The dashboard calls this on hover to show the real image/video inline.
+  // Returns { [ad_id]: { type: 'image'|'video'|null, url: signedUrl|null } };
+  // url is null when the asset was never fetched into the bucket, which tells
+  // the UI to fall back to the existing Facebook click-through link.
+  if (body.action === 'media') {
+    return resolveMedia(body, credentials, cors);
+  }
+
   const { query } = body;
   if (!query || typeof query !== 'string') {
     return {
@@ -113,3 +123,96 @@ exports.handler = async function (event) {
     };
   }
 };
+
+/* Resolve ad_ids to signed preview URLs.
+ *
+ * An ad maps to its stored asset through two shared (cross-client) tables:
+ *   meta_creative_links  ad_id -> video_id / image_hash (the asset id)
+ *   creative_manifest    asset id -> gcs_uri + fetch_status (was it stored?)
+ * We take the latest creative per ad (matching how creative_link is built),
+ * then mint a short-TTL V4 signed read URL for any asset actually in the
+ * bucket. The bucket stays private; only the time-limited URL reaches the
+ * browser. Assets that were never fetched return url:null so the UI keeps the
+ * Facebook fallback link. */
+async function resolveMedia(body, credentials, cors) {
+  const json = (statusCode, payload) => ({
+    statusCode,
+    headers: { ...cors, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  const adIds = Array.isArray(body.adIds)
+    ? body.adIds.filter((x) => typeof x === 'string' && x).slice(0, 200)
+    : [];
+  if (!adIds.length) return json(200, {});
+
+  try {
+    const bq = new BigQuery({
+      projectId: 'mcc-poc-477801',
+      credentials,
+      location: 'australia-southeast1',
+    });
+
+    const sql = `
+      SELECT l.ad_id, m.asset_type, m.gcs_uri, m.fetch_status
+      FROM \`mcc-poc-477801.all_clients.meta_creative_links\` l
+      LEFT JOIN \`mcc-poc-477801.all_clients.creative_manifest\` m
+        ON m.asset_id = COALESCE(l.video_id, l.image_hash) AND m.platform = 'meta'
+      WHERE l.ad_id IN UNNEST(@adIds)
+      QUALIFY ROW_NUMBER() OVER (PARTITION BY l.ad_id ORDER BY l.created_time DESC) = 1`;
+
+    const [rows] = await bq.query({
+      query: sql,
+      params: { adIds },
+      types: { adIds: ['STRING'] },
+      location: 'australia-southeast1',
+      useLegacySql: false,
+      maximumBytesBilled: MAX_BYTES_BILLED,
+      jobTimeoutMs: TIMEOUT_MS,
+    });
+
+    const storage = new Storage({ projectId: 'mcc-poc-477801', credentials });
+    const expires = Date.now() + 15 * 60 * 1000; // 15 minutes
+    const out = {};
+
+    await Promise.all(
+      rows.map(async (r) => {
+        const adId = r.ad_id;
+        const type = r.asset_type || null;
+        if (r.fetch_status !== 'fetched' || !r.gcs_uri) {
+          out[adId] = { type, url: null };
+          return;
+        }
+        const parsed = /^gs:\/\/([^/]+)\/(.+)$/.exec(r.gcs_uri);
+        if (!parsed) {
+          out[adId] = { type, url: null };
+          return;
+        }
+        try {
+          // Force a correct Content-Type on the signed response so <video>/<img>
+          // play even if the object was stored as application/octet-stream.
+          const ext = (r.gcs_uri.split('.').pop() || '').toLowerCase();
+          const contentType =
+            ext === 'mp4' ? 'video/mp4' :
+            ext === 'mov' ? 'video/quicktime' :
+            ext === 'png' ? 'image/png' :
+            ext === 'gif' ? 'image/gif' :
+            (ext === 'jpg' || ext === 'jpeg') ? 'image/jpeg' : undefined;
+          const [url] = await storage
+            .bucket(parsed[1])
+            .file(parsed[2])
+            .getSignedUrl({ version: 'v4', action: 'read', expires, responseType: contentType });
+          out[adId] = { type: type || (ext === 'mp4' || ext === 'mov' ? 'video' : 'image'), url };
+        } catch (e) {
+          console.error('Signed URL error for', r.gcs_uri, e.message);
+          out[adId] = { type, url: null };
+        }
+      })
+    );
+
+    return json(200, out);
+  } catch (err) {
+    console.error('Media resolve error:', err);
+    return json(500, { error: err.message });
+  }
+}
