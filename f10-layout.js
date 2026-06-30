@@ -60,6 +60,7 @@ function renderLayout(){
       <a href="#" class="nav-link" data-tab="production">Ad Production</a>
       <a href="#" class="nav-link" data-tab="decay">Ad Decay</a>
       <a href="#" class="nav-link" data-tab="age">Ad Age</a>
+      <a href="#" class="nav-link" data-tab="creative">Creative Effectiveness</a>
     </nav>
     <div class="sidebar-footer">F10 | Creative Reporting<br/>Powered by BigQuery</div>
   </div>
@@ -121,7 +122,7 @@ function renderLayout(){
         <div class="table-scroll">
           <div id="board-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="board-table" style="display:none;">
-            <thead><tr><th>Ad</th><th>State</th><th class="num">Spend</th><th class="num">&Delta; Spend</th><th class="num" id="board-m-head">Metric</th><th class="num">&Delta; Metric</th><th class="num">Conv.</th><th class="num">Impr.</th><th>Preview</th></tr></thead>
+            <thead><tr><th>Ad</th><th>State</th><th class="num">Spend</th><th class="num">&Delta; Spend</th><th class="num" id="board-m-head">Metric</th><th class="num">&Delta; Metric</th><th class="num">Conv.</th><th class="num">Impr.</th><th class="num">Hold %</th><th class="num">Compl. %</th><th>Preview</th></tr></thead>
             <tbody id="board-body"></tbody>
           </table>
         </div>
@@ -215,7 +216,7 @@ function renderLayout(){
         <div class="table-scroll">
           <div id="scatter-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="scatter-table" style="display:none;">
-            <thead><tr><th>Ad</th><th>Campaign</th><th>Adset</th><th>Launch Date</th><th>Lifetime Spend</th><th>Lifetime CPA</th><th>Conversions</th><th>Preview</th><th>Classification</th></tr></thead>
+            <thead><tr><th>Ad</th><th>Campaign</th><th>Adset</th><th>Launch Date</th><th>Lifetime Spend</th><th>Lifetime CPA</th><th>Conversions</th><th class="num">Hold %</th><th class="num">Compl. %</th><th class="num">Out CTR</th><th>Preview</th><th>Classification</th></tr></thead>
             <tbody id="scatter-table-body"></tbody>
           </table>
         </div>
@@ -259,6 +260,24 @@ function renderLayout(){
           <table id="age-table" style="display:none;">
             <thead><tr><th>Campaign</th><th>Adset</th><th>Ad</th><th>Launch Date</th><th>Last Spend</th><th>Preview</th><th>Spend &darr;</th><th>CPA</th><th>Conversions</th></tr></thead>
             <tbody id="age-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- MONTHLY: CREATIVE EFFECTIVENESS -->
+    <div class="tab-panel" id="tab-creative">
+      <div class="insight-box"><strong>Creative Effectiveness:</strong> performance beyond CPA &mdash; how well each creative holds attention. <strong>Hold rate</strong> is the share of impressions that watched 15 seconds; <strong>completion</strong> watched to the end; the <strong>retention curve</strong> (25 &rarr; 100%) shows where viewers drop off. Hover any ad to see its creative and curve. Rates cover the last 90 days; non-video ads show &ndash;.</div>
+      <div class="chart-card"><h3>Average Video Retention Curve &mdash; % of Impressions Reaching Each Quartile</h3>
+        <div id="creative-chart-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+        <div class="chart-wrapper" id="creative-chart-wrapper" style="display:none; height:320px;"><canvas id="creative-chart"></canvas></div>
+      </div>
+      <div class="table-card"><h3>Creative Effectiveness by Ad &mdash; Last 90 Days</h3>
+        <div class="table-scroll">
+          <div id="creative-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+          <table id="creative-table" style="display:none;">
+            <thead><tr><th>Ad</th><th>Campaign</th><th class="num">Spend</th><th class="num">Impr.</th><th class="num">Hold %</th><th class="num">Compl. %</th><th class="num">25%</th><th class="num">50%</th><th class="num">75%</th><th class="num">100%</th><th class="num">CTR</th><th class="num">Out CTR</th><th>Preview</th></tr></thead>
+            <tbody id="creative-table-body"></tbody>
           </table>
         </div>
       </div>

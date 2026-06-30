@@ -34,6 +34,7 @@ const tabTitles = {
   production: 'Ad Production',
   decay:      'Ad Decay',
   age:        'Ad Age',
+  creative:   'Creative Effectiveness',
 };
 const loadedTabs = {};
 let activeTab = 'summary';
@@ -61,6 +62,13 @@ async function fetchWindows(c){
       SUM(IF(date_start BETWEEN '${curStart}' AND '${curEnd}', impressions, 0))   AS cur_impressions,
       SUM(IF(date_start BETWEEN '${curStart}' AND '${curEnd}', clicks, 0))        AS cur_clicks,
       SUM(IF(date_start BETWEEN '${curStart}' AND '${curEnd}', ${CONV_EXPR}, 0))  AS cur_conv,
+      SUM(IF(date_start BETWEEN '${curStart}' AND '${curEnd}', video_15s, 0))       AS cur_v15s,
+      SUM(IF(date_start BETWEEN '${curStart}' AND '${curEnd}', video_p25, 0))       AS cur_p25,
+      SUM(IF(date_start BETWEEN '${curStart}' AND '${curEnd}', video_p50, 0))       AS cur_p50,
+      SUM(IF(date_start BETWEEN '${curStart}' AND '${curEnd}', video_p75, 0))       AS cur_p75,
+      SUM(IF(date_start BETWEEN '${curStart}' AND '${curEnd}', video_p100, 0))      AS cur_p100,
+      SUM(IF(date_start BETWEEN '${curStart}' AND '${curEnd}', video_plays, 0))     AS cur_plays,
+      SUM(IF(date_start BETWEEN '${curStart}' AND '${curEnd}', outbound_clicks, 0)) AS cur_outbound,
       SUM(IF(date_start BETWEEN '${priStart}' AND '${priEnd}', spend, 0))         AS pri_spend,
       SUM(IF(date_start BETWEEN '${priStart}' AND '${priEnd}', impressions, 0))   AS pri_impressions,
       SUM(IF(date_start BETWEEN '${priStart}' AND '${priEnd}', clicks, 0))        AS pri_clicks,
@@ -76,7 +84,7 @@ async function fetchWindows(c){
     ads[r.ad_id] = {
       ad_id: r.ad_id, ad_name: r.ad_name, campaign_name: r.campaign_name,
       adset_name: r.adset_name, creative_link: r.creative_link,
-      cur: { spend:cs, impressions:Number(r.cur_impressions)||0, clicks:Number(r.cur_clicks)||0, conv:Number(r.cur_conv)||0, conv_cost_num:cs },
+      cur: { spend:cs, impressions:Number(r.cur_impressions)||0, clicks:Number(r.cur_clicks)||0, conv:Number(r.cur_conv)||0, conv_cost_num:cs, video_15s:Number(r.cur_v15s)||0, video_p25:Number(r.cur_p25)||0, video_p50:Number(r.cur_p50)||0, video_p75:Number(r.cur_p75)||0, video_p100:Number(r.cur_p100)||0, video_plays:Number(r.cur_plays)||0, outbound_clicks:Number(r.cur_outbound)||0 },
       pri: { spend:ps, impressions:Number(r.pri_impressions)||0, clicks:Number(r.pri_clicks)||0, conv:Number(r.pri_conv)||0, conv_cost_num:ps },
     };
   });
@@ -244,13 +252,14 @@ function renderBoard(movers, c){
   const rows = movers.slice().sort((a,b) => b.sCur - a.sCur);
   const body = document.getElementById('board-body');
   if(!rows.length){
-    body.innerHTML = `<tr><td colspan="9" class="no-data">No ads cleared the noise floor in this window. Lower the floor or widen the window.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="11" class="no-data">No ads cleared the noise floor in this window. Lower the floor or widen the window.</td></tr>`;
   } else {
     renderPagedTable('board-body', rows.map(a => {
       const sm=STATE_META[a.state], sd=a.spendDelta;
       const sdCls=Math.abs(sd)<1?'delta-flat':(sd>0?'delta-good':'delta-bad');
       let mdHtml='–';
       if(a.metricDelta!=null){ const worse=m.dir==='lower'?a.metricDelta>0:a.metricDelta<0; const cls=Math.abs(a.metricDelta)<1e-6?'delta-flat':(worse?'delta-bad':'delta-good'); mdHtml=`<span class="${cls}">${a.metricDelta>0?'+':''}${fmtMetric(a.metricDelta,m)}</span>`; }
+      const cr = creativeRates(a.cur); registerAdMetrics(a.ad_id, a.cur);
       return `<tr>
         <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;" title="${a.ad_name||''}">${a.ad_name||'–'}<br><span style="color:var(--grey);font-size:10px;">${a.campaign_name||''}</span></td>
         <td><span class="badge ${sm.cls}">${a.state}</span></td>
@@ -260,6 +269,8 @@ function renderBoard(movers, c){
         <td class="num delta-cell">${mdHtml}</td>
         <td class="num">${fmtNum(a.cur.conv)}</td>
         <td class="num">${fmtNum(a.cur.impressions)}</td>
+        <td class="num">${cr.hold!=null?fmtPct(cr.hold,2):'–'}</td>
+        <td class="num">${cr.completion!=null?fmtPct(cr.completion,2):'–'}</td>
         <td>${a.creative_link?`<a class="preview-link" data-ad-id="${a.ad_id}" href="${a.creative_link}" target="_blank">View</a>`:'–'}</td>
       </tr>`;
     }));
