@@ -57,16 +57,35 @@
     show('<div class="f10-preview-spinner"></div>');
   }
 
-  function showFallback() {
-    show('<div class="f10-preview-msg">Opens on Facebook&nbsp;&#8599;</div>');
+  // Per-ad creative metrics panel, read from the registry that table renderers
+  // populate (window.F10_AD_METRICS). Empty string when an ad has no metrics.
+  function metricsHtml(adId) {
+    var reg = window.F10_AD_METRICS || {};
+    var m = reg[adId];
+    if (!m) return '';
+    function row(label, v) {
+      var val = (v == null) ? '\u2013' : (Math.round(v * 100) / 100) + '%';
+      return '<div class="f10-pm-row"><span>' + label + '</span><b>' + val + '</b></div>';
+    }
+    var curve = '';
+    if (m.hasVideo && typeof retentionSparkline === 'function') {
+      curve = '<div class="f10-pm-curve">' + retentionSparkline(m.retention) +
+        '<span class="f10-pm-curvelbl">25 &rarr; 100% retention</span></div>';
+    }
+    return '<div class="f10-preview-metrics">' +
+      row('Hold rate', m.hold) + row('Completion', m.completion) +
+      row('CTR', m.ctr) + row('Outbound CTR', m.outboundCtr) + curve + '</div>';
   }
 
-  function showMedia(m) {
-    if (m.type === 'video') {
-      show('<video src="' + m.url + '" muted loop autoplay playsinline></video>');
-    } else {
-      show('<img src="' + m.url + '" alt="creative preview" />');
-    }
+  function showFallback(adId) {
+    show('<div class="f10-preview-msg">Opens on Facebook&nbsp;&#8599;</div>' + metricsHtml(adId));
+  }
+
+  function showMedia(m, adId) {
+    var media = (m.type === 'video')
+      ? '<video src="' + m.url + '" muted loop autoplay playsinline></video>'
+      : '<img src="' + m.url + '" alt="creative preview" />';
+    show(media + metricsHtml(adId));
     // The media box may resize once it loads; reposition so it stays on-screen.
     var el = card.querySelector('img, video');
     if (el) {
@@ -125,8 +144,8 @@
     showLoading();
     resolve(adId).then(function (m) {
       if (currentAdId !== adId) return; // pointer already moved on
-      if (m && m.url) showMedia(m);
-      else showFallback();
+      if (m && m.url) showMedia(m, adId);
+      else showFallback(adId);
     });
   }
 

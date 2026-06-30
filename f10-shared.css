@@ -99,6 +99,16 @@ tbody tr:hover { background: rgba(75,0,15,0.03); }
 .f10-preview-spinner { width: 26px; height: 26px; margin: 26px; border: 3px solid var(--paper-dark); border-top-color: var(--young-blood); border-radius: 50%; animation: f10-preview-spin 0.7s linear infinite; }
 @keyframes f10-preview-spin { to { transform: rotate(360deg); } }
 
+/* Creative-metrics panel inside the hover preview */
+.f10-preview-metrics { margin-top: 6px; padding: 8px 10px 4px; border-top: 1px solid var(--paper-dark); min-width: 200px; }
+.f10-pm-row { display: flex; justify-content: space-between; gap: 16px; line-height: 1.75; }
+.f10-pm-row span { letter-spacing: 0.04em; text-transform: uppercase; font-size: 9.5px; color: var(--grey); }
+.f10-pm-row b { font-size: 11px; color: var(--young-blood); font-weight: 600; }
+.f10-pm-curve { margin-top: 7px; }
+.f10-pm-curve .f10-spark { display: block; width: 100%; height: 36px; }
+.f10-pm-curvelbl { display: block; font-size: 8.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--grey); margin-top: 2px; text-align: center; }
+.f10-spark { overflow: visible; }
+
 .rank-num { font-size: 11px; font-weight: 600; color: var(--grey); min-width: 24px; }
 
 .badge { display: inline-block; font-size: 9.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; padding: 3px 8px; border-radius: 3px; white-space: nowrap; }

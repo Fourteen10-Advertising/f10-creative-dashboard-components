@@ -96,6 +96,56 @@ function fmtMetric(v, m){ if(v==null||isNaN(v)||!isFinite(v)) return '–'; retu
 function fmtDate(s){ const str=bqStr(s); if(!str) return '–'; const [y,mo,d]=str.split('-').map(Number); const dt=new Date(Date.UTC(y,mo-1,d)); return dt.toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric',timeZone:'UTC'}); }
 function isoOffset(isoDate, days){ const [y,mo,d]=isoDate.split('-').map(Number); const dt=new Date(Date.UTC(y,mo-1,d)); dt.setUTCDate(dt.getUTCDate()+days); return dt.toISOString().slice(0,10); }
 
+/* ── Creative-effectiveness metrics ──
+ * The mart stores raw ad×day counts (video_plays, video_15s, video_p25..p100,
+ * outbound_clicks, plus impressions/clicks). Rates are computed here at
+ * aggregation time so windowed sums stay correct — never pre-divide then sum.
+ * All view rates use impressions as the denominator: Meta logs a "play" on
+ * ~every auto-play impression, so plays is not a meaningful gate and there is no
+ * separate hook rate. Frequency is intentionally absent — reach overlap is
+ * unknown once days are summed, so any windowed impressions/reach is wrong. */
+function creativeRates(a){
+  const impr = (a && a.impressions) || 0;
+  const pct = (n) => impr > 0 ? ((Number(n)||0) / impr) * 100 : null;
+  return {
+    impressions: impr,
+    hold:        pct(a && a.video_15s),    /* 15-sec views ÷ impr (thruplay proxy) */
+    completion:  pct(a && a.video_p100),   /* 100% completes ÷ impr */
+    ctr:         pct(a && a.clicks),
+    outboundCtr: pct(a && a.outbound_clicks),
+    retention: {
+      p25:  pct(a && a.video_p25),
+      p50:  pct(a && a.video_p50),
+      p75:  pct(a && a.video_p75),
+      p100: pct(a && a.video_p100),
+    },
+    hasVideo: ((a && a.video_plays) || 0) > 0,
+  };
+}
+
+/* Per-ad creative metrics registry. Table renderers populate this keyed by
+ * ad_id so the hover preview can show metrics next to the creative. */
+const F10_AD_METRICS = {};
+if (typeof window !== 'undefined') window.F10_AD_METRICS = F10_AD_METRICS; /* expose: const is not auto-attached to window */
+function registerAdMetrics(adId, agg){ if(adId != null) F10_AD_METRICS[adId] = creativeRates(agg); }
+
+/* Inline SVG sparkline for a 25/50/75/100 video-retention curve. Values are %
+ * of impressions; scaled to the local max so the shape reads even when absolute
+ * rates are low. Returns an <svg> string sized w×h. */
+function retentionSparkline(ret, w, h){
+  w = w || 132; h = h || 36;
+  const pts = ret ? [ret.p25, ret.p50, ret.p75, ret.p100].map(v => v==null ? 0 : v) : [0,0,0,0];
+  const max = Math.max(0.0001, ...pts);
+  const step = w / (pts.length - 1);
+  const coords = pts.map((v,i) => [ +(i*step).toFixed(1), +(h - (v/max)*(h-6) - 3).toFixed(1) ]);
+  const line = coords.map((c,i) => (i?'L':'M')+c[0]+' '+c[1]).join(' ');
+  const area = 'M0 '+h+' ' + coords.map(c => 'L'+c[0]+' '+c[1]).join(' ') + ' L'+w+' '+h+' Z';
+  const dots = coords.map(c => `<circle cx="${c[0]}" cy="${c[1]}" r="2.2" fill="#c8ff00"/>`).join('');
+  return `<svg class="f10-spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">`+
+    `<path d="${area}" fill="rgba(200,255,0,0.13)"/>`+
+    `<path d="${line}" fill="none" stroke="#c8ff00" stroke-width="1.6"/>${dots}</svg>`;
+}
+
 /* ── DOM helpers ── */
 function showEl(id){ document.getElementById(id).style.display=''; }
 function hideEl(id){ document.getElementById(id).style.display='none'; }
