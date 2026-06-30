@@ -127,7 +127,8 @@ async function loadAge(){
   const tableSQL = `
     SELECT ad_id, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(adset_name) AS adset_name, ANY_VALUE(ad_name) AS ad_name,
       MIN(min_date) AS launch_date, MAX(max_date) AS last_spend, ANY_VALUE(creative_link) AS preview_link,
-      ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend, ROUND(ANY_VALUE(lifetime_cpa), 2) AS lifetime_cpa,
+      ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend,
+      ROUND(SAFE_DIVIDE(ANY_VALUE(lifetime_spend), NULLIF(SUM(${CONV_EXPR}), 0)), 2) AS lifetime_cpa,
       ROUND(SUM(${CONV_EXPR}), 0) AS total_conversions
     FROM \`${PROJECT}.${DATASET}.${TABLE}\`${groupWhere('WHERE')} GROUP BY 1 ORDER BY lifetime_spend DESC`;
   try {
@@ -151,21 +152,30 @@ async function loadAge(){
 async function loadProduction(){
   ensureProductionControls();
   fillProductionInputs();
+  /* CPA is spend / conversions using the dashboard's CONV_EXPR (the same conversion
+     definition every other tab uses), NOT the mart's primary-only lifetime_cpa. That
+     way each ad is measured by the conversions it actually drives — e.g. SMSF ads on
+     Calendly bookings — so multi-product accounts classify correctly. */
   const scatterSQL = `
-    SELECT ad_id, ANY_VALUE(ad_name) AS ad_name, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(adset_name) AS adset_name,
-      MIN(min_date) AS launch_date, ANY_VALUE(creative_link) AS creative_link,
-      ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend, ROUND(ANY_VALUE(lifetime_cpa), 2) AS lifetime_cpa,
-      ROUND(SUM(${CONV_EXPR}), 0) AS total_conversions,
-      SUM(impressions) AS impressions, SUM(clicks) AS clicks, SUM(video_15s) AS video_15s,
-      SUM(video_p25) AS video_p25, SUM(video_p50) AS video_p50, SUM(video_p75) AS video_p75,
-      SUM(video_p100) AS video_p100, SUM(video_plays) AS video_plays, SUM(outbound_clicks) AS outbound_clicks,
-      CASE WHEN ANY_VALUE(lifetime_spend) >= ${HR_SPEND} AND ANY_VALUE(lifetime_cpa) > 0 AND ANY_VALUE(lifetime_cpa) < ${HR_CPA} THEN 'Home Run'
-           WHEN ANY_VALUE(lifetime_spend) >= ${OB_SPEND} AND ANY_VALUE(lifetime_cpa) > 0 AND ANY_VALUE(lifetime_cpa) < ${OB_CPA} THEN 'On Base'
-           WHEN ANY_VALUE(lifetime_spend) >= ${SO_SPEND} AND ANY_VALUE(lifetime_cpa) > ${SO_CPA} THEN 'Strike Out' ELSE 'Unclassified' END AS classification
-    FROM \`${PROJECT}.${DATASET}.${TABLE}\`${groupWhere('WHERE')} GROUP BY 1 ORDER BY lifetime_spend DESC`;
+    WITH per_ad AS (
+      SELECT ad_id, ANY_VALUE(ad_name) AS ad_name, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(adset_name) AS adset_name,
+        MIN(min_date) AS launch_date, ANY_VALUE(creative_link) AS creative_link,
+        ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend,
+        ROUND(SUM(${CONV_EXPR}), 0) AS total_conversions,
+        ROUND(SAFE_DIVIDE(ANY_VALUE(lifetime_spend), NULLIF(SUM(${CONV_EXPR}), 0)), 2) AS lifetime_cpa,
+        SUM(impressions) AS impressions, SUM(clicks) AS clicks, SUM(video_15s) AS video_15s,
+        SUM(video_p25) AS video_p25, SUM(video_p50) AS video_p50, SUM(video_p75) AS video_p75,
+        SUM(video_p100) AS video_p100, SUM(video_plays) AS video_plays, SUM(outbound_clicks) AS outbound_clicks
+      FROM \`${PROJECT}.${DATASET}.${TABLE}\`${groupWhere('WHERE')} GROUP BY 1
+    )
+    SELECT *,
+      CASE WHEN lifetime_spend >= ${HR_SPEND} AND lifetime_cpa > 0 AND lifetime_cpa < ${HR_CPA} THEN 'Home Run'
+           WHEN lifetime_spend >= ${OB_SPEND} AND lifetime_cpa > 0 AND lifetime_cpa < ${OB_CPA} THEN 'On Base'
+           WHEN lifetime_spend >= ${SO_SPEND} AND lifetime_cpa > ${SO_CPA} THEN 'Strike Out' ELSE 'Unclassified' END AS classification
+    FROM per_ad ORDER BY lifetime_spend DESC`;
   const monthlySQL = `
     WITH unique_ads AS (
-      SELECT ad_id, MIN(min_date) AS launch_date, ROUND(ANY_VALUE(lifetime_spend),2) AS lifetime_spend, ROUND(ANY_VALUE(lifetime_cpa),2) AS lifetime_cpa,
+      SELECT ad_id, MIN(min_date) AS launch_date, ROUND(ANY_VALUE(lifetime_spend),2) AS lifetime_spend, ROUND(SAFE_DIVIDE(ANY_VALUE(lifetime_spend), NULLIF(SUM(${CONV_EXPR}),0)),2) AS lifetime_cpa,
         ROUND(SUM(spend),2) AS period_spend, ROUND(SUM(${CONV_EXPR}),0) AS total_conversions
       FROM \`${PROJECT}.${DATASET}.${TABLE}\`${groupWhere('WHERE')} GROUP BY 1 ),
     classified AS ( SELECT *, CASE WHEN lifetime_spend>=${HR_SPEND} AND lifetime_cpa>0 AND lifetime_cpa<${HR_CPA} THEN 'Home Run' WHEN lifetime_spend>=${OB_SPEND} AND lifetime_cpa>0 AND lifetime_cpa<${OB_CPA} THEN 'On Base' WHEN lifetime_spend>=${SO_SPEND} AND lifetime_cpa>${SO_CPA} THEN 'Strike Out' ELSE 'Unclassified' END AS classification FROM unique_ads )
@@ -230,7 +240,7 @@ async function loadPowerLaw(){
     WITH ad_spend AS (
       SELECT ad_id, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(adset_name) AS adset_name, ANY_VALUE(ad_name) AS ad_name,
         MIN(min_date) AS launch_date, MAX(max_date) AS last_spend_date, ANY_VALUE(creative_link) AS preview_link,
-        ROUND(SUM(spend),2) AS period_spend, ROUND(ANY_VALUE(lifetime_cpa),2) AS lifetime_cpa
+        ROUND(SUM(spend),2) AS period_spend, ROUND(SAFE_DIVIDE(SUM(spend), NULLIF(SUM(${CONV_EXPR}),0)),2) AS lifetime_cpa
       FROM \`${PROJECT}.${DATASET}.${TABLE}\` WHERE date_start >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)${groupWhere()} GROUP BY 1 ),
     total AS (SELECT SUM(period_spend) AS grand_total FROM ad_spend)
     SELECT ROW_NUMBER() OVER (ORDER BY a.period_spend DESC) AS rank_num, a.ad_id, a.campaign_name, a.adset_name, a.ad_name, a.launch_date, a.last_spend_date, a.preview_link,
