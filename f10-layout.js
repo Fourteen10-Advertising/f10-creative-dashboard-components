@@ -62,7 +62,15 @@ function ttPanelsMarkup(ttTh){
       <div class="insight-box"><strong>TikTok Weekly Summary:</strong> spend, conversions and blended efficiency this window vs the previous equal-length window, plus the account-level <strong>2s hook</strong> and <strong>6s hold</strong> rates &mdash; the early-attention signal TikTok exposes and Meta cannot.</div>
       <div class="window-note" id="tt-summary-window-note"></div>
       <div id="tt-summary-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
-      <div id="tt-summary-body" style="display:none;"><div class="scorecard-grid" id="tt-summary-scorecards"></div></div>
+      <div id="tt-summary-body" style="display:none;">
+        <div class="scorecard-grid" id="tt-summary-scorecards"></div>
+        <div class="chart-card">
+          <h3>Blended Metric Decomposition &mdash; Prior &rarr; Current</h3>
+          <div class="legend-row"><span class="li"><span class="dot" style="background:var(--good)"></span> Improves the metric</span><span class="li"><span class="dot" style="background:var(--bad)"></span> Worsens the metric</span></div>
+          <div class="chart-wrapper" style="height:360px;"><canvas id="tt-decomp-chart"></canvas></div>
+          <div class="window-note" id="tt-decomp-note" style="margin-top:12px;"></div>
+        </div>
+      </div>
     </div>
 
     <!-- TIKTOK: MOVEMENT BOARD -->
