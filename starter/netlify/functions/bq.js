@@ -153,7 +153,25 @@ async function resolveMedia(body, credentials, cors) {
       location: 'australia-southeast1',
     });
 
-    const sql = `
+    // Platform-aware creative -> asset resolution. Meta maps ad_id via the shared
+    // meta_creative_links table; TikTok maps ad_id -> video_id (its manifest asset_id)
+    // straight from the raw ads table. Both land in the shared creative_manifest,
+    // filtered by platform, so a signed GCS URL is only minted for stored assets.
+    const platform = body.platform === 'tiktok' ? 'tiktok' : 'meta';
+    const sql = platform === 'tiktok'
+      ? `
+      SELECT l.ad_id, m.asset_type, m.gcs_uri, m.fetch_status
+      FROM (
+        SELECT CAST(ad_id AS STRING) AS ad_id,
+               COALESCE(NULLIF(video_id, ''), JSON_VALUE(image_ids, '$[0]')) AS asset_id,
+               modify_time AS created_time
+        FROM \`mcc-poc-477801.all_clients_tiktok.ads\`
+      ) l
+      LEFT JOIN \`mcc-poc-477801.all_clients.creative_manifest\` m
+        ON m.asset_id = l.asset_id AND m.platform = 'tiktok'
+      WHERE l.ad_id IN UNNEST(@adIds)
+      QUALIFY ROW_NUMBER() OVER (PARTITION BY l.ad_id ORDER BY l.created_time DESC) = 1`
+      : `
       SELECT l.ad_id, m.asset_type, m.gcs_uri, m.fetch_status
       FROM \`mcc-poc-477801.all_clients.meta_creative_links\` l
       LEFT JOIN \`mcc-poc-477801.all_clients.creative_manifest\` m

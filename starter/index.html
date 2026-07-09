@@ -7,7 +7,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@300;400;500;600&family=Bodoni+Moda:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.7.2/f10-shared.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.9.0/f10-shared.css" />
 </head>
 <body>
 <div id="app"></div>
@@ -33,13 +33,26 @@ const GROUP_FILTERS = [
 /* Optional per-client Ad Production thresholds (defaults shown). Uncomment to override
    any subset; the SQL, scatter lines, and the displayed benchmark copy all follow these. */
 // const THRESHOLDS = { HR_SPEND: 5000, HR_CPA: 70, OB_SPEND: 1000, OB_CPA: 100, SO_SPEND: 500, SO_CPA: 140 };
+
+/* Optional TikTok section. Define TIKTOK to add a "TikTok" nav group with its own
+   Weekly Summary, Movement Board, Ad Production and Creative Effectiveness tabs,
+   querying a TikTok mart (tiktok_creative_reporting). The TikTok metric profile
+   adds a real 2s hook (thumbstop) and 6s hold rate that Meta cannot provide.
+   Leave commented for a Meta-only dashboard. */
+// const TIKTOK = {
+//   DATASET:   'acme_marts',              // optional; defaults to DATASET above
+//   TABLE:     'tiktok_creative_reporting',
+//   CONV_EXPR: 'conversions',             // optional; defaults to 'conversions'
+//   THRESHOLDS:{ HR_SPEND: 4000, HR_CPA: 90, OB_SPEND: 1000, OB_CPA: 120, SO_SPEND: 500, SO_CPA: 160 },
+// };
 </script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.7.2/f10-analytics.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.7.2/f10-utils.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.7.2/f10-weekly.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.7.2/f10-monthly.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.7.2/f10-layout.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.7.2/f10-preview.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.9.0/f10-analytics.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.9.0/f10-utils.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.9.0/f10-weekly.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.9.0/f10-monthly.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.9.0/f10-tiktok.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.9.0/f10-layout.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.9.0/f10-preview.js"></script>
 <script>
   renderLayout();
   wireControls();

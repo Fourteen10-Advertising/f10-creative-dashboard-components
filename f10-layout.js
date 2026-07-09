@@ -38,11 +38,127 @@ function refreshProductionThresholdCopy(){
   if (hit) hit.textContent = fmt$(HR_SPEND);
 }
 
+/* TikTok section markup (controls bar + four panels), rendered only when a
+ * TIKTOK config object is present. Mirrors the Meta panels with tt- ids and the
+ * TikTok metric columns (Hook 2s / Hold 6s). f10-tiktok.js drives these. */
+function ttControlsMarkup(){
+  return `<div class="controls-bar" id="tt-controls-bar" style="display:none;">
+      <div class="weekly-controls" style="display:flex;">
+        <div class="ctrl"><label>Window length</label>
+          <select id="tt-ctrl-length"><option value="7" selected>7 days</option><option value="14">14 days</option><option value="28">28 days</option></select>
+        </div>
+        <div class="ctrl"><label>Current window ends</label><input type="date" id="tt-ctrl-enddate" /></div>
+        <div class="ctrl"><label>Efficiency metric</label>
+          <select id="tt-ctrl-metric"><option value="CPA" selected>CPA (cost / conversion)</option><option value="CPC">CPC (cost / click)</option><option value="CPM">CPM (cost / 1k impr)</option><option value="CTR">CTR (clicks / impr)</option></select>
+        </div>
+        <div class="ctrl"><label>Min spend ($)</label><input type="number" id="tt-ctrl-minspend" value="200" min="0" step="50" /></div>
+      </div>
+    </div>`;
+}
+function ttPanelsMarkup(ttTh){
+  return `
+    <!-- TIKTOK: WEEKLY SUMMARY -->
+    <div class="tab-panel tt-tab-panel" id="panel-tt-summary">
+      <div class="insight-box"><strong>TikTok Weekly Summary:</strong> spend, conversions and blended efficiency this window vs the previous equal-length window, plus the account-level <strong>2s hook</strong> and <strong>6s hold</strong> rates &mdash; the early-attention signal TikTok exposes and Meta cannot.</div>
+      <div class="window-note" id="tt-summary-window-note"></div>
+      <div id="tt-summary-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+      <div id="tt-summary-body" style="display:none;"><div class="scorecard-grid" id="tt-summary-scorecards"></div></div>
+    </div>
+
+    <!-- TIKTOK: MOVEMENT BOARD -->
+    <div class="tab-panel tt-tab-panel" id="panel-tt-board">
+      <div class="insight-box"><strong>TikTok Movement Board:</strong> every ad that cleared the spend floor in either window, current vs previous, tagged by what it did. <strong>Hook (2s)</strong> and <strong>Hold (6s)</strong> show early attention. Sorted by current spend.</div>
+      <div class="window-note" id="tt-board-window-note"></div>
+      <div class="legend-row" id="tt-board-legend"></div>
+      <div class="table-card">
+        <h3 id="tt-board-title">Ad Movement</h3>
+        <div class="table-scroll">
+          <div id="tt-board-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+          <table id="tt-board-table" style="display:none;">
+            <thead><tr><th>Ad</th><th>State</th><th class="num">Spend</th><th class="num">&Delta; Spend</th><th class="num" id="tt-board-m-head">Metric</th><th class="num">&Delta; Metric</th><th class="num">Conv.</th><th class="num">Impr.</th><th class="num">Hook %</th><th class="num">Hold %</th><th>Preview</th></tr></thead>
+            <tbody id="tt-board-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TIKTOK: AD PRODUCTION -->
+    <div class="tab-panel tt-tab-panel" id="panel-tt-production">
+      <div class="insight-box"><strong>TikTok Ad Production:</strong> how many ads were launched and the share that become hits (lifetime spend &ge; the Home Run threshold at an efficient CPA). Aim for a 10&ndash;15% hit rate.<br/><br/><strong>Thresholds:</strong>
+        <div class="benchmark"><span class="bm-item"><strong>Home Run:</strong> Spend &ge; ${fmt$(ttTh.HR_SPEND)} &amp; CPA &lt; ${fmt$(ttTh.HR_CPA)}</span><span class="bm-item"><strong>On Base:</strong> Spend &ge; ${fmt$(ttTh.OB_SPEND)} &amp; CPA &lt; ${fmt$(ttTh.OB_CPA)}</span><span class="bm-item"><strong>Strike Out:</strong> Spend &ge; ${fmt$(ttTh.SO_SPEND)} &amp; CPA &gt; ${fmt$(ttTh.SO_CPA)}</span></div>
+      </div>
+      <div id="tt-production-scorecards-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+      <div id="tt-production-scorecards" style="display:none;">
+        <div class="scorecard-grid">
+          <div class="scorecard"><div class="scorecard-label">Ads Produced</div><div class="scorecard-value" id="tt-sc-ads-produced">&ndash;</div></div>
+          <div class="scorecard highlight"><div class="scorecard-label">Home Runs</div><div class="scorecard-value" id="tt-sc-home-runs">&ndash;</div></div>
+          <div class="scorecard highlight"><div class="scorecard-label">Home Run Rate</div><div class="scorecard-value" id="tt-sc-hr-rate">&ndash;</div></div>
+          <div class="scorecard"><div class="scorecard-label">On Base</div><div class="scorecard-value" id="tt-sc-on-base">&ndash;</div></div>
+          <div class="scorecard"><div class="scorecard-label">On Base Rate</div><div class="scorecard-value" id="tt-sc-ob-rate">&ndash;</div></div>
+          <div class="scorecard warn"><div class="scorecard-label">Strike Outs</div><div class="scorecard-value" id="tt-sc-strike-outs">&ndash;</div></div>
+          <div class="scorecard warn"><div class="scorecard-label">Strike Out Rate</div><div class="scorecard-value" id="tt-sc-so-rate">&ndash;</div></div>
+        </div>
+      </div>
+      <div class="two-col">
+        <div class="chart-card" style="margin-bottom:0;"><h3>Lifetime Spend vs CPA &mdash; All Ads</h3>
+          <div id="tt-scatter-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+          <div class="chart-wrapper" id="tt-scatter-wrapper" style="display:none; height:320px;"><canvas id="tt-scatter-chart"></canvas></div>
+        </div>
+        <div class="chart-card" style="margin-bottom:0;"><h3>Ads Launched &amp; Hit Rates by Month</h3>
+          <div id="tt-production-chart-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+          <div class="chart-wrapper" id="tt-production-chart-wrapper" style="display:none; height:320px;"><canvas id="tt-production-chart"></canvas></div>
+        </div>
+      </div>
+      <div class="table-card"><h3>Ad-Level Classification</h3>
+        <div class="table-scroll">
+          <div id="tt-scatter-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+          <table id="tt-scatter-table" style="display:none;">
+            <thead><tr><th>Ad</th><th>Campaign</th><th>Ad Group</th><th>Launch Date</th><th>Lifetime Spend</th><th>Lifetime CPA</th><th>Conversions</th><th class="num">Hook %</th><th class="num">Hold %</th><th class="num">Compl. %</th><th>Preview</th><th>Classification</th></tr></thead>
+            <tbody id="tt-scatter-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TIKTOK: CREATIVE EFFECTIVENESS -->
+    <div class="tab-panel tt-tab-panel" id="panel-tt-creative">
+      <div class="insight-box"><strong>TikTok Creative Effectiveness:</strong> attention beyond CPA. <strong>Hook rate</strong> is the share of impressions watched to 2 seconds (did the ad stop the scroll?); <strong>Hold rate</strong> reached 6 seconds; <strong>completion</strong> watched to the end; the <strong>retention curve</strong> (25 &rarr; 100%) shows where viewers drop off. Rates cover the last 90 days.</div>
+      <div class="scorecard-grid" style="margin-bottom:16px;">
+        <div class="scorecard highlight"><div class="scorecard-label">Avg Hook Rate (2s)</div><div class="scorecard-value" id="tt-creative-hook">&ndash;</div></div>
+        <div class="scorecard"><div class="scorecard-label">Avg Hold Rate (6s)</div><div class="scorecard-value" id="tt-creative-hold">&ndash;</div></div>
+      </div>
+      <div class="chart-card"><h3>Average Video Retention Curve &mdash; % of Impressions Reaching Each Quartile</h3>
+        <div id="tt-creative-chart-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+        <div class="chart-wrapper" id="tt-creative-chart-wrapper" style="display:none; height:320px;"><canvas id="tt-creative-chart"></canvas></div>
+      </div>
+      <div class="table-card"><h3>Creative Effectiveness by Ad &mdash; Last 90 Days</h3>
+        <div class="table-scroll">
+          <div id="tt-creative-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+          <table id="tt-creative-table" style="display:none;">
+            <thead><tr><th>Ad</th><th>Campaign</th><th class="num">Spend</th><th class="num">Impr.</th><th class="num">Hook %</th><th class="num">Hold %</th><th class="num">Compl. %</th><th class="num">25%</th><th class="num">50%</th><th class="num">75%</th><th class="num">100%</th><th class="num">CTR</th><th>Preview</th></tr></thead>
+            <tbody id="tt-creative-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+`;
+}
+
 function renderLayout(){
   const client = (typeof CLIENT_NAME !== 'undefined' && CLIENT_NAME) ? CLIENT_NAME : 'Client';
   const report = (typeof REPORT_NAME !== 'undefined' && REPORT_NAME) ? REPORT_NAME : 'Creative Reporting';
 
   const prodBenchmark = prodBenchmarkHTML();
+
+  const hasTikTok = (typeof TIKTOK !== 'undefined' && TIKTOK && TIKTOK.TABLE);
+  const ttTh = Object.assign({ HR_SPEND:5000, HR_CPA:70, OB_SPEND:1000, OB_CPA:100, SO_SPEND:500, SO_CPA:140 }, (hasTikTok && TIKTOK.THRESHOLDS) || {});
+  const ttNav = hasTikTok ? `<div class="nav-section">TikTok</div>
+      <a href="#" class="tt-nav-link" data-tt-tab="tt-summary">Weekly Summary</a>
+      <a href="#" class="tt-nav-link" data-tt-tab="tt-board">Movement Board</a>
+      <a href="#" class="tt-nav-link" data-tt-tab="tt-production">Ad Production</a>
+      <a href="#" class="tt-nav-link" data-tt-tab="tt-creative">Creative Effectiveness</a>` : '';
+  const ttControls = hasTikTok ? ttControlsMarkup() : '';
+  const ttPanels = hasTikTok ? ttPanelsMarkup(ttTh) : '';
 
   document.getElementById('app').innerHTML = `
   <div id="sidebar">
@@ -61,6 +177,7 @@ function renderLayout(){
       <a href="#" class="nav-link" data-tab="decay">Ad Decay</a>
       <a href="#" class="nav-link" data-tab="age">Ad Age</a>
       <a href="#" class="nav-link" data-tab="creative">Creative Effectiveness</a>
+      ${ttNav}
     </nav>
     <div class="sidebar-footer">F10 | Creative Reporting<br/>Powered by BigQuery</div>
   </div>
@@ -96,7 +213,9 @@ function renderLayout(){
       </div>
     </div>
 
-    <!-- WEEKLY: SUMMARY -->
+${ttControls}
+
+        <!-- WEEKLY: SUMMARY -->
     <div class="tab-panel active" id="tab-summary">
       <div class="insight-box"><strong>What this answers:</strong> how the account moved this window versus the previous equal-length window, and <em>why</em> &mdash; was the change driven by the creatives themselves getting better or worse (efficiency), or by budget shifting between ads and ads entering/leaving (mix &amp; flow)?</div>
       <div class="window-note" id="summary-window-note"></div>
@@ -283,6 +402,8 @@ function renderLayout(){
       </div>
     </div>
 
+  ${ttPanels}
+
   </div>`;
   initTableSorting();
 
@@ -290,4 +411,6 @@ function renderLayout(){
     F10A.init({ client: client, dashboardType: 'creative' });
     F10A.track('dashboard_loaded', { report: report });
   }
+
+  if (hasTikTok && typeof initTikTok === 'function') initTikTok();
 }

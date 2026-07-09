@@ -72,13 +72,16 @@
       curve = '<div class="f10-pm-curve">' + retentionSparkline(m.retention) +
         '<span class="f10-pm-curvelbl">25 &rarr; 100% retention</span></div>';
     }
+    var hookRow = (m.hook != null) ? row('Hook rate', m.hook) : '';
+    var outRow = (m.outboundCtr != null) ? row('Outbound CTR', m.outboundCtr) : '';
     return '<div class="f10-preview-metrics">' +
-      row('Hold rate', m.hold) + row('Completion', m.completion) +
-      row('CTR', m.ctr) + row('Outbound CTR', m.outboundCtr) + curve + '</div>';
+      hookRow + row('Hold rate', m.hold) + row('Completion', m.completion) +
+      row('CTR', m.ctr) + outRow + curve + '</div>';
   }
 
-  function showFallback(adId) {
-    show('<div class="f10-preview-msg">Opens on Facebook&nbsp;&#8599;</div>' + metricsHtml(adId));
+  function showFallback(adId, platform) {
+    var where = platform === 'tiktok' ? 'Opens on TikTok' : 'Opens on Facebook';
+    show('<div class="f10-preview-msg">' + where + '&nbsp;&#8599;</div>' + metricsHtml(adId));
   }
 
   function showMedia(m, adId) {
@@ -105,12 +108,13 @@
     }
   }
 
-  function resolve(adId) {
-    if (cache.has(adId)) return Promise.resolve(cache.get(adId));
+  function resolve(adId, platform) {
+    var key = adId + '|' + (platform || 'meta');
+    if (cache.has(key)) return Promise.resolve(cache.get(key));
     var p = fetch(BQ_FUNCTION, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'media', adIds: [adId] }),
+      body: JSON.stringify({ action: 'media', adIds: [adId], platform: platform || 'meta' }),
     })
       .then(function (r) {
         return r.ok ? r.json() : {};
@@ -122,10 +126,10 @@
         return null;
       })
       .then(function (res) {
-        cache.set(adId, res); // replace the in-flight promise with the value
+        cache.set(key, res); // replace the in-flight promise with the value
         return res;
       });
-    cache.set(adId, p);
+    cache.set(key, p);
     return p;
   }
 
@@ -138,14 +142,15 @@
     if (!el) return;
     var adId = el.getAttribute('data-ad-id');
     if (!adId) return;
+    var platform = el.getAttribute('data-platform') || 'meta';
     lastX = e.clientX;
     lastY = e.clientY;
     currentAdId = adId;
     showLoading();
-    resolve(adId).then(function (m) {
+    resolve(adId, platform).then(function (m) {
       if (currentAdId !== adId) return; // pointer already moved on
       if (m && m.url) showMedia(m, adId);
-      else showFallback(adId);
+      else showFallback(adId, platform);
     });
   }
 
