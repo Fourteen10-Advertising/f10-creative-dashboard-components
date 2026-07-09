@@ -164,7 +164,42 @@
     document.getElementById('tt-summary-scorecards').innerHTML = cards.map((c2) =>
       `<div class="scorecard"><div class="scorecard-label">${c2.label}</div><div class="scorecard-value">${c2.val}</div>${c2.d}</div>`
     ).join('');
+
+    /* Blended metric decomposition — split the change in the blended metric into
+     * the efficiency effect (creatives themselves getting better/worse) vs mix &
+     * flow (budget shifting between ads, entrants/exits). Same method as Meta. */
+    const denTotPri = tot.pri[m.den]; let efficiency = 0;
+    all.forEach((a) => { const dPri = a.pri[m.den], dCur = a.cur[m.den]; if (dPri > 0 && dCur > 0) { const wPri = dPri / denTotPri; const Mp = (a.pri[m.num] / dPri) * m.scale, Mc = (a.cur[m.num] / dCur) * m.scale; efficiency += wPri * (Mc - Mp); } });
+    const total = (mCur != null && mPri != null) ? (mCur - mPri) : 0;
+    const mixFlow = total - efficiency;
+    ttDrawDecomp(mPri || 0, mixFlow, efficiency, mCur || 0, m);
+    const lowerBetter = m.dir === 'lower';
+    const effWord = (v) => { if (Math.abs(v) < 1e-9) return 'no change'; const worse = lowerBetter ? v > 0 : v < 0; return (worse ? 'worsened' : 'improved') + ' the metric by ' + fmtMetric(Math.abs(v), m); };
+    const note = document.getElementById('tt-decomp-note');
+    if (note) note.innerHTML = `<strong>Efficiency effect:</strong> creatives themselves ${effWord(efficiency)}. <strong>Mix &amp; flow:</strong> budget reallocation + entrants/exits ${effWord(mixFlow)}. These sum to the total blended ${m.label} change of ${fmtMetric(total, m)}.`;
+
     hideEl('tt-summary-loading'); showEl('tt-summary-body');
+  }
+
+  /* Waterfall: Prior -> (Mix & flow) -> (Efficiency) -> Current, as floating bars.
+   * Green when a step improves the metric, red when it worsens it (direction-aware). */
+  function ttDrawDecomp(prior, mix, eff, current, m) {
+    const lowerBetter = m.dir === 'lower';
+    const colorFor = (v) => { const worse = lowerBetter ? v > 0 : v < 0; return worse ? getCSS('--bad') : getCSS('--good'); };
+    const after1 = prior + mix;
+    const labels = ['Prior', 'Mix & flow', 'Efficiency', 'Current'];
+    const ranges = [[0, prior], [Math.min(prior, after1), Math.max(prior, after1)], [Math.min(after1, current), Math.max(after1, current)], [0, current]];
+    const colors = [getCSS('--young-blood'), colorFor(mix), colorFor(eff), getCSS('--young-blood')];
+    if (ttCharts.decomp) ttCharts.decomp.destroy();
+    ttCharts.decomp = new Chart(document.getElementById('tt-decomp-chart'), {
+      type: 'bar',
+      data: { labels, datasets: [{ data: ranges, backgroundColor: colors, borderColor: colors, borderWidth: 1 }] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx) => { const i = ctx.dataIndex; if (i === 0) return 'Prior blended: ' + fmtMetric(prior, m); if (i === 3) return 'Current blended: ' + fmtMetric(current, m); const v = i === 1 ? mix : eff; return labels[i] + ': ' + (v >= 0 ? '+' : '') + fmtMetric(v, m); } } } },
+        scales: { y: { title: { display: true, text: m.label, font: { size: 10 } }, ticks: { callback: (v) => m.fmt === 'money' ? '$' + v : v + '%' } } },
+      },
+    });
   }
 
   function ttRenderBoard(movers, c) {
