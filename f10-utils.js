@@ -96,38 +96,71 @@ function fmtMetric(v, m){ if(v==null||isNaN(v)||!isFinite(v)) return '–'; retu
 function fmtDate(s){ const str=bqStr(s); if(!str) return '–'; const [y,mo,d]=str.split('-').map(Number); const dt=new Date(Date.UTC(y,mo-1,d)); return dt.toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric',timeZone:'UTC'}); }
 function isoOffset(isoDate, days){ const [y,mo,d]=isoDate.split('-').map(Number); const dt=new Date(Date.UTC(y,mo-1,d)); dt.setUTCDate(dt.getUTCDate()+days); return dt.toISOString().slice(0,10); }
 
+/* ── Platform metric profiles ──
+ * The creative marts differ by platform in which raw columns carry the video
+ * attention gates. A profile maps the generic rate names (hook/hold/completion/
+ * retention) onto the columns a given platform's mart exposes, so creativeRates()
+ * stays platform-agnostic. Meta is the default and preserves prior behaviour
+ * exactly (no hook gate; hold = 15s views). TikTok exposes real 2s/6s view gates,
+ * so it gets a genuine hook (thumbstop) and a 6s hold rate that Meta cannot give. */
+const PLATFORM_PROFILES = {
+  meta: {
+    hookCol:       null,              /* Meta logs a play on ~every impression, so no meaningful hook gate */
+    holdCol:       'video_15s',       /* 15-sec / thruplay proxy */
+    completionCol: 'video_p100',
+    playsCol:      'video_plays',
+    outboundCol:   'outbound_clicks',
+    retentionCols: { p25:'video_p25', p50:'video_p50', p75:'video_p75', p100:'video_p100' },
+    holdLabel:     'Hold %',
+  },
+  tiktok: {
+    hookCol:       'video_watched_2s',   /* 2-sec views ÷ impr = real thumbstop rate */
+    holdCol:       'video_watched_6s',   /* 6-sec views ÷ impr = hold */
+    completionCol: 'video_views_p100',
+    playsCol:      'video_play_actions',
+    outboundCol:   null,                 /* TikTok mart has no outbound_clicks; CTR only */
+    retentionCols: { p25:'video_views_p25', p50:'video_views_p50', p75:'video_views_p75', p100:'video_views_p100' },
+    holdLabel:     'Hold % (6s)',
+  },
+};
+if (typeof window !== 'undefined') window.PLATFORM_PROFILES = PLATFORM_PROFILES;
+
 /* ── Creative-effectiveness metrics ──
- * The mart stores raw ad×day counts (video_plays, video_15s, video_p25..p100,
- * outbound_clicks, plus impressions/clicks). Rates are computed here at
- * aggregation time so windowed sums stay correct — never pre-divide then sum.
- * All view rates use impressions as the denominator: Meta logs a "play" on
- * ~every auto-play impression, so plays is not a meaningful gate and there is no
- * separate hook rate. Frequency is intentionally absent — reach overlap is
- * unknown once days are summed, so any windowed impressions/reach is wrong. */
-function creativeRates(a){
+ * The mart stores raw ad×day counts (video gates, outbound_clicks, plus
+ * impressions/clicks). Rates are computed here at aggregation time so windowed
+ * sums stay correct — never pre-divide then sum. All view rates use impressions
+ * as the denominator: both Meta and TikTok auto-play, so a "play" fires on ~every
+ * impression and is not a meaningful gate. The profile selects which columns feed
+ * each rate; hook is null for platforms (Meta) with no early-view gate. Frequency
+ * is intentionally absent — reach overlap is unknown once days are summed. */
+function creativeRates(a, profile){
+  const p = profile || PLATFORM_PROFILES.meta;
   const impr = (a && a.impressions) || 0;
   const pct = (n) => impr > 0 ? ((Number(n)||0) / impr) * 100 : null;
+  const col = (name) => (name && a) ? a[name] : null;
   return {
     impressions: impr,
-    hold:        pct(a && a.video_15s),    /* 15-sec views ÷ impr (thruplay proxy) */
-    completion:  pct(a && a.video_p100),   /* 100% completes ÷ impr */
+    hook:        p.hookCol ? pct(col(p.hookCol)) : null,      /* thumbstop; null when platform has no gate */
+    hold:        pct(col(p.holdCol)),
+    completion:  pct(col(p.completionCol)),
     ctr:         pct(a && a.clicks),
-    outboundCtr: pct(a && a.outbound_clicks),
+    outboundCtr: p.outboundCol ? pct(col(p.outboundCol)) : null,
     retention: {
-      p25:  pct(a && a.video_p25),
-      p50:  pct(a && a.video_p50),
-      p75:  pct(a && a.video_p75),
-      p100: pct(a && a.video_p100),
+      p25:  pct(col(p.retentionCols.p25)),
+      p50:  pct(col(p.retentionCols.p50)),
+      p75:  pct(col(p.retentionCols.p75)),
+      p100: pct(col(p.retentionCols.p100)),
     },
-    hasVideo: ((a && a.video_plays) || 0) > 0,
+    hasVideo: ((p.playsCol && a && a[p.playsCol]) || 0) > 0,
   };
 }
 
 /* Per-ad creative metrics registry. Table renderers populate this keyed by
- * ad_id so the hover preview can show metrics next to the creative. */
+ * ad_id so the hover preview can show metrics next to the creative. An optional
+ * profile selects the platform column mapping (defaults to Meta). */
 const F10_AD_METRICS = {};
 if (typeof window !== 'undefined') window.F10_AD_METRICS = F10_AD_METRICS; /* expose: const is not auto-attached to window */
-function registerAdMetrics(adId, agg){ if(adId != null) F10_AD_METRICS[adId] = creativeRates(agg); }
+function registerAdMetrics(adId, agg, profile){ if(adId != null) F10_AD_METRICS[adId] = creativeRates(agg, profile); }
 
 /* Inline SVG sparkline for a 25/50/75/100 video-retention curve. Values are %
  * of impressions; scaled to the local max so the shape reads even when absolute
