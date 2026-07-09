@@ -38,6 +38,35 @@ function refreshProductionThresholdCopy(){
   if (hit) hit.textContent = fmt$(HR_SPEND);
 }
 
+/* ── "How to read this tab" notes ──
+ * Plain-English, client-facing guidance shown at the top of every tab, plus a
+ * one-line definition of what a "conversion" is for this account. Rendered only
+ * when SHOW_HOW_TO_NOTES is true (default off), so dashboards that don't opt in
+ * are unchanged. Copy is generic; the conversion line is worded from CONV_LABEL. */
+const HOW_TO_READ = {
+  summary:    'Your account&rsquo;s scorecard for the last 7 days next to the 7 days before &mdash; start here each week. Check whether spend, conversions and cost&#8209;per&#8209;result moved the right way, then use the chart below to see whether the change came from the ads themselves getting better or worse, or simply from budget shifting between them.',
+  board:      'A list of every ad that spent enough to matter, showing what each one did this window versus last &mdash; scaling, fading, brand new, or dropped off. Use it to spot the specific ads to lean into and the ones to review.',
+  map:        'The same movement as the Board, shown as a picture. Each bubble is an ad: further right means it carries more spend, higher up means it got more efficient. Winners sit top&#8209;right; ads drifting to the bottom&#8209;right are getting expensive and worth a look.',
+  powerlaw:   'Ranks every ad by how much of your spend it soaked up over the last 90 days. A few ads almost always dominate &mdash; what matters is whether those big spenders are also efficient. Scan the top rows and check their CPA: a big spender with a high CPA is your most expensive problem; a big spender with a low CPA is a winner to protect and clone.',
+  production: 'Your creative batting average. Every ad is graded by how much it spent and how efficiently it converted: <strong>Home Run</strong> (scaled and efficient), <strong>On Base</strong> (solid), <strong>Strike Out</strong> (spent real money but too expensive), or <strong>Unclassified</strong> (too little spend to judge yet). Use it to see what share of the ads you produce actually become winners &mdash; aim for a healthy hit rate, not perfection.',
+  decay:      'Shows how ads fade over time. Each line follows a group of ads launched in the same month and tracks how their spend tails off as they age. Use it to plan how many fresh creatives you need to keep spend up as older ones burn out.',
+  age:        'The full library of ads ranked by spend, with the date each one launched. Use it to see whether today&rsquo;s results ride on fresh creative or a few long&#8209;running ads &mdash; leaning heavily on old ads is a sign it&rsquo;s time to test more.',
+  creative:   'Looks past cost at how well each creative holds attention &mdash; how many people watch 15 seconds, how many finish, and where they drop off. Use it to understand why an ad works or stalls, so you can brief better creative next time.',
+};
+/* One-line "what counts as a conversion" definition, worded from CONV_LABEL. */
+function convDefinitionHTML(){
+  const p = convLabelPlural();
+  const sl = convLabel().toLowerCase();
+  return `<div class="dash-note-def"><strong>Conversions on this dashboard = ${p}.</strong> Every conversion count and <strong>CPA</strong> (cost per ${sl}) shown here is based on ${p.toLowerCase()}.</div>`;
+}
+/* Full note block for a tab, or '' when notes are switched off. */
+function howToNote(tabKey){
+  if (!showHowToNotes()) return '';
+  const body = HOW_TO_READ[tabKey] || '';
+  return `<div class="dash-note"><div class="dash-note-title">How to read this tab</div>` +
+    `<div class="dash-note-body">${body}</div>${convDefinitionHTML()}</div>`;
+}
+
 function renderLayout(){
   const client = (typeof CLIENT_NAME !== 'undefined' && CLIENT_NAME) ? CLIENT_NAME : 'Client';
   const report = (typeof REPORT_NAME !== 'undefined' && REPORT_NAME) ? REPORT_NAME : 'Creative Reporting';
@@ -98,6 +127,7 @@ function renderLayout(){
 
     <!-- WEEKLY: SUMMARY -->
     <div class="tab-panel active" id="tab-summary">
+      ${howToNote('summary')}
       <div class="insight-box"><strong>What this answers:</strong> how the account moved this window versus the previous equal-length window, and <em>why</em> &mdash; was the change driven by the creatives themselves getting better or worse (efficiency), or by budget shifting between ads and ads entering/leaving (mix &amp; flow)?</div>
       <div class="window-note" id="summary-window-note"></div>
       <div id="summary-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
@@ -114,6 +144,7 @@ function renderLayout(){
 
     <!-- WEEKLY: BOARD -->
     <div class="tab-panel" id="tab-board">
+      ${howToNote('board')}
       <div class="insight-box"><strong>Movement Board:</strong> every ad that cleared the noise floor in either window, current vs previous side by side, tagged by what it did. Sorted by current spend. Low-volume ads are filtered out so you are not chasing ratio noise.</div>
       <div class="window-note" id="board-window-note"></div>
       <div class="legend-row" id="board-legend"></div>
@@ -131,6 +162,7 @@ function renderLayout(){
 
     <!-- WEEKLY: MAP -->
     <div class="tab-panel" id="tab-map">
+      ${howToNote('map')}
       <div class="insight-box"><strong>Movement Map:</strong> each qualifying ad plotted by current spend (x, how much it carries) against how its efficiency changed versus the prior window (y, up = better). Bubble size = current spend. Heroes sit top-right, drags bottom-right.</div>
       <div class="window-note" id="map-window-note"></div>
       <div class="chart-card"><h3>Spend vs Efficiency Change</h3>
@@ -141,6 +173,7 @@ function renderLayout(){
 
     <!-- MONTHLY: AD POWER LAW -->
     <div class="tab-panel" id="tab-powerlaw">
+      ${howToNote('powerlaw')}
       <div class="insight-box"><strong>Ad Power Law:</strong> A small number of ads drive the majority of spend. This view ranks every ad by its share of total spend in the last 90 days, with a rolling cumulative line to visualise concentration. A steep drop-off early in the chart confirms the power law effect &mdash; your top ads are pulling most of the weight.</div>
       <div class="chart-card"><h3>Spend Concentration &mdash; % of Total &amp; Cumulative</h3>
         <div id="powerlaw-chart-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
@@ -159,6 +192,7 @@ function renderLayout(){
 
     <!-- MONTHLY: AD PRODUCTION -->
     <div class="tab-panel" id="tab-production">
+      ${howToNote('production')}
       <div class="insight-box"><strong>Why it's important:</strong> This chart measures the number of ads launched and the percentage of those that become "hits" (spending more than <span id="prod-hit-spend">${fmt$(HR_SPEND)}</span> lifetime).<br/><br/><strong>How to interpret it:</strong> Aim for a hit rate of 10&ndash;15%. A lower hit rate suggests a need for better ad quality, while a much higher hit rate might indicate you're not testing enough variety.<br/><br/><strong>Thresholds:</strong>
         <div class="benchmark" id="prod-benchmark">${prodBenchmark}</div>
       </div>
@@ -225,6 +259,7 @@ function renderLayout(){
 
     <!-- MONTHLY: AD DECAY -->
     <div class="tab-panel" id="tab-decay">
+      ${howToNote('decay')}
       <div class="insight-box"><strong>Why it's important:</strong> This chart tracks how long it takes for ads launched in a specific month (cohorts) to churn. It helps in projecting future ad needs by understanding the churn rate of existing creatives.<br/><br/><strong>How to interpret it:</strong> Look at each month's cohort to see the decline in spend over time. This helps in forecasting the volume of new ads required to maintain or scale the total spend level.</div>
       <div class="table-card" style="margin-bottom:20px;"><h3>Cohort Summary</h3>
         <div class="table-scroll">
@@ -247,6 +282,7 @@ function renderLayout(){
 
     <!-- MONTHLY: AD AGE -->
     <div class="tab-panel" id="tab-age">
+      ${howToNote('age')}
       <div class="insight-box"><strong>Why it's important:</strong> This chart shows the age distribution of creatives contributing to the daily spend. It highlights how much of the performance is driven by new ads versus long-standing winners.<br/><br/><strong>How to interpret it:</strong> A high reliance on older ads (&gt;90 days) indicates a need for more frequent and effective testing. Conversely, a healthy mix shows that the creative testing process is successfully identifying new winners.<br/><br/><strong>Healthy Mix:</strong>
         <div class="benchmark"><span class="bm-item"><strong>0&ndash;14 Days:</strong> 10&ndash;20%</span><span class="bm-item"><strong>15&ndash;90 Days:</strong> 20&ndash;40%</span><span class="bm-item"><strong>90+ Days:</strong> 40&ndash;50%</span></div>
       </div>
@@ -267,6 +303,7 @@ function renderLayout(){
 
     <!-- MONTHLY: CREATIVE EFFECTIVENESS -->
     <div class="tab-panel" id="tab-creative">
+      ${howToNote('creative')}
       <div class="insight-box"><strong>Creative Effectiveness:</strong> performance beyond CPA &mdash; how well each creative holds attention. <strong>Hold rate</strong> is the share of impressions that watched 15 seconds; <strong>completion</strong> watched to the end; the <strong>retention curve</strong> (25 &rarr; 100%) shows where viewers drop off. Hover any ad to see its creative and curve. Rates cover the last 90 days; non-video ads show &ndash;.</div>
       <div class="chart-card"><h3>Average Video Retention Curve &mdash; % of Impressions Reaching Each Quartile</h3>
         <div id="creative-chart-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
