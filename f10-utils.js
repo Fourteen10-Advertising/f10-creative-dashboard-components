@@ -248,6 +248,27 @@ function groupWhere(lead){
   return ' ' + prefix + ' ' + parts.join(' AND ');
 }
 
+/* ── Display config: conversion label + "How to read" tab notes ──
+ * Optional, all defaulting to today's behaviour so existing dashboards are
+ * unchanged (same guarded-global idiom as GROUP_FILTERS above). A dashboard may
+ * define, BEFORE the scripts load:
+ *   CONV_LABEL         — singular noun for what a "conversion" is for this
+ *                        account (e.g. 'Purchase', 'Lead'). Default 'Conversion'.
+ *                        Used ONLY in the how-to-read note copy — it does NOT
+ *                        change any table header, tile, or dropdown label.
+ *   CONV_LABEL_PLURAL  — plural form. Defaults to CONV_LABEL + 's'.
+ *   SHOW_HOW_TO_NOTES  — when true, renderLayout() shows a plain-English
+ *                        "How to read this tab" note (plus the conversion
+ *                        definition) at the top of every tab. Default false.
+ */
+function convLabel(){ return (typeof CONV_LABEL !== 'undefined' && CONV_LABEL) ? String(CONV_LABEL) : 'Conversion'; }
+function convLabelPlural(){
+  if (typeof CONV_LABEL_PLURAL !== 'undefined' && CONV_LABEL_PLURAL) return String(CONV_LABEL_PLURAL);
+  const s = convLabel();
+  return /s$/i.test(s) ? s : s + 's';
+}
+function showHowToNotes(){ return (typeof SHOW_HOW_TO_NOTES !== 'undefined') && SHOW_HOW_TO_NOTES === true; }
+
 /* ── BQ fetch — expects BQ_FUNCTION to be defined by the dashboard ── */
 async function runQuery(sql){ const r=await fetch(BQ_FUNCTION,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:sql})}); if(!r.ok) throw new Error(await r.text()); return r.json(); }
 

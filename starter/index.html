@@ -7,7 +7,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@300;400;500;600&family=Bodoni+Moda:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.9.1/f10-shared.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.10.0/f10-shared.css" />
 </head>
 <body>
 <div id="app"></div>
@@ -45,14 +45,21 @@ const GROUP_FILTERS = [
 //   CONV_EXPR: 'conversions',             // optional; defaults to 'conversions'
 //   THRESHOLDS:{ HR_SPEND: 4000, HR_CPA: 90, OB_SPEND: 1000, OB_CPA: 120, SO_SPEND: 500, SO_CPA: 160 },
 // };
+
+/* Optional "How to read this tab" notes — plain-English client guidance shown at the top
+   of every tab, plus a one-line definition of what a "conversion" is for this account.
+   Off by default. Set SHOW_HOW_TO_NOTES = true to enable; CONV_LABEL words the definition
+   line only (it does NOT change any table header, tile, or dropdown label). */
+// const SHOW_HOW_TO_NOTES = true;
+// const CONV_LABEL        = 'Purchase';   /* singular, e.g. 'Purchase', 'Lead'; plural auto-adds 's' */
 </script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.9.1/f10-analytics.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.9.1/f10-utils.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.9.1/f10-weekly.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.9.1/f10-monthly.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.9.1/f10-tiktok.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.9.1/f10-layout.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.9.1/f10-preview.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.10.0/f10-analytics.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.10.0/f10-utils.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.10.0/f10-weekly.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.10.0/f10-monthly.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.10.0/f10-tiktok.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.10.0/f10-layout.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.10.0/f10-preview.js"></script>
 <script>
   renderLayout();
   wireControls();
