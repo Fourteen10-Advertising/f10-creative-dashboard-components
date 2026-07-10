@@ -152,6 +152,36 @@ function ttPanelsMarkup(ttTh){
 `;
 }
 
+/* ── "How to read this tab" notes ──
+ * Plain-English, client-facing guidance shown at the top of every tab, plus a
+ * one-line definition of what a "conversion" is for this account. Rendered only
+ * when SHOW_HOW_TO_NOTES is true (default off), so dashboards that don't opt in
+ * are unchanged. Copy leads with the tab's purpose then hands off to the insight
+ * box below for the mechanics; the conversion line is worded from CONV_LABEL. */
+const HOW_TO_READ = {
+  summary:    'Start here each week for a quick read on how the account is tracking versus the previous 7 days. The tiles are your headline numbers and how each one moved; the note and chart below explain what drove the change.',
+  board:      'Come here to act on individual ads. It flags whether each ad is growing, slipping, brand new, or gone, so you can decide what to back and what to pause. The note below covers how the list is built.',
+  map:        'A bird&rsquo;s&#8209;eye view for spotting outliers fast: your best ads gather in one corner and the budget&#8209;drainers in another. Use it to see where the winners and problem ads sit; the note below explains the axes.',
+  powerlaw:   'Use this to answer one question: are your biggest&#8209;spending ads also your most efficient? Skim the top of the ranking and read across to CPA. The note and concentration chart below explain the bigger picture.',
+  production: 'Use this to judge your testing as a whole rather than single ads &mdash; what share of everything you launch turns into a winner. The target hit rate and the thresholds behind each grade (which you can tune) are defined below.',
+  decay:      'Use this for planning ahead: it shows how quickly older ads fade, which tells you how much fresh creative to line up to keep spend steady. The note and cohort charts below go into the detail.',
+  age:        'Use this to check how fresh your running creative is. If a few older ads are doing most of the work, take it as a nudge to test more. The age bands and the healthy&#8209;mix benchmark are explained below.',
+  creative:   'Use this to understand why an ad grabs people or loses them, beyond what it costs, so you can brief sharper creative next time. The attention measures (hold, completion, drop&#8209;off) are defined below.',
+};
+/* One-line "what counts as a conversion" definition, worded from CONV_LABEL. */
+function convDefinitionHTML(){
+  const p = convLabelPlural();
+  const sl = convLabel().toLowerCase();
+  return `<div class="dash-note-def"><strong>Conversions on this dashboard = ${p}.</strong> Every conversion count and <strong>CPA</strong> (cost per ${sl}) shown here is based on ${p.toLowerCase()}.</div>`;
+}
+/* Full note block for a tab, or '' when notes are switched off. */
+function howToNote(tabKey){
+  if (!showHowToNotes()) return '';
+  const body = HOW_TO_READ[tabKey] || '';
+  return `<div class="dash-note"><div class="dash-note-title">How to read this tab</div>` +
+    `<div class="dash-note-body">${body}</div>${convDefinitionHTML()}</div>`;
+}
+
 function renderLayout(){
   const client = (typeof CLIENT_NAME !== 'undefined' && CLIENT_NAME) ? CLIENT_NAME : 'Client';
   const report = (typeof REPORT_NAME !== 'undefined' && REPORT_NAME) ? REPORT_NAME : 'Creative Reporting';
@@ -225,6 +255,7 @@ ${ttControls}
 
         <!-- WEEKLY: SUMMARY -->
     <div class="tab-panel active" id="tab-summary">
+      ${howToNote('summary')}
       <div class="insight-box"><strong>What this answers:</strong> how the account moved this window versus the previous equal-length window, and <em>why</em> &mdash; was the change driven by the creatives themselves getting better or worse (efficiency), or by budget shifting between ads and ads entering/leaving (mix &amp; flow)?</div>
       <div class="window-note" id="summary-window-note"></div>
       <div id="summary-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
@@ -241,6 +272,7 @@ ${ttControls}
 
     <!-- WEEKLY: BOARD -->
     <div class="tab-panel" id="tab-board">
+      ${howToNote('board')}
       <div class="insight-box"><strong>Movement Board:</strong> every ad that cleared the noise floor in either window, current vs previous side by side, tagged by what it did. Sorted by current spend. Low-volume ads are filtered out so you are not chasing ratio noise.</div>
       <div class="window-note" id="board-window-note"></div>
       <div class="legend-row" id="board-legend"></div>
@@ -258,6 +290,7 @@ ${ttControls}
 
     <!-- WEEKLY: MAP -->
     <div class="tab-panel" id="tab-map">
+      ${howToNote('map')}
       <div class="insight-box"><strong>Movement Map:</strong> each qualifying ad plotted by current spend (x, how much it carries) against how its efficiency changed versus the prior window (y, up = better). Bubble size = current spend. Heroes sit top-right, drags bottom-right.</div>
       <div class="window-note" id="map-window-note"></div>
       <div class="chart-card"><h3>Spend vs Efficiency Change</h3>
@@ -268,6 +301,7 @@ ${ttControls}
 
     <!-- MONTHLY: AD POWER LAW -->
     <div class="tab-panel" id="tab-powerlaw">
+      ${howToNote('powerlaw')}
       <div class="insight-box"><strong>Ad Power Law:</strong> A small number of ads drive the majority of spend. This view ranks every ad by its share of total spend in the last 90 days, with a rolling cumulative line to visualise concentration. A steep drop-off early in the chart confirms the power law effect &mdash; your top ads are pulling most of the weight.</div>
       <div class="chart-card"><h3>Spend Concentration &mdash; % of Total &amp; Cumulative</h3>
         <div id="powerlaw-chart-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
@@ -286,6 +320,7 @@ ${ttControls}
 
     <!-- MONTHLY: AD PRODUCTION -->
     <div class="tab-panel" id="tab-production">
+      ${howToNote('production')}
       <div class="insight-box"><strong>Why it's important:</strong> This chart measures the number of ads launched and the percentage of those that become "hits" (spending more than <span id="prod-hit-spend">${fmt$(HR_SPEND)}</span> lifetime).<br/><br/><strong>How to interpret it:</strong> Aim for a hit rate of 10&ndash;15%. A lower hit rate suggests a need for better ad quality, while a much higher hit rate might indicate you're not testing enough variety.<br/><br/><strong>Thresholds:</strong>
         <div class="benchmark" id="prod-benchmark">${prodBenchmark}</div>
       </div>
@@ -352,6 +387,7 @@ ${ttControls}
 
     <!-- MONTHLY: AD DECAY -->
     <div class="tab-panel" id="tab-decay">
+      ${howToNote('decay')}
       <div class="insight-box"><strong>Why it's important:</strong> This chart tracks how long it takes for ads launched in a specific month (cohorts) to churn. It helps in projecting future ad needs by understanding the churn rate of existing creatives.<br/><br/><strong>How to interpret it:</strong> Look at each month's cohort to see the decline in spend over time. This helps in forecasting the volume of new ads required to maintain or scale the total spend level.</div>
       <div class="table-card" style="margin-bottom:20px;"><h3>Cohort Summary</h3>
         <div class="table-scroll">
@@ -374,6 +410,7 @@ ${ttControls}
 
     <!-- MONTHLY: AD AGE -->
     <div class="tab-panel" id="tab-age">
+      ${howToNote('age')}
       <div class="insight-box"><strong>Why it's important:</strong> This chart shows the age distribution of creatives contributing to the daily spend. It highlights how much of the performance is driven by new ads versus long-standing winners.<br/><br/><strong>How to interpret it:</strong> A high reliance on older ads (&gt;90 days) indicates a need for more frequent and effective testing. Conversely, a healthy mix shows that the creative testing process is successfully identifying new winners.<br/><br/><strong>Healthy Mix:</strong>
         <div class="benchmark"><span class="bm-item"><strong>0&ndash;14 Days:</strong> 10&ndash;20%</span><span class="bm-item"><strong>15&ndash;90 Days:</strong> 20&ndash;40%</span><span class="bm-item"><strong>90+ Days:</strong> 40&ndash;50%</span></div>
       </div>
@@ -394,6 +431,7 @@ ${ttControls}
 
     <!-- MONTHLY: CREATIVE EFFECTIVENESS -->
     <div class="tab-panel" id="tab-creative">
+      ${howToNote('creative')}
       <div class="insight-box"><strong>Creative Effectiveness:</strong> performance beyond CPA &mdash; how well each creative holds attention. <strong>Hold rate</strong> is the share of impressions that watched 15 seconds; <strong>completion</strong> watched to the end; the <strong>retention curve</strong> (25 &rarr; 100%) shows where viewers drop off. Hover any ad to see its creative and curve. Rates cover the last 90 days; non-video ads show &ndash;.</div>
       <div class="chart-card"><h3>Average Video Retention Curve &mdash; % of Impressions Reaching Each Quartile</h3>
         <div id="creative-chart-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
