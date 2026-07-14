@@ -232,6 +232,10 @@ function renderLayout(){
     <!-- Global controls: group filters (all tabs) + weekly-only controls -->
     <div class="controls-bar" id="controls-bar" style="display:none;">
       <div id="ctrl-groups" class="ctrl-groups"></div>
+      <div id="ctrl-scope" class="ctrl-groups">
+        <div class="ctrl"><label>Search ad</label><input type="search" id="ctrl-adsearch" class="ctrl-search" placeholder="Ad name&hellip;" autocomplete="off" /></div>
+        <div class="ctrl"><label>Ad status</label><select id="ctrl-status"><option value="all" selected>All ads</option><option value="active">Active only</option></select></div>
+      </div>
       <div id="weekly-controls" class="weekly-controls">
         <div class="ctrl"><label>Window length</label>
           <select id="ctrl-length"><option value="7" selected>7 days</option><option value="14">14 days</option><option value="28">28 days</option></select>

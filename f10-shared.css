@@ -39,8 +39,9 @@ html, body { height: 100%; font-family: 'Archivo', system-ui, sans-serif; backgr
 .ctrl-groups:empty { display: none; }
 .ctrl { display: flex; flex-direction: column; gap: 5px; }
 .ctrl label { font-size: 9px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--grey); }
-.ctrl select, .ctrl input[type=date], .ctrl input[type=number] { font-family: inherit; font-size: 12px; padding: 6px 8px; border: 1px solid var(--paper-dark); border-radius: 4px; background: var(--white); color: var(--ink); }
+.ctrl select, .ctrl input[type=date], .ctrl input[type=number], .ctrl input[type=search] { font-family: inherit; font-size: 12px; padding: 6px 8px; border: 1px solid var(--paper-dark); border-radius: 4px; background: var(--white); color: var(--ink); }
 .ctrl input[type=number] { width: 80px; }
+.ctrl input[type=search].ctrl-search { width: 180px; }
 .seg { display: inline-flex; border: 1px solid var(--paper-dark); border-radius: 4px; overflow: hidden; }
 .seg button { font-family: inherit; font-size: 11px; padding: 6px 10px; border: none; background: var(--white); color: var(--grey); cursor: pointer; letter-spacing: 0.04em; }
 .seg button.active { background: var(--young-blood); color: var(--stabilo); }

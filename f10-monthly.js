@@ -9,10 +9,11 @@
  * first opened. All SQL is shared — only the dashboard config differs:
  *   PROJECT, DATASET, TABLE  — BigQuery target
  *   CONV_EXPR                — conversion expression
- *   GROUP_FILTERS            — optional segment filters (applied via groupWhere())
+ *   GROUP_FILTERS            — optional segment filters (applied via scopeWhere())
  *   HR_SPEND/HR_CPA/...      — production thresholds (from f10-utils.js, overridable)
  *
- * Every query is scoped by the active group selections through groupWhere().
+ * Every query is scoped by the active group selections AND the ad-status filter
+ * (All ads / Active only) through scopeWhere() (see f10-utils.js).
  */
 
 let decayChart = null, decayPctChart = null, ageChart = null,
@@ -84,11 +85,11 @@ async function loadDecay(){
       ROUND(AVG(DATE_DIFF(COALESCE(max_date, CURRENT_DATE()), min_date, DAY)), 0) AS avg_days_running,
       ROUND(SUM(spend), 0) AS total_spend,
       ROUND(SAFE_DIVIDE(SUM(spend), NULLIF(SUM(${CONV_EXPR}), 0)), 0) AS cpa
-    FROM \`${PROJECT}.${DATASET}.${TABLE}\`${groupWhere('WHERE')} GROUP BY 1, 2 ORDER BY 2 DESC`;
+    FROM \`${PROJECT}.${DATASET}.${TABLE}\`${scopeWhere('WHERE')} GROUP BY 1, 2 ORDER BY 2 DESC`;
   const dailySQL = `
     SELECT FORMAT_DATE('%b %Y', min_date) AS launch_month, DATE_TRUNC(min_date, MONTH) AS launch_month_sort,
       date_start, ROUND(SUM(spend), 2) AS daily_spend
-    FROM \`${PROJECT}.${DATASET}.${TABLE}\`${groupWhere('WHERE')} GROUP BY 1, 2, 3 ORDER BY 3, 2`;
+    FROM \`${PROJECT}.${DATASET}.${TABLE}\`${scopeWhere('WHERE')} GROUP BY 1, 2, 3 ORDER BY 3, 2`;
   try {
     const [summary, daily] = await Promise.all([runQuery(summarySQL), runQuery(dailySQL)]);
     let total_ads=0,total_spend=0;
@@ -123,14 +124,14 @@ async function loadAge(){
            WHEN creative_age IN ('3. 15-30 Days','4. 31-60 Days','5. 61-90 Days','3. 15-60 Days','4. 31-90 Days') THEN '15–90 Days'
            ELSE '90+ Days' END AS age_bucket,
       ROUND(SUM(spend), 2) AS daily_spend
-    FROM \`${PROJECT}.${DATASET}.${TABLE}\`${groupWhere('WHERE')} GROUP BY 1, 2 ORDER BY 1, 2`;
+    FROM \`${PROJECT}.${DATASET}.${TABLE}\`${scopeWhere('WHERE')} GROUP BY 1, 2 ORDER BY 1, 2`;
   const tableSQL = `
     SELECT ad_id, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(adset_name) AS adset_name, ANY_VALUE(ad_name) AS ad_name,
       MIN(min_date) AS launch_date, MAX(max_date) AS last_spend, ANY_VALUE(creative_link) AS preview_link,
       ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend,
       ROUND(SAFE_DIVIDE(ANY_VALUE(lifetime_spend), NULLIF(SUM(${CONV_EXPR}), 0)), 2) AS lifetime_cpa,
       ROUND(SUM(${CONV_EXPR}), 0) AS total_conversions
-    FROM \`${PROJECT}.${DATASET}.${TABLE}\`${groupWhere('WHERE')} GROUP BY 1 ORDER BY lifetime_spend DESC`;
+    FROM \`${PROJECT}.${DATASET}.${TABLE}\`${scopeWhere('WHERE')} GROUP BY 1 ORDER BY lifetime_spend DESC`;
   try {
     const [ageData, tableData] = await Promise.all([runQuery(ageSQL), runQuery(tableSQL)]);
     const dates=[...new Set(ageData.map(r=>bqStr(r.date_start)))].sort();
@@ -142,7 +143,7 @@ async function loadAge(){
     if(ageChart) ageChart.destroy();
     ageChart=new Chart(document.getElementById('age-chart'),{ type:'bar', data:{ labels:dates.map(d=>fmtDate(d)), datasets:ageDatasets },
       options:{ responsive:true, maintainAspectRatio:true, scales:{ x:{stacked:true,ticks:{font:{size:10},maxRotation:45}}, y:{stacked:true,max:100,ticks:{callback:v=>v+'%'}} }, plugins:{ legend:{position:'top',labels:{font:{size:11}}}, tooltip:{callbacks:{label:ctx=>`${ctx.dataset.label}: ${ctx.raw}%`}} } } });
-    renderPagedTable('age-table-body', tableData.map(r=>`<tr><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.adset_name}">${r.adset_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmtDate(r.last_spend)}</td><td>${r.preview_link?`<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.preview_link}" target="_blank">Preview</a>`:'–'}</td><td>${fmt$(r.lifetime_spend)}</td><td>${r.lifetime_cpa&&Number(r.lifetime_cpa)>0?fmt$(r.lifetime_cpa):'–'}</td><td>${fmtNum(r.total_conversions)}</td></tr>`));
+    renderPagedTable('age-table-body', tableData.map(r=>`<tr ${adNameAttr(r.ad_name)}><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.adset_name}">${r.adset_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmtDate(r.last_spend)}</td><td>${r.preview_link?`<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.preview_link}" target="_blank">Preview</a>`:'–'}</td><td>${fmt$(r.lifetime_spend)}</td><td>${r.lifetime_cpa&&Number(r.lifetime_cpa)>0?fmt$(r.lifetime_cpa):'–'}</td><td>${fmtNum(r.total_conversions)}</td></tr>`));
     hideEl('age-table-loading'); showEl('age-table');
   } catch(err){ console.error('Age error:',err); }
 }
@@ -166,7 +167,7 @@ async function loadProduction(){
         SUM(impressions) AS impressions, SUM(clicks) AS clicks, SUM(video_15s) AS video_15s,
         SUM(video_p25) AS video_p25, SUM(video_p50) AS video_p50, SUM(video_p75) AS video_p75,
         SUM(video_p100) AS video_p100, SUM(video_plays) AS video_plays, SUM(outbound_clicks) AS outbound_clicks
-      FROM \`${PROJECT}.${DATASET}.${TABLE}\`${groupWhere('WHERE')} GROUP BY 1
+      FROM \`${PROJECT}.${DATASET}.${TABLE}\`${scopeWhere('WHERE')} GROUP BY 1
     )
     SELECT *,
       CASE WHEN lifetime_spend >= ${HR_SPEND} AND lifetime_cpa > 0 AND lifetime_cpa < ${HR_CPA} THEN 'Home Run'
@@ -177,7 +178,7 @@ async function loadProduction(){
     WITH unique_ads AS (
       SELECT ad_id, MIN(min_date) AS launch_date, ROUND(ANY_VALUE(lifetime_spend),2) AS lifetime_spend, ROUND(SAFE_DIVIDE(ANY_VALUE(lifetime_spend), NULLIF(SUM(${CONV_EXPR}),0)),2) AS lifetime_cpa,
         ROUND(SUM(spend),2) AS period_spend, ROUND(SUM(${CONV_EXPR}),0) AS total_conversions
-      FROM \`${PROJECT}.${DATASET}.${TABLE}\`${groupWhere('WHERE')} GROUP BY 1 ),
+      FROM \`${PROJECT}.${DATASET}.${TABLE}\`${scopeWhere('WHERE')} GROUP BY 1 ),
     classified AS ( SELECT *, CASE WHEN lifetime_spend>=${HR_SPEND} AND lifetime_cpa>0 AND lifetime_cpa<${HR_CPA} THEN 'Home Run' WHEN lifetime_spend>=${OB_SPEND} AND lifetime_cpa>0 AND lifetime_cpa<${OB_CPA} THEN 'On Base' WHEN lifetime_spend>=${SO_SPEND} AND lifetime_cpa>${SO_CPA} THEN 'Strike Out' ELSE 'Unclassified' END AS classification FROM unique_ads )
     SELECT FORMAT_DATE('%b %Y', launch_date) AS launch_month, DATE_TRUNC(launch_date, MONTH) AS launch_month_sort,
       COUNT(*) AS ads_launched, COUNTIF(classification='Home Run') AS home_runs, COUNTIF(classification='On Base') AS on_base, COUNTIF(classification='Strike Out') AS strike_outs,
@@ -228,7 +229,7 @@ async function loadProduction(){
     renderPagedTable('production-table-body', prodRows, 20, `<tr style="font-weight:600; background:var(--paper);"><td>Grand Total</td><td>${fmt$(gSpend)}</td><td>${gAds}</td><td>${gHR}</td><td>${fmtPct(gHR/gAds*100)}</td><td>${gOB}</td><td>${fmtPct(gOB/gAds*100)}</td><td>–</td><td>${fmtNum(gConv)}</td><td>${gSO}</td><td>${fmtPct(gSO/gAds*100)}</td></tr>`);
     hideEl('production-table-loading'); showEl('production-table');
     renderPagedTable('scatter-table-body', scatterData.map(r=>{ const cls=r.classification; const badgeClass=cls==='Home Run'?'badge-hr':cls==='On Base'?'badge-ob':cls==='Strike Out'?'badge-so':'badge-un'; const ce={ impressions:Number(r.impressions)||0, clicks:Number(r.clicks)||0, video_15s:Number(r.video_15s)||0, video_p25:Number(r.video_p25)||0, video_p50:Number(r.video_p50)||0, video_p75:Number(r.video_p75)||0, video_p100:Number(r.video_p100)||0, video_plays:Number(r.video_plays)||0, outbound_clicks:Number(r.outbound_clicks)||0 }; registerAdMetrics(r.ad_id, ce); const cr=creativeRates(ce);
-      return `<tr><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adset_name}">${r.adset_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmt$(r.lifetime_spend)}</td><td>${r.lifetime_cpa&&Number(r.lifetime_cpa)>0?fmt$(r.lifetime_cpa):'–'}</td><td>${fmtNum(r.total_conversions)}</td><td class="num">${cr.hold!=null?fmtPct(cr.hold,2):'–'}</td><td class="num">${cr.completion!=null?fmtPct(cr.completion,2):'–'}</td><td class="num">${cr.outboundCtr!=null?fmtPct(cr.outboundCtr,2):'–'}</td><td>${r.creative_link?`<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.creative_link}" target="_blank">Preview</a>`:'–'}</td><td><span class="badge ${badgeClass}">${cls}</span></td></tr>`; }));
+      return `<tr ${adNameAttr(r.ad_name)}><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adset_name}">${r.adset_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmt$(r.lifetime_spend)}</td><td>${r.lifetime_cpa&&Number(r.lifetime_cpa)>0?fmt$(r.lifetime_cpa):'–'}</td><td>${fmtNum(r.total_conversions)}</td><td class="num">${cr.hold!=null?fmtPct(cr.hold,2):'–'}</td><td class="num">${cr.completion!=null?fmtPct(cr.completion,2):'–'}</td><td class="num">${cr.outboundCtr!=null?fmtPct(cr.outboundCtr,2):'–'}</td><td>${r.creative_link?`<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.creative_link}" target="_blank">Preview</a>`:'–'}</td><td><span class="badge ${badgeClass}">${cls}</span></td></tr>`; }));
     hideEl('scatter-table-loading'); showEl('scatter-table');
   } catch(err){ console.error('Production error:',err); }
 }
@@ -241,7 +242,7 @@ async function loadPowerLaw(){
       SELECT ad_id, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(adset_name) AS adset_name, ANY_VALUE(ad_name) AS ad_name,
         MIN(min_date) AS launch_date, MAX(max_date) AS last_spend_date, ANY_VALUE(creative_link) AS preview_link,
         ROUND(SUM(spend),2) AS period_spend, ROUND(SAFE_DIVIDE(SUM(spend), NULLIF(SUM(${CONV_EXPR}),0)),2) AS lifetime_cpa
-      FROM \`${PROJECT}.${DATASET}.${TABLE}\` WHERE date_start >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)${groupWhere()} GROUP BY 1 ),
+      FROM \`${PROJECT}.${DATASET}.${TABLE}\` WHERE date_start >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)${scopeWhere()} GROUP BY 1 ),
     total AS (SELECT SUM(period_spend) AS grand_total FROM ad_spend)
     SELECT ROW_NUMBER() OVER (ORDER BY a.period_spend DESC) AS rank_num, a.ad_id, a.campaign_name, a.adset_name, a.ad_name, a.launch_date, a.last_spend_date, a.preview_link,
       a.period_spend AS spend, ROUND(a.period_spend/t.grand_total*100,2) AS spend_pct,
@@ -256,7 +257,7 @@ async function loadPowerLaw(){
       {type:'bar',label:'% of Spend',data:pcts,backgroundColor:'#4b000f99',borderColor:'#4b000f',borderWidth:1,yAxisID:'y'},
       {type:'line',label:'% Rolling Cumulative',data:rolling,borderColor:'#c8ff00',backgroundColor:'transparent',borderWidth:2.5,pointRadius:3,yAxisID:'y2',tension:0.2} ] },
       options:{ responsive:true, maintainAspectRatio:false, scales:{ x:{ticks:{font:{size:10}}}, y:{title:{display:true,text:'% of Spend',font:{size:10}},ticks:{callback:v=>v+'%'}}, y2:{position:'right',min:0,max:100,title:{display:true,text:'Cumulative %',font:{size:10}},ticks:{callback:v=>v+'%',font:{size:10}},grid:{drawOnChartArea:false}} }, plugins:{ legend:{position:'top',labels:{font:{size:11}}} } } });
-    renderPagedTable('powerlaw-table-body', data.map(r=>`<tr><td class="rank-num">${r.rank_num}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adset_name}">${r.adset_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmtDate(r.last_spend_date)}</td><td>${r.preview_link?`<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.preview_link}" target="_blank">Preview</a>`:'–'}</td><td>${fmt$(r.spend)}</td><td>${fmtPct(r.spend_pct,2)}</td><td>${fmtPct(r.rolling_pct,2)}</td><td>${r.lifetime_cpa&&Number(r.lifetime_cpa)>0?fmt$(r.lifetime_cpa):'–'}</td></tr>`));
+    renderPagedTable('powerlaw-table-body', data.map(r=>`<tr ${adNameAttr(r.ad_name)}><td class="rank-num">${r.rank_num}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adset_name}">${r.adset_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmtDate(r.last_spend_date)}</td><td>${r.preview_link?`<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.preview_link}" target="_blank">Preview</a>`:'–'}</td><td>${fmt$(r.spend)}</td><td>${fmtPct(r.spend_pct,2)}</td><td>${fmtPct(r.rolling_pct,2)}</td><td>${r.lifetime_cpa&&Number(r.lifetime_cpa)>0?fmt$(r.lifetime_cpa):'–'}</td></tr>`));
     hideEl('powerlaw-table-loading'); showEl('powerlaw-table');
   } catch(err){ console.error('Power law error:',err); }
 }
@@ -276,7 +277,7 @@ async function loadCreativeEffectiveness(){
         SUM(video_p25) AS video_p25, SUM(video_p50) AS video_p50, SUM(video_p75) AS video_p75, SUM(video_p100) AS video_p100,
         SUM(outbound_clicks) AS outbound_clicks
       FROM \`${PROJECT}.${DATASET}.${TABLE}\`
-      WHERE date_start >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)${groupWhere()}
+      WHERE date_start >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)${scopeWhere()}
       GROUP BY 1
     ) WHERE impressions > 0 ORDER BY spend DESC`;
   try {
@@ -289,7 +290,7 @@ async function loadCreativeEffectiveness(){
       tImpr+=ce.impressions; t15+=ce.video_15s; t25+=ce.video_p25; t50+=ce.video_p50; t75+=ce.video_p75; t100+=ce.video_p100;
       const pct = (v) => v!=null ? fmtPct(v,2) : '–';
       const pv = r.creative_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.creative_link}" target="_blank">Preview</a>` : '–';
-      return `<tr><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name||''}">${r.ad_name||'–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name||''}">${r.campaign_name||'–'}</td><td class="num">${fmt$(r.spend)}</td><td class="num">${fmtNum(ce.impressions)}</td><td class="num">${pct(cr.hold)}</td><td class="num">${pct(cr.completion)}</td><td class="num">${pct(cr.retention.p25)}</td><td class="num">${pct(cr.retention.p50)}</td><td class="num">${pct(cr.retention.p75)}</td><td class="num">${pct(cr.retention.p100)}</td><td class="num">${pct(cr.ctr)}</td><td class="num">${pct(cr.outboundCtr)}</td><td>${pv}</td></tr>`;
+      return `<tr ${adNameAttr(r.ad_name)}><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name||''}">${r.ad_name||'–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name||''}">${r.campaign_name||'–'}</td><td class="num">${fmt$(r.spend)}</td><td class="num">${fmtNum(ce.impressions)}</td><td class="num">${pct(cr.hold)}</td><td class="num">${pct(cr.completion)}</td><td class="num">${pct(cr.retention.p25)}</td><td class="num">${pct(cr.retention.p50)}</td><td class="num">${pct(cr.retention.p75)}</td><td class="num">${pct(cr.retention.p100)}</td><td class="num">${pct(cr.ctr)}</td><td class="num">${pct(cr.outboundCtr)}</td><td>${pv}</td></tr>`;
     });
     renderPagedTable('creative-table-body', rows);
     hideEl('creative-table-loading'); showEl('creative-table');
