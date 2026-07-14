@@ -51,7 +51,7 @@ function ttControlsMarkup(){
         <div class="ctrl"><label>Efficiency metric</label>
           <select id="tt-ctrl-metric"><option value="CPA" selected>CPA (cost / conversion)</option><option value="CPC">CPC (cost / click)</option><option value="CPM">CPM (cost / 1k impr)</option><option value="CTR">CTR (clicks / impr)</option></select>
         </div>
-        <div class="ctrl"><label>Min spend ($)</label><input type="number" id="tt-ctrl-minspend" value="200" min="0" step="50" /></div>
+        <div class="ctrl"><label>Min spend ($)</label><input type="number" id="tt-ctrl-minspend" value="1" min="0" step="50" /></div>
       </div>
     </div>`;
 }
@@ -245,11 +245,11 @@ function renderLayout(){
           <select id="ctrl-metric"><option value="CPA" selected>CPA (cost / conversion)</option><option value="CPC">CPC (cost / click)</option><option value="CPM">CPM (cost / 1k impr)</option><option value="CTR">CTR (clicks / impr)</option></select>
         </div>
         <div class="ctrl"><label>Noise floor</label>
-          <div class="seg" id="ctrl-floor"><button data-floor="cpaMult" class="active">&times; target CPA</button><button data-floor="fixed">Fixed spend</button><button data-floor="conv">Min conv.</button></div>
+          <div class="seg" id="ctrl-floor"><button data-floor="cpaMult">&times; target CPA</button><button data-floor="fixed" class="active">Fixed spend</button><button data-floor="conv">Min conv.</button></div>
         </div>
         <div class="floor-inputs">
-          <div id="floor-cpaMult" class="show"><label>Target CPA / Mult</label><div style="display:flex;gap:6px;"><input type="number" id="ctrl-targetcpa" value="70" min="0" step="1" title="Target CPA ($)" /><input type="number" id="ctrl-mult" value="3" min="0" step="0.5" title="Multiple" style="width:56px;" /></div></div>
-          <div id="floor-fixed"><label>Min spend ($)</label><input type="number" id="ctrl-fixedspend" value="500" min="0" step="50" /></div>
+          <div id="floor-cpaMult"><label>Target CPA / Mult</label><div style="display:flex;gap:6px;"><input type="number" id="ctrl-targetcpa" value="70" min="0" step="1" title="Target CPA ($)" /><input type="number" id="ctrl-mult" value="3" min="0" step="0.5" title="Multiple" style="width:56px;" /></div></div>
+          <div id="floor-fixed" class="show"><label>Min spend ($)</label><input type="number" id="ctrl-fixedspend" value="1" min="0" step="50" /></div>
           <div id="floor-conv"><label>Min conversions</label><input type="number" id="ctrl-minconv" value="3" min="0" step="1" /></div>
         </div>
       </div>
