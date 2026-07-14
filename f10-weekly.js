@@ -74,7 +74,7 @@ async function fetchWindows(c){
       SUM(IF(date_start BETWEEN '${priStart}' AND '${priEnd}', clicks, 0))        AS pri_clicks,
       SUM(IF(date_start BETWEEN '${priStart}' AND '${priEnd}', ${CONV_EXPR}, 0))  AS pri_conv
     FROM \`${PROJECT}.${DATASET}.${TABLE}\`
-    WHERE date_start BETWEEN '${priStart}' AND '${curEnd}'${groupWhere()}
+    WHERE date_start BETWEEN '${priStart}' AND '${curEnd}'${scopeWhere()}
     GROUP BY ad_id
     HAVING cur_spend > 0 OR pri_spend > 0`;
   const rows = await runQuery(sql);
@@ -132,14 +132,33 @@ function onGroupChange(e){
   if(!isWeekly(activeTab) && typeof loadMonthlyTab === 'function') loadMonthlyTab(activeTab);
 }
 
-/* Controls-bar visibility: weekly-only controls show on weekly tabs; the bar
- * itself stays visible on every tab when group filters exist. */
+/* Controls-bar visibility: the bar itself stays visible on every tab (it always
+ * carries the universal ad-name search + status filter); the weekly-only
+ * controls show on weekly tabs. */
 function applyControlsVisibility(){
   const showWeekly = isWeekly(activeTab);
-  const showBar = showWeekly || groupFilters().length > 0;
-  document.getElementById('controls-bar').style.display = showBar ? 'flex' : 'none';
+  document.getElementById('controls-bar').style.display = 'flex';
   const wc = document.getElementById('weekly-controls');
   if(wc) wc.style.display = showWeekly ? 'flex' : 'none';
+}
+
+/* ── Ad status filter (currently-active ads) ── */
+
+/* An ad-status selection changed: re-query the active view and invalidate cached
+ * monthly tabs so they re-query when next opened (mirrors onGroupChange). */
+function onStatusChange(e){
+  statusFilter = e.target.value;
+  if (window.F10A) F10A.track('filter_changed', { filter: 'ad_status', value: statusFilter });
+  Object.keys(loadedTabs).forEach(t => { if(!isWeekly(t)) delete loadedTabs[t]; });
+  loadWindows();
+  if(!isWeekly(activeTab) && typeof loadMonthlyTab === 'function') loadMonthlyTab(activeTab);
+}
+
+/* The ad-name search changed: re-render the weekly board (so floor-bypass
+ * applies) and re-filter every already-rendered table — no re-query. */
+function applyAdSearch(){
+  if(WIN) refreshWeeklyBoard();
+  refilterAllTables();
 }
 
 /* ── Controls ── */
@@ -180,9 +199,22 @@ function renderWeekly(){
   const windowTxt  = `Current: ${fmtDate(WIN.curStart)} – ${fmtDate(WIN.curEnd)} vs Prior: ${fmtDate(WIN.priStart)} – ${fmtDate(WIN.priEnd)} · Metric: ${c.metric.label} · ${movers.length} ads cleared the floor`;
   ['summary-window-note','board-window-note','map-window-note'].forEach(id => document.getElementById(id).textContent = windowTxt);
   renderSummary(classified, c, WIN);
-  renderBoard(movers, c);
+  /* When a search term is active, feed the board the full classified set so a
+   * searched ad appears even if it sits below the noise floor (the name filter
+   * in renderPagedTable then isolates it). The map stays floor-scoped. */
+  renderBoard(adSearchTerm ? classified : movers, c);
   renderMap(movers, c);
   document.getElementById('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString('en-AU');
+}
+
+/* Re-render only the Movement Board from the loaded window (no re-query, no
+ * chart redraw) — used when the ad-name search changes so floor-bypass applies. */
+function refreshWeeklyBoard(){
+  if(!WIN) return;
+  const c          = getControls();
+  const classified = Object.values(WIN.ads).map(a => classify(a, c));
+  const movers     = classified.filter(a => a.qCur || a.qPri);
+  renderBoard(adSearchTerm ? classified : movers, c);
 }
 
 /* ── Weekly Summary ── */
@@ -260,7 +292,7 @@ function renderBoard(movers, c){
       let mdHtml='–';
       if(a.metricDelta!=null){ const worse=m.dir==='lower'?a.metricDelta>0:a.metricDelta<0; const cls=Math.abs(a.metricDelta)<1e-6?'delta-flat':(worse?'delta-bad':'delta-good'); mdHtml=`<span class="${cls}">${a.metricDelta>0?'+':''}${fmtMetric(a.metricDelta,m)}</span>`; }
       const cr = creativeRates(a.cur); registerAdMetrics(a.ad_id, a.cur);
-      return `<tr>
+      return `<tr ${adNameAttr(a.ad_name)}>
         <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;" title="${a.ad_name||''}">${a.ad_name||'–'}<br><span style="color:var(--grey);font-size:10px;">${a.campaign_name||''}</span></td>
         <td><span class="badge ${sm.cls}">${a.state}</span></td>
         <td class="num">${fmt$(a.sCur)}</td>
@@ -349,6 +381,22 @@ function wireControls(){
     if (window.F10A) F10A.track('control_changed', { control: 'noise_floor', value: b.dataset.floor });
     renderWeekly();
   }));
+  /* Ad status filter = new server query across all tabs */
+  const statusSel = document.getElementById('ctrl-status');
+  if(statusSel) statusSel.addEventListener('change', onStatusChange);
+  /* Ad-name search = client-side filter of the current view (debounced) */
+  const searchInput = document.getElementById('ctrl-adsearch');
+  if(searchInput){
+    let _searchTimer = null;
+    searchInput.addEventListener('input', () => {
+      clearTimeout(_searchTimer);
+      _searchTimer = setTimeout(() => {
+        adSearchTerm = searchInput.value.trim().toLowerCase();
+        if (window.F10A) F10A.track('ad_search', { has_term: adSearchTerm.length > 0 });
+        applyAdSearch();
+      }, 150);
+    });
+  }
   document.getElementById('refresh-btn').addEventListener('click', () => {
     if (window.F10A) F10A.track('refresh_clicked', { tab: activeTab });
     if(isWeekly(activeTab)) initWeekly(); else { delete loadedTabs[activeTab]; loadMonthlyTab(activeTab); }

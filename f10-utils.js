@@ -190,24 +190,63 @@ function getCSS(v){ return getComputedStyle(document.documentElement).getPropert
  * footerHtml: optional pinned row (e.g. Grand Total) always shown after the page. */
 const _tablePages = {};
 const _tableSort = {};   /* tbodyId -> { colIndex, ascending } for the active sort */
+
+/* ── Ad-name search (client-side, filters the current view across all ad tables) ──
+ * adSearchTerm is a lowercased substring. Ad-row builders tag their <tr> with
+ * data-adname (see adNameAttr); renderPagedTable filters on it. Rows without the
+ * attribute (e.g. month-level summary tables) are never filtered. */
+let adSearchTerm = '';
+
+/* Emit a data-adname attribute (lowercased, attribute-escaped) for an ad row's
+ * <tr> so the search filter can match it without touching the visible cells. */
+function adNameAttr(name){
+  const v = String(name == null ? '' : name).toLowerCase().replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+  return `data-adname="${v}"`;
+}
+
+/* Keep only rows that match the active ad-name search. Rows carrying no
+ * data-adname attribute always pass, so non-ad tables are unaffected. */
+function filterRowsBySearch(rowsHtml){
+  const term = adSearchTerm;
+  if(!term) return rowsHtml;
+  return rowsHtml.filter(html => {
+    const i = html.indexOf('data-adname="');
+    if(i === -1) return true;
+    const start = i + 13;
+    const end = html.indexOf('"', start);
+    return html.slice(start, end === -1 ? undefined : end).indexOf(term) !== -1;
+  });
+}
+
+/* renderPagedTable(tbodyId, rowsHtml, pageSize=20, footerHtml='')
+ * rowsHtml: array of <tr> HTML strings (the full, unfiltered data rows).
+ * State keeps `src` (the builder's array, identity key) separate from `rows`
+ * (the filtered + sorted working view that gets paged). footerHtml is a pinned
+ * row (e.g. Grand Total); it is suppressed while an ad-name search is active on
+ * an ad table so the total can't contradict the visible rows. */
 function renderPagedTable(tbodyId, rowsHtml, pageSize, footerHtml){
   pageSize = pageSize || 20;
   footerHtml = footerHtml || '';
   const tbody = document.getElementById(tbodyId);
   if(!tbody) return;
-  if(!_tablePages[tbodyId] || _tablePages[tbodyId].rows !== rowsHtml){
-    _tablePages[tbodyId] = { rows: rowsHtml, page: 0, pageSize: pageSize, footerHtml: footerHtml };
-    /* Fresh data: reapply any active sort so the user's chosen order — and the
-     * header ▲/▼ indicator — survive refreshes and filter changes. */
+  if(!_tablePages[tbodyId] || _tablePages[tbodyId].src !== rowsHtml){
+    /* Fresh data from a builder: derive the filtered view, then reapply any
+     * active sort so the user's chosen order — and the header ▲/▼ indicator —
+     * survive refreshes and filter changes. */
+    _tablePages[tbodyId] = { src: rowsHtml, rows: filterRowsBySearch(rowsHtml), page: 0, pageSize: pageSize, footerHtml: footerHtml };
     if(_tableSort[tbodyId]) applyTableSort(tbodyId, true);
   }
-  _tablePages[tbodyId].pageSize = pageSize;
-  _tablePages[tbodyId].footerHtml = footerHtml;
-  const totalRows = rowsHtml.length;
+  const st = _tablePages[tbodyId];
+  st.pageSize = pageSize;
+  st.footerHtml = footerHtml;
+  const view = st.rows;
+  const hasAdRows = st.src.length > 0 && st.src[0].indexOf('data-adname="') !== -1;
+  const foot = (adSearchTerm && hasAdRows) ? '' : footerHtml;
+  const totalRows = view.length;
   const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
-  const page = Math.max(0, Math.min(_tablePages[tbodyId].page, totalPages - 1));
-  _tablePages[tbodyId].page = page;
-  tbody.innerHTML = rowsHtml.slice(page * pageSize, page * pageSize + pageSize).join('') + footerHtml;
+  const page = Math.max(0, Math.min(st.page, totalPages - 1));
+  st.page = page;
+  tbody.innerHTML = view.slice(page * pageSize, page * pageSize + pageSize).join('') + foot;
   const tableCard = tbody.closest('.table-card');
   if(!tableCard) return;
   let pager = tableCard.querySelector('.table-pagination[data-for="'+tbodyId+'"]');
@@ -215,8 +254,21 @@ function renderPagedTable(tbodyId, rowsHtml, pageSize, footerHtml){
   if(totalPages <= 1){ pager.style.display='none'; return; }
   pager.style.display='';
   pager.innerHTML = `<button class="pg-btn"${page===0?' disabled':''} data-prev>&#8592; Prev</button><span class="pg-info">Page ${page+1} of ${totalPages} &middot; ${totalRows} rows</span><button class="pg-btn"${page>=totalPages-1?' disabled':''} data-next>Next &#8594;</button>`;
-  pager.querySelector('[data-prev]').addEventListener('click', ()=>{ _tablePages[tbodyId].page--; renderPagedTable(tbodyId,rowsHtml,pageSize,footerHtml); });
-  pager.querySelector('[data-next]').addEventListener('click', ()=>{ _tablePages[tbodyId].page++; renderPagedTable(tbodyId,rowsHtml,pageSize,footerHtml); });
+  pager.querySelector('[data-prev]').addEventListener('click', ()=>{ st.page--; renderPagedTable(tbodyId, st.src, pageSize, footerHtml); });
+  pager.querySelector('[data-next]').addEventListener('click', ()=>{ st.page++; renderPagedTable(tbodyId, st.src, pageSize, footerHtml); });
+}
+
+/* Re-apply the current ad-name search to every already-rendered paged table
+ * without re-querying — used when the search box changes. */
+function refilterAllTables(){
+  Object.keys(_tablePages).forEach(id => {
+    const st = _tablePages[id];
+    if(!st) return;
+    st.rows = filterRowsBySearch(st.src);
+    if(_tableSort[id]) applyTableSort(id, true);
+    st.page = 0;
+    renderPagedTable(id, st.src, st.pageSize, st.footerHtml);
+  });
 }
 
 /* ── Group filters ──
@@ -243,6 +295,27 @@ function groupClauses(){
 }
 function groupWhere(lead){
   const parts = groupClauses();
+  if(!parts.length) return '';
+  const prefix = lead === 'WHERE' ? 'WHERE' : 'AND';
+  return ' ' + prefix + ' ' + parts.join(' AND ');
+}
+
+/* ── Ad status filter (currently-active ads) ──
+ * statusFilter is 'all' (default) or 'active'. When 'active', queries are scoped
+ * to ads whose latest Meta effective_status is ACTIVE, via the is_active column
+ * on the creative_reporting mart. */
+let statusFilter = 'all';
+function statusClauses(){ return statusFilter === 'active' ? ['is_active'] : []; }
+
+/* Combined query scope = group-segment filters + ad-status filter. Use this in
+ * place of groupWhere() so both compose correctly and the WHERE/AND leading is
+ * right whether or not any group filter is set:
+ *   scopeWhere('WHERE') — start a fresh WHERE block (e.g. FROM t ${scopeWhere('WHERE')})
+ *   scopeWhere()        — append to an existing WHERE (leads with AND)
+ * Returns '' when nothing is active. */
+function scopeClauses(){ return groupClauses().concat(statusClauses()); }
+function scopeWhere(lead){
+  const parts = scopeClauses();
   if(!parts.length) return '';
   const prefix = lead === 'WHERE' ? 'WHERE' : 'AND';
   return ' ' + prefix + ' ' + parts.join(' AND ');
@@ -388,7 +461,7 @@ function applyTableSort(tbodyId, skipRender){
   st.rows.length = 0;
   for(let i = 0; i < sorted.length; i++) st.rows.push(sorted[i]);
   st.page = 0;
-  if(!skipRender) renderPagedTable(tbodyId, st.rows, st.pageSize, st.footerHtml);
+  if(!skipRender) renderPagedTable(tbodyId, st.src, st.pageSize, st.footerHtml);
 }
 
 /* DOM fallback for tables that don't use pagination. */

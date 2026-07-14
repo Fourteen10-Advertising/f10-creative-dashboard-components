@@ -9,7 +9,7 @@ A dashboard is now just a config block plus script tags: the markup, styling, an
 | File | Purpose |
 |---|---|
 | `f10-shared.css` | All shared styles: layout, sidebar, controls bar, scorecards, badges, tables, charts |
-| `f10-utils.js` | Formatters, constants (METRICS, STATE_META, thresholds), `classify()`, aggregation helpers, group-filter helpers, `scatterMaxSpend()` |
+| `f10-utils.js` | Formatters, constants (METRICS, STATE_META, thresholds), `classify()`, aggregation helpers, group/status filter helpers (`scopeWhere()`), ad-name search (`adNameAttr`, `filterRowsBySearch`, `refilterAllTables`), `scatterMaxSpend()` |
 | `f10-weekly.js` | Weekly engine: fetchWindows, renderSummary/Board/Map, tab system, group filters, wireControls, initWeekly |
 | `f10-monthly.js` | Monthly engine: loadPowerLaw/Production/Decay/Age + the `loadMonthlyTab()` dispatcher. All SQL is shared and config-driven |
 | `f10-layout.js` | `renderLayout()` — builds the sidebar, controls bar, and all seven tab panels into `<div id="app"></div>`. Production benchmark copy is derived from the threshold constants |
@@ -89,10 +89,18 @@ dashboard's service account needs `roles/storage.objectViewer` on
 
 ## Group filters
 
-- Apply to **all tabs** (weekly and monthly) by injecting `groupWhere()` into every query's WHERE clause.
+- Apply to **all tabs** (weekly and monthly) by injecting `scopeWhere()` into every query's WHERE clause.
 - Multiple dimensions are supported — one dropdown per `GROUP_FILTERS` entry.
 - Values are queried dynamically and default to **All** (no filter).
 - `fetchMaxDate` stays global so the end-date picker is stable regardless of selected group.
+
+## Ad status filter & ad-name search
+
+Both controls live in the controls bar on **every tab** and need no per-client config — they serve all dashboards automatically.
+
+- **Ad status** (`All ads` / `Active only`) — server-side filter. `Active only` scopes every query to ads whose latest Meta delivery status is ACTIVE, via the `is_active` column on the `creative_reporting` mart. Composed with group filters through `scopeWhere()` (group + status predicates, correct WHERE/AND leading).
+  - **Requires** the mart to expose `is_active` (and `effective_status`), added by the `f10-dataform` `stg_meta_ad_status` model. Pin a client to a framework tag that ships this control **only after** that column is live in the client's mart, or `Active only` queries will error.
+- **Search ad** — client-side substring filter over the ad name, applied to the current view across all ad tables (Movement Board, Ad Age, Ad Production, Power Law, Creative Effectiveness). Instant, no re-query. When a term is present the weekly board **bypasses the noise floor** so a searched ad always appears. Ad rows carry a `data-adname` attribute (`adNameAttr()`); `renderPagedTable`/`refilterAllTables` do the filtering. Month-level summary rows have no `data-adname` and are never filtered.
 
 ## Thresholds
 
