@@ -178,6 +178,16 @@ tbody tr:hover { background: rgba(75,0,15,0.03); }
 .comp-section { margin-bottom: 34px; }
 .comp-head { font-size: 15px; font-weight: 600; letter-spacing: 0.04em; color: var(--young-blood); margin-bottom: 3px; }
 .comp-pgmeta { font-size: 11px; color: var(--grey); letter-spacing: 0.04em; margin-bottom: 14px; }
+/* Age-metrics header (US-004): client summary strip + age distribution chips.
+ * Reuses the existing competitor-tab language — white card on paper-dark border,
+ * young-blood accents, muted paper chips (matching .insight-box .bm-item). */
+.comp-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 22px; background: var(--white); border: 2px solid var(--paper-dark); border-radius: 8px; padding: 14px 18px; margin-bottom: 20px; }
+.comp-metric { display: flex; flex-direction: column; gap: 3px; }
+.comp-metric .comp-metric-label { font-size: 9px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--grey); }
+.comp-metric .comp-metric-value { font-size: 17px; font-weight: 600; letter-spacing: 0.02em; color: var(--young-blood); }
+.comp-dist { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-left: auto; }
+.comp-dist-seg { display: inline-flex; align-items: baseline; gap: 5px; font-size: 10px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--grey); background: var(--paper); border-radius: 100px; padding: 4px 10px; }
+.comp-dist-seg b { font-size: 12px; font-weight: 600; color: var(--ink); }
 .comp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 18px; }
 .comp-card { background: var(--white); color: var(--ink); border: 2px solid var(--paper-dark); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
 .comp-media { position: relative; display: flex; overflow-x: auto; scroll-snap-type: x mandatory; aspect-ratio: 1 / 1; background: #111; scrollbar-width: thin; }

@@ -97,6 +97,63 @@
     return { text: stripped || String(text), dyn: hadToken };
   }
 
+  /* ── Age-metrics formatting + rendering (US-004) ── */
+
+  /* Coerce a BQ numeric to a display string; null when not finite. dp>0 keeps
+   * that many decimals (avg age is 1dp), dp=0 rounds to a whole count. */
+  function compAgeNum(v, dp) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return null;
+    return dp ? n.toFixed(dp) : String(Math.round(n));
+  }
+
+  /* One age-distribution chip strip: <7d / 7-30d / 30-90d / 90d+ with counts.
+   * Labels are module-owned markup; only the count values are esc()'d. */
+  function compDistHtml(m) {
+    const seg = (label, v) =>
+      `<span class="comp-dist-seg">${label} <b>${esc(compAgeNum(v, 0) || '0')}</b></span>`;
+    return '<div class="comp-dist">'
+      + seg('&lt;7d', m.live_lt_7d)
+      + seg('7&ndash;30d', m.live_7_30d)
+      + seg('30&ndash;90d', m.live_30_90d)
+      + seg('90d+', m.live_90d_plus)
+      + '</div>';
+  }
+
+  /* Client summary strip above the competitor sections. Absent-safe: renders
+   * nothing when the client age row is missing/null (no empty strip). */
+  function compSummaryHtml(client, competitors) {
+    if (!client) return '';
+    const metric = (label, val) =>
+      `<div class="comp-metric"><span class="comp-metric-label">${label}</span>`
+      + `<span class="comp-metric-value">${esc(val)}</span></div>`;
+    const live = compAgeNum(client.ads_live, 0);
+    const avg = compAgeNum(client.avg_age_live_days, 1);
+    return '<div class="comp-summary">'
+      + metric('Competitors tracked', String(competitors))
+      + metric('Live ads', live != null ? live : '0')
+      + metric('Avg live age', (avg != null ? avg : '\u2013') + 'd')
+      + compDistHtml(client)
+      + '</div>';
+  }
+
+  /* Inner HTML for a competitor section's meta line. Base is the existing
+   * "{total} ads tracked · {live} live"; when a per-page age row exists it is
+   * extended with average live age and the four bucket counts. Absent-safe:
+   * no byPage entry → the line is exactly what it is today. */
+  function compPageMetaHtml(s, page) {
+    let line = `${s.total} ad${s.total === 1 ? '' : 's'} tracked &middot; ${s.live} live`;
+    if (page) {
+      const avg = compAgeNum(page.avg_age_live_days, 1);
+      line += ` &middot; avg live age ${esc((avg != null ? avg : '\u2013'))}d`
+        + ` &middot; &lt;7d ${esc(compAgeNum(page.live_lt_7d, 0) || '0')}`
+        + ` &middot; 7&ndash;30d ${esc(compAgeNum(page.live_7_30d, 0) || '0')}`
+        + ` &middot; 30&ndash;90d ${esc(compAgeNum(page.live_30_90d, 0) || '0')}`
+        + ` &middot; 90d+ ${esc(compAgeNum(page.live_90d_plus, 0) || '0')}`;
+    }
+    return line;
+  }
+
   /* ── Data fetch ── */
 
   async function fetchCompetitor(client) {
@@ -178,7 +235,7 @@
     showEl('comp-loading'); hideEl('comp-body');
     try {
       const res = await fetchCompetitor(compClient);
-      compRender((res && Array.isArray(res.ads)) ? res.ads : []);
+      compRender((res && Array.isArray(res.ads)) ? res.ads : [], res && res.ageMetrics);
     } catch (err) {
       console.error('Competitor load error:', err);
       const el = document.getElementById('comp-loading');
@@ -186,7 +243,10 @@
     }
   }
 
-  function compRender(ads) {
+  function compRender(ads, ageMetrics) {
+    const age = (ageMetrics && typeof ageMetrics === 'object') ? ageMetrics : {};
+    const ageClient = age.client || null;
+    const ageByPage = (age.byPage && typeof age.byPage === 'object') ? age.byPage : {};
     // Group by competitor page_name, preserving the query's ordering.
     const groups = [];
     const idx = {};
@@ -229,10 +289,11 @@
         : `Vision analysis has not been run yet — cards show the raw scraped ads; play any video or scroll multi-asset ads in place. ${pageHint}`;
     }
 
-    body.innerHTML = compSections.map((s, i) =>
+    body.innerHTML = compSummaryHtml(ageClient, groups.length)
+      + compSections.map((s, i) =>
       `<section class="comp-section" id="comp-sec-${i}">`
         + `<h2 class="comp-head">${esc(s.page_name)}</h2>`
-        + `<p class="comp-pgmeta">${s.total} ad${s.total === 1 ? '' : 's'} tracked &middot; ${s.live} live</p>`
+        + `<p class="comp-pgmeta">${compPageMetaHtml(s, ageByPage[s.page_name])}</p>`
         + `<div class="comp-grid" id="comp-grid-${i}"></div>`
         + `<div class="comp-pager" id="comp-pager-${i}"></div>`
       + `</section>`
