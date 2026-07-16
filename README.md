@@ -13,6 +13,8 @@ A dashboard is now just a config block plus script tags: the markup, styling, an
 | `f10-weekly.js` | Weekly engine: fetchWindows, renderSummary/Board/Map, tab system, group filters, wireControls, initWeekly |
 | `f10-monthly.js` | Monthly engine: loadPowerLaw/Production/Decay/Age + the `loadMonthlyTab()` dispatcher. All SQL is shared and config-driven |
 | `f10-layout.js` | `renderLayout()` — builds the sidebar, controls bar, and all seven tab panels into `<div id="app"></div>`. Production benchmark copy is derived from the threshold constants |
+| `f10-preview.js` | Inline creative hover previews for `.preview-link` targets; exposes `f10MediaMarkup({type,url}, opts)` — the shared `<img>`/`<video>` builder reused by the competitor tab |
+| `f10-competitors.js` | Competitor Ad Library tab (probe-driven: appears automatically when the client has competitor rows in `all_clients_adlib`): groups a client's tracked competitor Meta ads by competitor in the F10 card layout, with per-competitor pagination that mounts only the visible page's media. Reuses `f10MediaMarkup` from `f10-preview.js` |
 
 ## How to use in a dashboard
 
@@ -82,6 +84,14 @@ when a file is missing. The function signs a short-lived URL per asset, so the
 dashboard's service account needs `roles/storage.objectViewer` on
 `gs://f10-creative-assets`.
 
+When an ad has more than one asset (dynamic creative, or a rebrand mid-flight),
+the `media` action picks one representative asset the same way the creative audit
+does (`audit.py` / `sql/creative_band_mining.sql`): the asset delivering the most
+impressions (dominant in the per-asset `image_asset_insights` / `video_asset_insights`
+feeds) wins first, then the most recently created asset, then one already stored in
+the bucket, then newest by created time. Ads with no per-asset delivery data fall
+back to recency, so previews degrade gracefully as that feed's history accrues.
+
 `renderLayout()` generates all markup (including the `#ctrl-groups` / `#weekly-controls` containers), so dashboards no longer hand-maintain the HTML or the monthly loaders.
 
 ## Config reference
@@ -95,6 +105,25 @@ dashboard's service account needs `roles/storage.objectViewer` on
 | `REVENUE_EXPR` | no | SQL expression for the mart's **gated** revenue column (default `'revenue'`). Only consumed in ROAS mode. Never sum raw `conversion_value` |
 | `GROUP_FILTERS` | no | Array of `{ col, label }` segment dropdowns (default none) |
 | `THRESHOLDS` | no | Ad Production threshold overrides (see below) |
+| `COMPETITORS` | no | Optional Competitor Ad Library overrides — the tab itself is automatic (see below) |
+
+## Competitor Ad Library
+
+Visibility is **probe-driven** — no per-client config is needed. On dashboard load, `f10-competitors.js` fires the shared function's cheap existence probe (`{ action:'competitor', client, probe:true }`, a BQ `EXISTS` on `ad_registry` — no snapshot-history scan) for the `f10_client` key derived from `DATASET` (a trailing `_marts` or `_clean` is stripped, e.g. `mosh_marts` → `mosh`). If the client has competitor rows in `all_clients_adlib`, a **Competitors** nav group and tab are injected; if not (or the probe errors), the module fails closed and leaves zero competitor trace in the DOM. Adding competitor rows in the warehouse is all it takes for the tab to appear on the next dashboard load.
+
+The tab groups this client's tracked competitor Meta ads by competitor, in the F10 card layout — image inline / video with controls / carousel strip, plus ad copy, CTA, format, "Live since" date and longevity (days active + still-active). Vision hook/angle/format enrich each card when the vision read has run; otherwise cards render from the raw scraped fields. Each competitor paginates (Prev / Next) and only the visible page's cards mount their media, so only that page's signed creatives are fetched. Data is served by the shared function's data-driven `competitor` action, keyed by the resolved client key.
+
+The **performance controls bar is hidden on the competitor tab** — its group filter, ad-name search, ad-status, window length, efficiency metric, noise floor and min-spend controls are irrelevant to competitor ads. `compSelectTab()` hides `#controls-bar` on activation, and `applyControlsVisibility()` (f10-weekly.js) checks whether `#panel-competitors` is active and keeps the bar suppressed, so a later weekly re-render (tab switch back, refresh, filter change) can't re-show it over the competitor tab.
+
+`COMPETITORS` is an **optional overrides object** only:
+
+```js
+const COMPETITORS = {
+  CLIENT:       'mosh', // optional f10_client override when DATASET doesn't follow {client}_marts / {client}_clean
+  PER_PAGE:     30,     // optional; competitor cards shown per in-page page (default 30)
+  MAX_PER_PAGE: 0,      // optional hard cap on ads rendered per competitor (0 = no cap)
+};
+```
 
 ## Target metric (CPA vs ROAS)
 
@@ -156,7 +185,7 @@ both halves exist and neither replaces the other.
 
 ## Ad status filter & ad-name search
 
-Both controls live in the controls bar on **every tab** and need no per-client config — they serve all dashboards automatically.
+Both controls live in the controls bar on **every Meta/monthly tab** and need no per-client config — they serve all dashboards automatically. (The bar is hidden on the competitor tab; see Competitor Ad Library above.)
 
 - **Ad status** (`All ads` / `Active only`) — server-side filter. `Active only` scopes every query to ads whose latest Meta delivery status is ACTIVE, via the `is_active` column on the `creative_reporting` mart. Composed with group filters through `scopeWhere()` (group + status predicates, correct WHERE/AND leading).
   - **Requires** the mart to expose `is_active` (and `effective_status`), added by the `f10-dataform` `stg_meta_ad_status` model. Pin a client to a framework tag that ships this control **only after** that column is live in the client's mart, or `Active only` queries will error.
@@ -260,3 +289,13 @@ The skill only produces a small config-only repo — the UI and logic still come
 - `fourteen10-advertising/bridgit-creative-dashboard`
 - `fourteen10-advertising/fastcover-creative-dashboard`
 - `fourteen10-advertising/matilda-creative-dashboard`
+## Doc-sync
+
+Documentation moves with code in this repo:
+
+- **CI (enforced):** the `doc-sync` GitHub Action fails a PR/push when code or
+  config changes without a docs change. Add `[skip-docs]` to a commit message
+  to bypass a change that genuinely needs none.
+- **Local (fast catch):** after cloning, run once — `git config core.hooksPath
+  .githooks` (or `sh .githooks/setup.sh`) — to enable the pre-commit hook that
+  checks the same thing before you commit.
