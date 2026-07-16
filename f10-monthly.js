@@ -87,12 +87,16 @@ function loadMonthlyTab(tab){
 /* ── Ad Decay ── */
 
 async function loadDecay(){
+  /* Cohort efficiency: CPA (SUM(spend)/SUM(conv), 0 dp) or, in ROAS mode, monthly
+     ROAS (SUM(revenue)/SUM(spend), 2 dp) via the gated ${REVENUE_EXPR} column. The
+     alias stays `cpa` so the render/grand-total plumbing below is untouched. */
+  const decayMetricSQL = `ROUND(${lifetimeMetricSQL('SUM(spend)', `SUM(${CONV_EXPR})`)}, ${targetMetric()==='roas'?2:0})`;
   const summarySQL = `
     SELECT FORMAT_DATE('%b %Y', min_date) AS launch_month, DATE_TRUNC(min_date, MONTH) AS launch_month_sort,
       COUNT(DISTINCT ad_id) AS ads_launched,
       ROUND(AVG(DATE_DIFF(COALESCE(max_date, CURRENT_DATE()), min_date, DAY)), 0) AS avg_days_running,
       ROUND(SUM(spend), 0) AS total_spend,
-      ROUND(SAFE_DIVIDE(SUM(spend), NULLIF(SUM(${CONV_EXPR}), 0)), 0) AS cpa
+      ${decayMetricSQL} AS cpa
     FROM \`${PROJECT}.${DATASET}.${TABLE}\`${scopeWhere('WHERE')} GROUP BY 1, 2 ORDER BY 2 DESC`;
   const dailySQL = `
     SELECT FORMAT_DATE('%b %Y', min_date) AS launch_month, DATE_TRUNC(min_date, MONTH) AS launch_month_sort,
@@ -102,7 +106,7 @@ async function loadDecay(){
     const [summary, daily] = await Promise.all([runQuery(summarySQL), runQuery(dailySQL)]);
     let total_ads=0,total_spend=0;
     const decayRows=summary.map(r=>{ total_ads+=Number(r.ads_launched); total_spend+=Number(r.total_spend);
-      return `<tr><td>${r.launch_month}</td><td>${fmtNum(r.ads_launched)}</td><td>${r.avg_days_running?r.avg_days_running+'d':'–'}</td><td>${fmt$(r.total_spend)}</td><td>${r.cpa&&Number(r.cpa)>0?fmt$(r.cpa):'–'}</td></tr>`; });
+      return `<tr><td>${r.launch_month}</td><td>${fmtNum(r.ads_launched)}</td><td>${r.avg_days_running?r.avg_days_running+'d':'–'}</td><td>${fmt$(r.total_spend)}</td><td>${r.cpa&&Number(r.cpa)>0?fmtMetricCell(r.cpa):'–'}</td></tr>`; });
     renderPagedTable('decay-summary-body', decayRows, 20, `<tr style="font-weight:600; background:var(--paper);"><td>Grand Total</td><td>${fmtNum(total_ads)}</td><td>–</td><td>${fmt$(total_spend)}</td><td>–</td></tr>`);
     hideEl('decay-summary-loading'); showEl('decay-summary-table');
     const cohorts=[...new Set(daily.map(r=>r.launch_month))];
@@ -137,7 +141,7 @@ async function loadAge(){
     SELECT ad_id, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(adset_name) AS adset_name, ANY_VALUE(ad_name) AS ad_name,
       MIN(min_date) AS launch_date, MAX(max_date) AS last_spend, ANY_VALUE(creative_link) AS preview_link,
       ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend,
-      ROUND(SAFE_DIVIDE(ANY_VALUE(lifetime_spend), NULLIF(SUM(${CONV_EXPR}), 0)), 2) AS lifetime_cpa,
+      ROUND(${lifetimeMetricSQL('ANY_VALUE(lifetime_spend)', `SUM(${CONV_EXPR})`)}, 2) AS lifetime_cpa,
       ROUND(SUM(${CONV_EXPR}), 0) AS total_conversions
     FROM \`${PROJECT}.${DATASET}.${TABLE}\`${scopeWhere('WHERE')} GROUP BY 1 ORDER BY lifetime_spend DESC`;
   try {
@@ -151,7 +155,7 @@ async function loadAge(){
     if(ageChart) ageChart.destroy();
     ageChart=new Chart(document.getElementById('age-chart'),{ type:'bar', data:{ labels:dates.map(d=>fmtDate(d)), datasets:ageDatasets },
       options:{ responsive:true, maintainAspectRatio:true, scales:{ x:{stacked:true,ticks:{font:{size:10},maxRotation:45}}, y:{stacked:true,max:100,ticks:{callback:v=>v+'%'}} }, plugins:{ legend:{position:'top',labels:{font:{size:11}}}, tooltip:{callbacks:{label:ctx=>`${ctx.dataset.label}: ${ctx.raw}%`}} } } });
-    renderPagedTable('age-table-body', tableData.map(r=>`<tr ${adNameAttr(r.ad_name)}><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.adset_name}">${r.adset_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmtDate(r.last_spend)}</td><td>${r.preview_link?`<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.preview_link}" target="_blank">Preview</a>`:'–'}</td><td>${fmt$(r.lifetime_spend)}</td><td>${r.lifetime_cpa&&Number(r.lifetime_cpa)>0?fmt$(r.lifetime_cpa):'–'}</td><td>${fmtNum(r.total_conversions)}</td></tr>`));
+    renderPagedTable('age-table-body', tableData.map(r=>`<tr ${adNameAttr(r.ad_name)}><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.adset_name}">${r.adset_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmtDate(r.last_spend)}</td><td>${r.preview_link?`<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.preview_link}" target="_blank">Preview</a>`:'–'}</td><td>${fmt$(r.lifetime_spend)}</td><td>${r.lifetime_cpa&&Number(r.lifetime_cpa)>0?fmtMetricCell(r.lifetime_cpa):'–'}</td><td>${fmtNum(r.total_conversions)}</td></tr>`));
     hideEl('age-table-loading'); showEl('age-table');
   } catch(err){ console.error('Age error:',err); }
 }
@@ -260,7 +264,7 @@ async function loadPowerLaw(){
     WITH ad_spend AS (
       SELECT ad_id, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(adset_name) AS adset_name, ANY_VALUE(ad_name) AS ad_name,
         MIN(min_date) AS launch_date, MAX(max_date) AS last_spend_date, ANY_VALUE(creative_link) AS preview_link,
-        ROUND(SUM(spend),2) AS period_spend, ROUND(SAFE_DIVIDE(SUM(spend), NULLIF(SUM(${CONV_EXPR}),0)),2) AS lifetime_cpa
+        ROUND(SUM(spend),2) AS period_spend, ROUND(${lifetimeMetricSQL('SUM(spend)', `SUM(${CONV_EXPR})`)},2) AS lifetime_cpa
       FROM \`${PROJECT}.${DATASET}.${TABLE}\` WHERE date_start >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)${scopeWhere()} GROUP BY 1 ),
     total AS (SELECT SUM(period_spend) AS grand_total FROM ad_spend)
     SELECT ROW_NUMBER() OVER (ORDER BY a.period_spend DESC) AS rank_num, a.ad_id, a.campaign_name, a.adset_name, a.ad_name, a.launch_date, a.last_spend_date, a.preview_link,
@@ -276,7 +280,7 @@ async function loadPowerLaw(){
       {type:'bar',label:'% of Spend',data:pcts,backgroundColor:'#4b000f99',borderColor:'#4b000f',borderWidth:1,yAxisID:'y'},
       {type:'line',label:'% Rolling Cumulative',data:rolling,borderColor:'#c8ff00',backgroundColor:'transparent',borderWidth:2.5,pointRadius:3,yAxisID:'y2',tension:0.2} ] },
       options:{ responsive:true, maintainAspectRatio:false, scales:{ x:{ticks:{font:{size:10}}}, y:{title:{display:true,text:'% of Spend',font:{size:10}},ticks:{callback:v=>v+'%'}}, y2:{position:'right',min:0,max:100,title:{display:true,text:'Cumulative %',font:{size:10}},ticks:{callback:v=>v+'%',font:{size:10}},grid:{drawOnChartArea:false}} }, plugins:{ legend:{position:'top',labels:{font:{size:11}}} } } });
-    renderPagedTable('powerlaw-table-body', data.map(r=>`<tr ${adNameAttr(r.ad_name)}><td class="rank-num">${r.rank_num}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adset_name}">${r.adset_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmtDate(r.last_spend_date)}</td><td>${r.preview_link?`<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.preview_link}" target="_blank">Preview</a>`:'–'}</td><td>${fmt$(r.spend)}</td><td>${fmtPct(r.spend_pct,2)}</td><td>${fmtPct(r.rolling_pct,2)}</td><td>${r.lifetime_cpa&&Number(r.lifetime_cpa)>0?fmt$(r.lifetime_cpa):'–'}</td></tr>`));
+    renderPagedTable('powerlaw-table-body', data.map(r=>`<tr ${adNameAttr(r.ad_name)}><td class="rank-num">${r.rank_num}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adset_name}">${r.adset_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmtDate(r.last_spend_date)}</td><td>${r.preview_link?`<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.preview_link}" target="_blank">Preview</a>`:'–'}</td><td>${fmt$(r.spend)}</td><td>${fmtPct(r.spend_pct,2)}</td><td>${fmtPct(r.rolling_pct,2)}</td><td>${r.lifetime_cpa&&Number(r.lifetime_cpa)>0?fmtMetricCell(r.lifetime_cpa):'–'}</td></tr>`));
     hideEl('powerlaw-table-loading'); showEl('powerlaw-table');
   } catch(err){ console.error('Power law error:',err); }
 }

@@ -346,7 +346,7 @@ ${ttControls}
         <div class="table-scroll">
           <div id="powerlaw-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="powerlaw-table" style="display:none;">
-            <thead><tr><th>#</th><th>Campaign</th><th>Adset</th><th>Ad</th><th>Launch Date</th><th>Last Spend</th><th>Preview</th><th>Spend</th><th>Spend %</th><th>Rolling %</th><th>CPA</th></tr></thead>
+            <thead><tr><th>#</th><th>Campaign</th><th>Adset</th><th>Ad</th><th>Launch Date</th><th>Last Spend</th><th>Preview</th><th>Spend</th><th>Spend %</th><th>Rolling %</th><th>${targetMetricDef().label}</th></tr></thead>
             <tbody id="powerlaw-table-body"></tbody>
           </table>
         </div>
@@ -421,7 +421,7 @@ ${ttControls}
         <div class="table-scroll">
           <div id="decay-summary-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="decay-summary-table" style="display:none;">
-            <thead><tr><th>Launch Month</th><th>Ads Launched</th><th>Avg Days Running</th><th>Spend</th><th>CPA</th></tr></thead>
+            <thead><tr><th>Launch Month</th><th>Ads Launched</th><th>Avg Days Running</th><th>Spend</th><th>${targetMetricDef().label}</th></tr></thead>
             <tbody id="decay-summary-body"></tbody>
           </table>
         </div>
@@ -450,7 +450,7 @@ ${ttControls}
         <div class="table-scroll">
           <div id="age-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="age-table" style="display:none;">
-            <thead><tr><th>Campaign</th><th>Adset</th><th>Ad</th><th>Launch Date</th><th>Last Spend</th><th>Preview</th><th>Spend &darr;</th><th>CPA</th><th>Conversions</th></tr></thead>
+            <thead><tr><th>Campaign</th><th>Adset</th><th>Ad</th><th>Launch Date</th><th>Last Spend</th><th>Preview</th><th>Spend &darr;</th><th>${targetMetricDef().label}</th><th>Conversions</th></tr></thead>
             <tbody id="age-table-body"></tbody>
           </table>
         </div>

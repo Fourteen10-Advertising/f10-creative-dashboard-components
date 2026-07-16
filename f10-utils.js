@@ -152,6 +152,12 @@ function fmtMetric(v, m){
   if(f==='ratio') return fmtRatio(v);
   return Number(v).toFixed(2)+'%';
 }
+/* Metric-aware table-cell formatter for the monthly lifetime/summary efficiency
+ * metric (Power Law / Ad Decay / Ad Age). CPA mode renders exactly like the
+ * legacy fmt$ (money, 0 dp) so CPA tables stay byte-for-byte unchanged; ROAS mode
+ * renders the gated ratio (e.g. '4.8x'). Callers keep their own `> 0 ? … : '–'`
+ * guard for non-positive values. */
+function fmtMetricCell(v){ return targetMetric() === 'roas' ? fmtMetric(v, METRICS.ROAS) : fmt$(v); }
 function fmtDate(s){ const str=bqStr(s); if(!str) return '–'; const [y,mo,d]=str.split('-').map(Number); const dt=new Date(Date.UTC(y,mo-1,d)); return dt.toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric',timeZone:'UTC'}); }
 function isoOffset(isoDate, days){ const [y,mo,d]=isoDate.split('-').map(Number); const dt=new Date(Date.UTC(y,mo-1,d)); dt.setUTCDate(dt.getUTCDate()+days); return dt.toISOString().slice(0,10); }
 
