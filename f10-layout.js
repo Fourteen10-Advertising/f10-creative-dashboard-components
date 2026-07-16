@@ -20,11 +20,21 @@
 /* Production threshold copy — built from the live HR_SPEND/HR_CPA/... globals so
  * it can be regenerated whenever a user tunes the thresholds in the UI. */
 function prodBenchmarkHTML(){
+  /* ROAS is higher-is-better: good grades clear the target (Spend & ROAS &ge; band),
+     Strike Out falls below it. CPA is lower-is-better and keeps its legacy copy. */
+  if (targetMetric() === 'roas'){
+    return `<span class="bm-item"><strong>Home Run:</strong> Spend &ge; ${fmt$(HR_SPEND)} &amp; ROAS &ge; ${fmtRatio(HR_ROAS)}</span>` +
+      `<span class="bm-item"><strong>On Base:</strong> Spend &ge; ${fmt$(OB_SPEND)} &amp; ROAS &ge; ${fmtRatio(OB_ROAS)}</span>` +
+      `<span class="bm-item"><strong>Strike Out:</strong> Spend &ge; ${fmt$(SO_SPEND)} &amp; ROAS &lt; ${fmtRatio(SO_ROAS)}</span>`;
+  }
   return `<span class="bm-item"><strong>Home Run:</strong> Spend &ge; ${fmt$(HR_SPEND)} &amp; CPA &lt; ${fmt$(HR_CPA)}</span>` +
     `<span class="bm-item"><strong>On Base:</strong> Spend &ge; ${fmt$(OB_SPEND)} &amp; CPA &lt; ${fmt$(OB_CPA)}</span>` +
     `<span class="bm-item"><strong>Strike Out:</strong> Spend &ge; ${fmt$(SO_SPEND)} &amp; CPA &gt; ${fmt$(SO_CPA)}</span>`;
 }
 function prodThresholdLegendHTML(){
+  if (targetMetric() === 'roas'){
+    return `<span class="tl-item"><span class="tl-line dashed" style="color:#727272;"></span> ROAS Target (${fmtRatio(HR_ROAS)})</span><span class="tl-item"><span class="tl-line dashed" style="color:#4a90e2;"></span> Ad Hit (${fmt$(HR_SPEND)})</span>`;
+  }
   return `<span class="tl-item"><span class="tl-line dashed" style="color:#727272;"></span> CPA Limit (${fmt$(HR_CPA)})</span><span class="tl-item"><span class="tl-line dashed" style="color:#4a90e2;"></span> Ad Hit (${fmt$(HR_SPEND)})</span>`;
 }
 /* Live threshold-tuning inputs for the Ad Production tab, metric-aware. The three
@@ -183,7 +193,7 @@ const HOW_TO_READ = {
   summary:    'Start here each week for a quick read on how the account is tracking versus the previous 7 days. The tiles are your headline numbers and how each one moved; the note and chart below explain what drove the change.',
   board:      'Come here to act on individual ads. It flags whether each ad is growing, slipping, brand new, or gone, so you can decide what to back and what to pause. The note below covers how the list is built.',
   map:        'A bird&rsquo;s&#8209;eye view for spotting outliers fast: your best ads gather in one corner and the budget&#8209;drainers in another. Use it to see where the winners and problem ads sit; the note below explains the axes.',
-  powerlaw:   'Use this to answer one question: are your biggest&#8209;spending ads also your most efficient? Skim the top of the ranking and read across to CPA. The note and concentration chart below explain the bigger picture.',
+  powerlaw:   `Use this to answer one question: are your biggest&#8209;spending ads also your most efficient? Skim the top of the ranking and read across to ${targetMetricDef().label}. The note and concentration chart below explain the bigger picture.`,
   production: 'Use this to judge your testing as a whole rather than single ads &mdash; what share of everything you launch turns into a winner. The target hit rate and the thresholds behind each grade (which you can tune) are defined below.',
   decay:      'Use this for planning ahead: it shows how quickly older ads fade, which tells you how much fresh creative to line up to keep spend steady. The note and cohort charts below go into the detail.',
   age:        'Use this to check how fresh your running creative is. If a few older ads are doing most of the work, take it as a nudge to test more. The age bands and the healthy&#8209;mix benchmark are explained below.',
@@ -193,6 +203,9 @@ const HOW_TO_READ = {
 function convDefinitionHTML(){
   const p = convLabelPlural();
   const sl = convLabel().toLowerCase();
+  if (targetMetric() === 'roas'){
+    return `<div class="dash-note-def"><strong>Conversions on this dashboard = ${p}.</strong> Every conversion count shown here is based on ${p.toLowerCase()}; <strong>ROAS</strong> is revenue &divide; spend.</div>`;
+  }
   return `<div class="dash-note-def"><strong>Conversions on this dashboard = ${p}.</strong> Every conversion count and <strong>CPA</strong> (cost per ${sl}) shown here is based on ${p.toLowerCase()}.</div>`;
 }
 /* Full note block for a tab, or '' when notes are switched off. */
@@ -383,7 +396,7 @@ ${ttControls}
         </div>
       </div>
       <div class="two-col">
-        <div class="chart-card" style="margin-bottom:0;"><h3>Lifetime Spend vs CPA &mdash; All Ads</h3>
+        <div class="chart-card" style="margin-bottom:0;"><h3>Lifetime Spend vs ${targetMetricDef().label} &mdash; All Ads</h3>
           <div class="threshold-legend" id="prod-threshold-legend">${prodThresholdLegendHTML()}</div>
           <div id="scatter-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <div class="chart-wrapper" id="scatter-wrapper" style="display:none; height:320px;"><canvas id="scatter-chart"></canvas></div>
@@ -397,7 +410,7 @@ ${ttControls}
         <div class="table-scroll">
           <div id="production-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="production-table" style="display:none;">
-            <thead><tr><th>Launch Month</th><th>Spend</th><th>Ads Launched</th><th>Home Runs</th><th>HR Rate</th><th>On Base</th><th>OB Rate</th><th>CPA</th><th>Conversions</th><th>Strike Outs</th><th>SO Rate</th></tr></thead>
+            <thead><tr><th>Launch Month</th><th>Spend</th><th>Ads Launched</th><th>Home Runs</th><th>HR Rate</th><th>On Base</th><th>OB Rate</th><th>${targetMetricDef().label}</th><th>Conversions</th><th>Strike Outs</th><th>SO Rate</th></tr></thead>
             <tbody id="production-table-body"></tbody>
           </table>
         </div>
@@ -406,7 +419,7 @@ ${ttControls}
         <div class="table-scroll">
           <div id="scatter-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="scatter-table" style="display:none;">
-            <thead><tr><th>Ad</th><th>Campaign</th><th>Adset</th><th>Launch Date</th><th>Lifetime Spend</th><th>Lifetime CPA</th><th>Conversions</th><th class="num">Hold %</th><th class="num">Compl. %</th><th class="num">Out CTR</th><th>Preview</th><th>Classification</th></tr></thead>
+            <thead><tr><th>Ad</th><th>Campaign</th><th>Adset</th><th>Launch Date</th><th>Lifetime Spend</th><th>Lifetime ${targetMetricDef().label}</th><th>Conversions</th><th class="num">Hold %</th><th class="num">Compl. %</th><th class="num">Out CTR</th><th>Preview</th><th>Classification</th></tr></thead>
             <tbody id="scatter-table-body"></tbody>
           </table>
         </div>
@@ -460,7 +473,7 @@ ${ttControls}
     <!-- MONTHLY: CREATIVE EFFECTIVENESS -->
     <div class="tab-panel" id="tab-creative">
       ${howToNote('creative')}
-      <div class="insight-box"><strong>Creative Effectiveness:</strong> performance beyond CPA &mdash; how well each creative holds attention. <strong>Hold rate</strong> is the share of impressions that watched 15 seconds; <strong>completion</strong> watched to the end; the <strong>retention curve</strong> (25 &rarr; 100%) shows where viewers drop off. Hover any ad to see its creative and curve. Rates cover the last 90 days; non-video ads show &ndash;.</div>
+      <div class="insight-box"><strong>Creative Effectiveness:</strong> performance beyond ${targetMetricDef().label} &mdash; how well each creative holds attention. <strong>Hold rate</strong> is the share of impressions that watched 15 seconds; <strong>completion</strong> watched to the end; the <strong>retention curve</strong> (25 &rarr; 100%) shows where viewers drop off. Hover any ad to see its creative and curve. Rates cover the last 90 days; non-video ads show &ndash;.</div>
       <div class="chart-card"><h3>Average Video Retention Curve &mdash; % of Impressions Reaching Each Quartile</h3>
         <div id="creative-chart-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
         <div class="chart-wrapper" id="creative-chart-wrapper" style="display:none; height:320px;"><canvas id="creative-chart"></canvas></div>

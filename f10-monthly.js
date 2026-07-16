@@ -219,20 +219,31 @@ async function loadProduction(){
     document.getElementById('sc-so-rate').textContent=fmtPct(totals.so/totals.total*100);
     hideEl('production-scorecards-loading'); showEl('production-scorecards');
     const byClass={'Home Run':[],'On Base':[],'Strike Out':[],'Unclassified':[]};
-    scatterData.forEach(r=>{ const cpa=Number(r.lifetime_cpa)||0, spend=Number(r.lifetime_spend)||0; if(cpa>0||spend>0){ byClass[r.classification].push({x:spend,y:cpa,label:r.ad_name}); } });
+    /* Metric-aware: the per-ad metric column is `lifetime_cpa` in CPA mode and
+       `lifetime_roas` in ROAS mode (aliased by lifetimeMetricCol()). Read it
+       generically so a dir:'higher' metric plots correctly. A creative with
+       metric=0 but spend>0 (real spend, zero revenue in ROAS) is kept, not
+       silently dropped — it belongs at the bottom of a higher-is-better axis. */
+    const isRoas=targetMetric()==='roas';
+    const mCol=lifetimeMetricCol();
+    scatterData.forEach(r=>{ const mVal=Number(r[mCol])||0, spend=Number(r.lifetime_spend)||0; if(mVal>0||spend>0){ byClass[r.classification].push({x:spend,y:mVal,label:r.ad_name}); } });
     const scatterDatasets=Object.entries(byClass).map(([cls,pts])=>({ label:cls, data:pts, backgroundColor:CLASS_COLOR[cls]+'bb', borderColor:CLASS_COLOR[cls], borderWidth:1.5, pointRadius:6, pointHoverRadius:8 }));
     hideEl('scatter-loading'); showEl('scatter-wrapper');
     if(scatterChart) scatterChart.destroy();
     const topSpend=Math.max(0, ...scatterData.map(r=>Number(r.lifetime_spend)||0));
     const maxSpend=Math.round(scatterMaxSpend(topSpend));
-    const maxCpa=Math.ceil(Math.max(...scatterData.filter(r=>Number(r.lifetime_cpa)>0).map(r=>Number(r.lifetime_cpa)||0),100)*1.2);
+    /* Y-axis max from the ACTIVE metric's values, not the CPA range. The floor
+       keeps the Home Run threshold line on-chart even when data is sparse: 100
+       ($) in CPA mode, HR_ROAS (x) in ROAS mode where values live around 1–10. */
+    const yFloor=isRoas?HR_ROAS:100;
+    const maxY=Math.ceil(Math.max(...scatterData.filter(r=>Number(r[mCol])>0).map(r=>Number(r[mCol])||0),yFloor)*1.2);
     scatterChart=new Chart(document.getElementById('scatter-chart'),{ type:'scatter', data:{ datasets:scatterDatasets },
       options:{ responsive:true, maintainAspectRatio:false,
-        scales:{ x:{ title:{display:true,text:'Lifetime Spend ($)',font:{size:11}}, min:0, max:maxSpend, ticks:{callback:v=>fmt$(v)} }, y:{ title:{display:true,text:'Lifetime CPA ($)',font:{size:11}}, min:0, max:maxCpa, ticks:{callback:v=>fmt$(v)} } },
-        plugins:{ legend:{position:'top',labels:{font:{size:11}}}, tooltip:{callbacks:{label:ctx=>{ const pt=ctx.raw; return [`${ctx.dataset.label}`,`Spend: ${fmt$(pt.x)}`,`CPA: ${pt.y>0?fmt$(pt.y):'N/A'}`]; }}} } },
+        scales:{ x:{ title:{display:true,text:'Lifetime Spend ($)',font:{size:11}}, min:0, max:maxSpend, ticks:{callback:v=>fmt$(v)} }, y:{ title:{display:true,text:`Lifetime ${targetMetricDef().label} (${isRoas?'x':'$'})`,font:{size:11}}, min:0, max:maxY, ticks:{callback:v=>fmtMetricCell(v)} } },
+        plugins:{ legend:{position:'top',labels:{font:{size:11}}}, tooltip:{callbacks:{label:ctx=>{ const pt=ctx.raw; const mLine=isRoas?`${targetMetricDef().label}: ${fmtMetricCell(pt.y)}`:`CPA: ${pt.y>0?fmt$(pt.y):'N/A'}`; return [`${ctx.dataset.label}`,`Spend: ${fmt$(pt.x)}`,mLine]; }}} } },
       plugins:[{ id:'threshold-lines', afterDraw(chart){ const ctx2=chart.ctx,xAxis=chart.scales.x,yAxis=chart.scales.y;
         const xHit=xAxis.getPixelForValue(HR_SPEND); if(xHit>=xAxis.left&&xHit<=xAxis.right){ ctx2.save(); ctx2.setLineDash([5,4]); ctx2.strokeStyle='#4a90e2'; ctx2.lineWidth=1.5; ctx2.beginPath(); ctx2.moveTo(xHit,yAxis.top); ctx2.lineTo(xHit,yAxis.bottom); ctx2.stroke(); ctx2.setLineDash([]); ctx2.fillStyle='#4a90e2'; ctx2.font='10px Archivo, sans-serif'; ctx2.fillText('Ad Hit ('+fmt$(HR_SPEND)+')',xHit+4,yAxis.top+14); ctx2.restore(); }
-        const yCpa=yAxis.getPixelForValue(HR_CPA); if(yCpa>=yAxis.top&&yCpa<=yAxis.bottom){ ctx2.save(); ctx2.setLineDash([5,4]); ctx2.strokeStyle='#727272'; ctx2.lineWidth=1.5; ctx2.beginPath(); ctx2.moveTo(xAxis.left,yCpa); ctx2.lineTo(xAxis.right,yCpa); ctx2.stroke(); ctx2.setLineDash([]); ctx2.fillStyle='#727272'; ctx2.font='10px Archivo, sans-serif'; ctx2.fillText('CPA Limit ('+fmt$(HR_CPA)+')',xAxis.left+4,yCpa-4); ctx2.restore(); } } }] });
+        const yThresh=isRoas?HR_ROAS:HR_CPA; const yLine=yAxis.getPixelForValue(yThresh); if(yLine>=yAxis.top&&yLine<=yAxis.bottom){ ctx2.save(); ctx2.setLineDash([5,4]); ctx2.strokeStyle='#727272'; ctx2.lineWidth=1.5; ctx2.beginPath(); ctx2.moveTo(xAxis.left,yLine); ctx2.lineTo(xAxis.right,yLine); ctx2.stroke(); ctx2.setLineDash([]); ctx2.fillStyle='#727272'; ctx2.font='10px Archivo, sans-serif'; ctx2.fillText((isRoas?'ROAS Target (':'CPA Limit (')+fmtMetricCell(yThresh)+')',xAxis.left+4,yLine-4); ctx2.restore(); } } }] });
     const months=monthlyData.map(r=>r.launch_month).reverse();
     const adsArr=monthlyData.map(r=>Number(r.ads_launched)).reverse();
     const hrRates=monthlyData.map(r=>+(Number(r.home_runs)/Number(r.ads_launched)*100).toFixed(1)).reverse();
@@ -248,11 +259,11 @@ async function loadProduction(){
       options:{ responsive:true, maintainAspectRatio:false, scales:{ x:{ticks:{font:{size:10}}}, y:{title:{display:true,text:'Ads Launched',font:{size:10}},ticks:{font:{size:10}}}, y2:{position:'right',title:{display:true,text:'Rate (%)',font:{size:10}},ticks:{callback:v=>v+'%',font:{size:10}},grid:{drawOnChartArea:false}} }, plugins:{ legend:{position:'top',labels:{font:{size:11}}} } } });
     let gAds=0,gHR=0,gOB=0,gSO=0,gSpend=0,gConv=0;
     const prodRows=monthlyData.map(r=>{ const ads=Number(r.ads_launched),hr=Number(r.home_runs),ob=Number(r.on_base),so=Number(r.strike_outs); gAds+=ads;gHR+=hr;gOB+=ob;gSO+=so;gSpend+=Number(r.total_spend);gConv+=Number(r.total_conversions);
-      return `<tr><td>${r.launch_month}</td><td>${fmt$(r.total_spend)}</td><td>${ads}</td><td>${hr}</td><td>${fmtPct(hr/ads*100)}</td><td>${ob}</td><td>${fmtPct(ob/ads*100)}</td><td>${r.avg_cpa&&Number(r.avg_cpa)>0?fmt$(r.avg_cpa):'–'}</td><td>${fmtNum(r.total_conversions)}</td><td>${so}</td><td>${fmtPct(so/ads*100)}</td></tr>`; });
+      return `<tr><td>${r.launch_month}</td><td>${fmt$(r.total_spend)}</td><td>${ads}</td><td>${hr}</td><td>${fmtPct(hr/ads*100)}</td><td>${ob}</td><td>${fmtPct(ob/ads*100)}</td><td>${r.avg_cpa&&Number(r.avg_cpa)>0?fmtMetricCell(r.avg_cpa):'–'}</td><td>${fmtNum(r.total_conversions)}</td><td>${so}</td><td>${fmtPct(so/ads*100)}</td></tr>`; });
     renderPagedTable('production-table-body', prodRows, 20, `<tr style="font-weight:600; background:var(--paper);"><td>Grand Total</td><td>${fmt$(gSpend)}</td><td>${gAds}</td><td>${gHR}</td><td>${fmtPct(gHR/gAds*100)}</td><td>${gOB}</td><td>${fmtPct(gOB/gAds*100)}</td><td>–</td><td>${fmtNum(gConv)}</td><td>${gSO}</td><td>${fmtPct(gSO/gAds*100)}</td></tr>`);
     hideEl('production-table-loading'); showEl('production-table');
     renderPagedTable('scatter-table-body', scatterData.map(r=>{ const cls=r.classification; const badgeClass=cls==='Home Run'?'badge-hr':cls==='On Base'?'badge-ob':cls==='Strike Out'?'badge-so':'badge-un'; const ce={ impressions:Number(r.impressions)||0, clicks:Number(r.clicks)||0, video_15s:Number(r.video_15s)||0, video_p25:Number(r.video_p25)||0, video_p50:Number(r.video_p50)||0, video_p75:Number(r.video_p75)||0, video_p100:Number(r.video_p100)||0, video_plays:Number(r.video_plays)||0, outbound_clicks:Number(r.outbound_clicks)||0 }; registerAdMetrics(r.ad_id, ce); const cr=creativeRates(ce);
-      return `<tr ${adNameAttr(r.ad_name)}><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adset_name}">${r.adset_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmt$(r.lifetime_spend)}</td><td>${r.lifetime_cpa&&Number(r.lifetime_cpa)>0?fmt$(r.lifetime_cpa):'–'}</td><td>${fmtNum(r.total_conversions)}</td><td class="num">${cr.hold!=null?fmtPct(cr.hold,2):'–'}</td><td class="num">${cr.completion!=null?fmtPct(cr.completion,2):'–'}</td><td class="num">${cr.outboundCtr!=null?fmtPct(cr.outboundCtr,2):'–'}</td><td>${r.creative_link?`<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.creative_link}" target="_blank">Preview</a>`:'–'}</td><td><span class="badge ${badgeClass}">${cls}</span></td></tr>`; }));
+      return `<tr ${adNameAttr(r.ad_name)}><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adset_name}">${r.adset_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmt$(r.lifetime_spend)}</td><td>${r[mCol]&&Number(r[mCol])>0?fmtMetricCell(r[mCol]):'–'}</td><td>${fmtNum(r.total_conversions)}</td><td class="num">${cr.hold!=null?fmtPct(cr.hold,2):'–'}</td><td class="num">${cr.completion!=null?fmtPct(cr.completion,2):'–'}</td><td class="num">${cr.outboundCtr!=null?fmtPct(cr.outboundCtr,2):'–'}</td><td>${r.creative_link?`<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.creative_link}" target="_blank">Preview</a>`:'–'}</td><td><span class="badge ${badgeClass}">${cls}</span></td></tr>`; }));
     hideEl('scatter-table-loading'); showEl('scatter-table');
   } catch(err){ console.error('Production error:',err); }
 }
