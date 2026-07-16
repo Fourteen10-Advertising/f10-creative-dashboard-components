@@ -199,3 +199,13 @@ The skill only produces a small config-only repo — the UI and logic still come
 - `fourteen10-advertising/bridgit-creative-dashboard`
 - `fourteen10-advertising/fastcover-creative-dashboard`
 - `fourteen10-advertising/matilda-creative-dashboard`
+## Doc-sync
+
+Documentation moves with code in this repo:
+
+- **CI (enforced):** the `doc-sync` GitHub Action fails a PR/push when code or
+  config changes without a docs change. Add `[skip-docs]` to a commit message
+  to bypass a change that genuinely needs none.
+- **Local (fast catch):** after cloning, run once — `git config core.hooksPath
+  .githooks` (or `sh .githooks/setup.sh`) — to enable the pre-commit hook that
+  checks the same thing before you commit.
