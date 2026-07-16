@@ -246,9 +246,18 @@ function renderSummary(all, c, w){
    * retained). In CPA mode the set is exactly the legacy four so lead-gen
    * dashboards are byte-for-byte unchanged. The blended tile tracks the active
    * efficiency metric `m` (defaults to ROAS in ROAS mode via the metric dropdown). */
+  /* Revenue-integrity guard (US-010): in ROAS mode, a window with blended
+   * revenue 0 while spend > 0 means the gated revenue column is missing/zeroed —
+   * show the warning banner and suppress the confident 0.0x on the blended tile
+   * rather than present an understated headline. Runs on the aggregates already
+   * summed above (no query). Always false in CPA mode, so CPA is unchanged. */
+  const revBroken = applyRevenueGuard('summary-revenue-guard', revenueSignalBroken(tot.cur.revenue, tot.cur.spend));
+
   const spendCard = { label: 'Spend', val: fmt$(tot.cur.spend), d: deltaHtml(tot.cur.spend, tot.pri.spend, false) };
   const convCard  = { label: 'Conversions', val: fmtNum(tot.cur.conv), d: deltaHtml(tot.cur.conv, tot.pri.conv, false) };
-  const blendCard = { label: 'Blended '+m.label, val: fmtMetric(mCur,m), d: deltaHtml(mCur, mPri, m.dir==='lower') };
+  const blendCard = revBroken
+    ? { label: 'Blended '+m.label, val: '–', d: `<div class="scorecard-delta delta-flat">revenue check needed</div>` }
+    : { label: 'Blended '+m.label, val: fmtMetric(mCur,m), d: deltaHtml(mCur, mPri, m.dir==='lower') };
   const cards = targetMetric() === 'roas'
     ? [
         spendCard,

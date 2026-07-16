@@ -216,6 +216,48 @@ function howToNote(tabKey){
     `<div class="dash-note-body">${body}</div>${convDefinitionHTML()}</div>`;
 }
 
+/* ── Revenue-integrity guard (US-010) ──────────────────────────────────────
+ * Dashboard-side half of the revenue guard; a warehouse-side integrity check
+ * on the gated revenue column is the complementary half. Neither replaces the
+ * other.
+ *
+ * In ROAS mode, a window whose BLENDED revenue is 0 while spend > 0 is the
+ * signature of a missing or zeroed gated revenue column (REVENUE_EXPR). Rendering
+ * a confident "0.0x" there would launder a broken pipeline into a real headline.
+ * We show a warning banner instead so nobody acts on an understated number —
+ * decisions should be downstream of clean data.
+ *
+ * Scope is deliberately BLENDED-only. A single real-spend / zero-revenue ad is a
+ * legitimate 0 ROAS (a Strike Out) and still renders its own 0.0x on the board
+ * and scatter — this guard never touches per-ad classification. It fires only
+ * when EVERY dollar of spend in the window returned zero revenue, which no live
+ * ROAS account produces; that is what separates "no revenue column / all rows
+ * null" from "genuinely zero revenue on one ad". CPA mode (TARGET_METRIC unset)
+ * can never trip it. */
+const REVENUE_GUARD_MSG = 'Revenue data looks incomplete for this window — ROAS may be understated. Check the pipeline before acting.';
+
+/* Pure predicate over an already-fetched blended aggregate — no query, no DOM. */
+function revenueSignalBroken(revenue, spend){
+  return targetMetric() === 'roas' && Number(spend) > 0 && !(Number(revenue) > 0);
+}
+
+function revenueGuardBannerHTML(){
+  return `<div class="revenue-guard" role="alert" style="background:rgba(250,2,60,0.06);border:2px solid var(--bad);border-left-width:6px;border-radius:8px;padding:13px 16px;margin-bottom:18px;font-size:12.5px;line-height:1.5;color:var(--young-blood);">`
+    + `<strong style="display:block;letter-spacing:0.06em;text-transform:uppercase;font-size:11px;color:var(--bad);margin-bottom:4px;">Revenue integrity warning</strong>`
+    + `${REVENUE_GUARD_MSG}`
+    + `</div>`;
+}
+
+/* Inject-or-clear the guard banner into `slotId`. `broken` is a boolean the
+ * caller already derived from the tab's own aggregates (weekly: blended
+ * revenue/spend; production: whether any ad has positive ROAS against spend), so
+ * this adds no query and no measurable load. Returns `broken` for convenience. */
+function applyRevenueGuard(slotId, broken){
+  const slot = document.getElementById(slotId);
+  if(slot) slot.innerHTML = broken ? revenueGuardBannerHTML() : '';
+  return broken;
+}
+
 function renderLayout(){
   const client = (typeof CLIENT_NAME !== 'undefined' && CLIENT_NAME) ? CLIENT_NAME : 'Client';
   const report = (typeof REPORT_NAME !== 'undefined' && REPORT_NAME) ? REPORT_NAME : 'Creative Reporting';
@@ -308,6 +350,7 @@ ${ttControls}
       <div class="window-note" id="summary-window-note"></div>
       <div id="summary-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
       <div id="summary-body" style="display:none;">
+        <div id="summary-revenue-guard"></div>
         <div class="scorecard-grid" id="summary-scorecards"></div>
         <div class="chart-card">
           <h3>Blended Metric Decomposition &mdash; Prior &rarr; Current</h3>
@@ -383,6 +426,7 @@ ${ttControls}
           <button class="tc-reset" id="th-reset">Reset to defaults</button>
         </div>
       </div>
+      <div id="production-revenue-guard"></div>
       <div id="production-scorecards-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
       <div id="production-scorecards" style="display:none;">
         <div class="scorecard-grid">

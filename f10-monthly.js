@@ -209,6 +209,16 @@ async function loadProduction(){
     FROM classified GROUP BY 1, 2 ORDER BY 2 DESC`;
   try {
     const [scatterData, monthlyData] = await Promise.all([runQuery(scatterSQL), runQuery(monthlySQL)]);
+    /* Revenue-integrity guard (US-010): in ROAS mode, if there is lifetime spend
+     * but NOT ONE ad shows positive ROAS, blended revenue is 0 across the whole
+     * account — the gated revenue column is missing/zeroed. (A single Strike Out
+     * coexists with positive-ROAS ads, so it never trips this.) Derived from the
+     * scatter rows already fetched, so no extra query. Never fires in CPA mode. */
+    const guardMCol = lifetimeMetricCol();
+    const revBroken = targetMetric() === 'roas'
+      && scatterData.some(r => (Number(r.lifetime_spend)||0) > 0)
+      && !scatterData.some(r => (Number(r[guardMCol])||0) > 0);
+    applyRevenueGuard('production-revenue-guard', revBroken);
     const totals=scatterData.reduce((acc,r)=>{ acc.total++; if(r.classification==='Home Run')acc.hr++; if(r.classification==='On Base')acc.ob++; if(r.classification==='Strike Out')acc.so++; return acc; },{total:0,hr:0,ob:0,so:0});
     document.getElementById('sc-ads-produced').textContent=fmtNum(totals.total);
     document.getElementById('sc-home-runs').textContent=fmtNum(totals.hr);

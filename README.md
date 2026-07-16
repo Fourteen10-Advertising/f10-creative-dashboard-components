@@ -126,6 +126,27 @@ When `TARGET_METRIC = 'roas'`, the framework becomes metric-aware end to end:
 - **Ad Production tiering** inverts polarity — see [Thresholds](#thresholds).
 - **Notes and headings** swap CPA copy for ROAS copy automatically (`ROAS is revenue ÷ spend`).
 
+### Revenue-integrity guard
+
+In ROAS mode the framework refuses to present a ROAS number it cannot trust. When
+a tab's **blended** revenue is `0` while spend is `> 0`, the gated revenue column
+is almost certainly missing or zeroed upstream — so the dashboard shows a warning
+banner (_"Revenue data looks incomplete for this window — ROAS may be understated.
+Check the pipeline before acting."_) in place of a confident `0.0x` headline. It
+runs on the aggregates already fetched for the tab (no extra query) on the Weekly
+Summary and Ad Production tabs.
+
+The check is **blended-only**: a single real-spend / zero-revenue ad is a
+legitimate `0` ROAS (a Strike Out) and still renders its own `0.0x` on the board
+and scatter — the guard never touches per-ad classification. It fires only when
+*every* dollar of spend returned zero revenue, which distinguishes a broken
+revenue signal from genuinely zero revenue on one ad. **CPA mode never shows the
+banner and is completely unaffected.**
+
+The warehouse-side half of this guard is the F10 `data-tracking-sentinel`
+`revenue_integrity` watch, which flags the same zeroing/staleness at the source;
+both halves exist and neither replaces the other.
+
 ## Group filters
 
 - Apply to **all tabs** (weekly and monthly) by injecting `scopeWhere()` into every query's WHERE clause.
