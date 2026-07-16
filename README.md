@@ -42,6 +42,13 @@ The entire dashboard body is `<div id="app"></div>`. Define config, load the fou
   const CONV_EXPR   = 'purchase'; /* or: '(customer_application_buying + broker_application_details)' */
   const CLIENT_NAME = 'Your Client';
 
+  /* Optional target metric. Unset ⇒ CPA (cost-efficiency lens), backward-compatible
+     with every existing dashboard. Set 'roas' for a revenue-return lens — only for
+     purchase clients whose mart publishes a GATED revenue column. REVENUE_EXPR selects
+     that column (default 'revenue'); raw conversion_value is forbidden by policy. */
+  // const TARGET_METRIC = 'roas';
+  // const REVENUE_EXPR  = 'revenue';
+
   /* Optional top-level segment filters. Each renders a dropdown in the controls
      bar (visible on every tab) and scopes every query. Values are populated
      dynamically (SELECT DISTINCT) and default to "All". Leave as [] for none. */
@@ -84,8 +91,40 @@ dashboard's service account needs `roles/storage.objectViewer` on
 | `BQ_FUNCTION`, `PROJECT`, `DATASET`, `TABLE`, `CONV_EXPR` | yes | BigQuery target + conversion expression |
 | `CLIENT_NAME` | yes | Sidebar label |
 | `REPORT_NAME` | no | Sidebar sub-label (default `Creative Reporting`) |
+| `TARGET_METRIC` | no | Headline efficiency metric: `'cpa'` (default) or `'roas'`. Any other value falls back to `cpa`. See [Target metric](#target-metric-cpa-vs-roas) |
+| `REVENUE_EXPR` | no | SQL expression for the mart's **gated** revenue column (default `'revenue'`). Only consumed in ROAS mode. Never sum raw `conversion_value` |
 | `GROUP_FILTERS` | no | Array of `{ col, label }` segment dropdowns (default none) |
 | `THRESHOLDS` | no | Ad Production threshold overrides (see below) |
+
+## Target metric (CPA vs ROAS)
+
+Every dashboard headlines one efficiency metric. `TARGET_METRIC` selects it:
+
+- **`cpa`** (default, or when `TARGET_METRIC` is unset) — a cost-efficiency lens: spend ÷ conversions, lower is better. This is the legacy behaviour, so **every existing dashboard is unchanged** when the config is absent.
+- **`roas`** — a revenue-return lens: gated revenue ÷ spend, higher is better, rendered as a ratio (e.g. `4.8x`).
+
+Set it once, before the scripts load:
+
+```js
+const TARGET_METRIC = 'roas';
+const REVENUE_EXPR  = 'revenue'; /* the mart's gated revenue column; this is the default */
+```
+
+Any value other than `roas` falls back to `cpa`.
+
+### Revenue gating rule (hard policy)
+
+**ROAS must consume the mart's gated `revenue` column, sourced via `REVENUE_EXPR` (default `'revenue'`). Raw `conversion_value` is forbidden.** The aggregation field is deliberately named `revenue` (not `conv_value`) so it can never be confused with the raw platform value. Only enable ROAS for **purchase clients whose mart publishes that gated revenue column** — a lead-gen mart has no such column and ROAS queries will error. Revenue is fetched **only** in ROAS mode; CPA-mode dashboards never emit a revenue `SELECT`, so lead-gen marts keep working.
+
+### What ROAS mode changes
+
+When `TARGET_METRIC = 'roas'`, the framework becomes metric-aware end to end:
+
+- **Efficiency-metric dropdown** leads with `ROAS (revenue / spend)`, selected by default (CPA/CPC/CPM/CTR remain available).
+- **Weekly scorecards** lead with the revenue story: Spend, Revenue, blended ROAS, Conversions.
+- **Monthly tabs** (Power Law, Ad Production, Ad Decay, Ad Age, Creative Effectiveness) show the ROAS column/label and compute it as `SAFE_DIVIDE(SUM(revenue), NULLIF(spend, 0))`.
+- **Ad Production tiering** inverts polarity — see [Thresholds](#thresholds).
+- **Notes and headings** swap CPA copy for ROAS copy automatically (`ROAS is revenue ÷ spend`).
 
 ## Group filters
 
@@ -125,9 +164,29 @@ const THRESHOLDS = { HR_SPEND: 8000, HR_CPA: 90 };
 
 The SQL classification, the scatter threshold lines, and the displayed benchmark copy/legend all read these values, so the numbers users see always match the data. Do **not** redeclare `HR_SPEND` etc directly — that collides with the shared declarations and breaks the page.
 
+### ROAS bands (when `TARGET_METRIC = 'roas'`)
+
+In ROAS mode the **spend floors are shared** with CPA (`HR_SPEND`/`OB_SPEND`/`SO_SPEND`, same defaults), but the efficiency band flips polarity — higher ROAS is better, so Home Run/On Base are **floors to clear** and Strike Out is a **ceiling to fall under**:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `HR_ROAS` | 4 | Home Run min ROAS (floor to clear) |
+| `OB_ROAS` | 2 | On Base min ROAS (floor to clear) |
+| `SO_ROAS` | 1 | Strike Out ROAS ceiling (below this an ad strikes out) |
+
+Classification (top-down): **Home Run** = `spend ≥ HR_SPEND AND ROAS > HR_ROAS`; **On Base** = `spend ≥ OB_SPEND AND ROAS > OB_ROAS`; **Strike Out** = `spend ≥ SO_SPEND AND ROAS < SO_ROAS`; otherwise **Unclassified**. (A real-spend / zero-revenue ad has ROAS `0 < SO_ROAS` and correctly grades Strike Out.)
+
+Override any subset the same way, using the ROAS keys:
+
+```js
+const THRESHOLDS = { HR_SPEND: 5000, HR_ROAS: 4, OB_SPEND: 1000, OB_ROAS: 2, SO_SPEND: 500, SO_ROAS: 1 };
+```
+
 ### Tuning thresholds live (v1.5.0+)
 
 The Ad Production tab includes an **Adjust thresholds** panel so a user can change the six bands and re-classify on the fly. Edits are **session-only**: they re-run the production queries and refresh the scorecards, scatter, chart, tables and benchmark copy, but a page reload reverts to the configured defaults. **Reset to defaults** restores the per-client `THRESHOLDS` values (or the built-in defaults if none are set). To change the persistent defaults, edit the dashboard's `THRESHOLDS` config — there is no server-side store. Helpers `getProductionThresholds()`, `setProductionThresholds(partial)` and `resetProductionThresholds()` are exposed for programmatic use.
+
+The panel is **metric-aware**: the three spend floors are always shown, and the efficiency inputs follow `TARGET_METRIC` — CPA mode shows "max CPA" fields (`th-hr-cpa` etc.), ROAS mode shows "min ROAS" floors (`th-hr-roas`, `th-ob-roas`) plus a "max ROAS" Strike-Out ceiling (`th-so-roas`). `getProductionThresholds()` returns only the active metric's bands (plus the shared spend floors); `setProductionThresholds()` accepts either metric's keys.
 
 ## Versioning
 
