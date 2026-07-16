@@ -169,3 +169,37 @@ tbody tr:hover { background: rgba(75,0,15,0.03); }
 .tc-apply:hover { opacity: 0.85; }
 .tc-reset { background: var(--white); color: var(--young-blood); border: 1.5px solid var(--young-blood); }
 .tc-reset:hover { background: var(--young-blood); color: var(--stabilo); }
+
+/* ── Competitor Ad Library (f10-competitors.js) ──
+ * F10-branded competitor ad cards grouped by competitor, styled with the shared
+ * tokens so the tab reads as one system with the other dashboard tabs (white
+ * cards on paper-dark borders, young-blood + stabilo accents). Pagers reuse the
+ * existing .pg-btn / .pg-info classes. */
+.comp-section { margin-bottom: 34px; }
+.comp-head { font-size: 15px; font-weight: 600; letter-spacing: 0.04em; color: var(--young-blood); margin-bottom: 3px; }
+.comp-pgmeta { font-size: 11px; color: var(--grey); letter-spacing: 0.04em; margin-bottom: 14px; }
+.comp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 18px; }
+.comp-card { background: var(--white); color: var(--ink); border: 2px solid var(--paper-dark); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
+.comp-media { position: relative; display: flex; overflow-x: auto; scroll-snap-type: x mandatory; aspect-ratio: 1 / 1; background: #111; scrollbar-width: thin; }
+.comp-media .mitem { flex: 0 0 100%; scroll-snap-align: start; width: 100%; height: 100%; aspect-ratio: 1 / 1; object-fit: cover; display: block; background: #111; }
+.comp-media video.mitem { object-fit: contain; }
+.comp-mcount { position: absolute; top: 8px; right: 8px; background: rgba(10,10,10,0.72); color: var(--white); font-size: 10px; letter-spacing: 0.05em; padding: 2px 8px; border-radius: 100px; pointer-events: none; }
+.comp-missing { display: flex; align-items: center; justify-content: center; color: var(--grey); font-size: 12px; font-style: italic; background: var(--paper); aspect-ratio: 1 / 1; }
+.comp-body { padding: 12px 13px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
+.comp-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+.comp-tag { font-size: 9.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; padding: 2px 8px; border-radius: 100px; background: var(--ink); color: var(--paper); }
+.comp-tag.fmt { background: transparent; color: var(--ink); border: 1px solid var(--paper-dark); }
+.comp-tag.dyn { background: transparent; color: var(--young-blood); border: 1px solid var(--young-blood); }
+.comp-tag.live { background: var(--good); color: var(--white); }
+.comp-tag.off { background: var(--grey); color: var(--white); }
+.comp-tag.days { background: var(--stabilo); color: var(--ink); }
+.comp-since { font-size: 11px; color: var(--grey); letter-spacing: 0.02em; }
+.comp-copy { font-size: 12.5px; color: var(--ink); line-height: 1.5; max-height: 92px; overflow: hidden; white-space: normal; }
+.comp-copy.dyn { color: var(--grey); font-style: italic; }
+.comp-foot { margin-top: auto; display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 11px; }
+.comp-foot .comp-cta { color: var(--grey); text-transform: uppercase; letter-spacing: 0.05em; }
+.comp-foot a { color: var(--young-blood); font-weight: 600; text-decoration: none; white-space: nowrap; }
+.comp-foot a:hover { color: var(--stabilo-red); }
+.comp-vision { background: rgba(75,0,15,0.05); border-top: 1px dashed var(--paper-dark); padding: 10px 13px; font-size: 12px; line-height: 1.5; }
+.comp-vision b { color: var(--young-blood); font-weight: 600; }
+.comp-pager { display: flex; gap: 12px; align-items: center; margin-top: 16px; flex-wrap: wrap; }

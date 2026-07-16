@@ -13,6 +13,8 @@ A dashboard is now just a config block plus script tags: the markup, styling, an
 | `f10-weekly.js` | Weekly engine: fetchWindows, renderSummary/Board/Map, tab system, group filters, wireControls, initWeekly |
 | `f10-monthly.js` | Monthly engine: loadPowerLaw/Production/Decay/Age + the `loadMonthlyTab()` dispatcher. All SQL is shared and config-driven |
 | `f10-layout.js` | `renderLayout()` — builds the sidebar, controls bar, and all seven tab panels into `<div id="app"></div>`. Production benchmark copy is derived from the threshold constants |
+| `f10-preview.js` | Inline creative hover previews for `.preview-link` targets; exposes `f10MediaMarkup({type,url}, opts)` — the shared `<img>`/`<video>` builder reused by the competitor tab |
+| `f10-competitors.js` | Optional Competitor Ad Library tab (config-gated on `COMPETITORS`): groups a client's tracked competitor Meta ads by competitor in the F10 card layout, with per-competitor pagination that mounts only the visible page's media. Reuses `f10MediaMarkup` from `f10-preview.js` |
 
 ## How to use in a dashboard
 
@@ -86,6 +88,19 @@ dashboard's service account needs `roles/storage.objectViewer` on
 | `REPORT_NAME` | no | Sidebar sub-label (default `Creative Reporting`) |
 | `GROUP_FILTERS` | no | Array of `{ col, label }` segment dropdowns (default none) |
 | `THRESHOLDS` | no | Ad Production threshold overrides (see below) |
+| `COMPETITORS` | no | Competitor Ad Library tab (see below) |
+
+## Competitor Ad Library
+
+Define a `COMPETITORS` config object **before** the scripts load (and include `f10-competitors.js`) to add a **Competitors** nav group with a tab that groups this client's tracked competitor Meta ads by competitor, in the F10 card layout — image inline / video with controls / carousel strip, plus ad copy, CTA, format, "Live since" date and longevity (days active + still-active). Vision hook/angle/format enrich each card when the vision read has run; otherwise cards render from the raw scraped fields. Each competitor paginates (Prev / Next) and only the visible page's cards mount their media, so only that page's signed creatives are fetched. Data is served by the shared function's data-driven `competitor` action, keyed by `CLIENT`.
+
+```js
+const COMPETITORS = {
+  CLIENT:       'mosh', // f10_client key in all_clients_adlib (required)
+  PER_PAGE:     30,     // optional; competitor cards shown per in-page page (default 30)
+  MAX_PER_PAGE: 0,      // optional hard cap on ads rendered per competitor (0 = no cap)
+};
+```
 
 ## Group filters
 

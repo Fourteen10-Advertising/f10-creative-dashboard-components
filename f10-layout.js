@@ -152,6 +152,22 @@ function ttPanelsMarkup(ttTh){
 `;
 }
 
+/* Competitor Ad Library markup (single panel), rendered only when a COMPETITORS
+ * config object is present. Groups every tracked competitor's live Meta ads by
+ * competitor in the F10 card layout. f10-competitors.js drives this panel. */
+function competitorPanelMarkup(){
+  return `
+    <!-- COMPETITORS: AD LIBRARY -->
+    <div class="tab-panel comp-tab-panel" id="panel-competitors">
+      <div class="insight-box"><strong>Competitor Ad Library:</strong> every tracked competitor's live Meta ads, grouped by competitor. Longevity (<strong>Nd active</strong>) is the winner signal &mdash; AU has no public spend or impressions data, so how long a competitor keeps an ad live is the clearest read on what is working for them. Play any video or scroll multi-asset ads in place.</div>
+      <div class="window-note" id="comp-meta"></div>
+      <div class="window-note" id="comp-note"></div>
+      <div id="comp-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+      <div id="comp-body" style="display:none;"></div>
+    </div>
+`;
+}
+
 /* ── "How to read this tab" notes ──
  * Plain-English, client-facing guidance shown at the top of every tab, plus a
  * one-line definition of what a "conversion" is for this account. Rendered only
@@ -198,6 +214,11 @@ function renderLayout(){
   const ttControls = hasTikTok ? ttControlsMarkup() : '';
   const ttPanels = hasTikTok ? ttPanelsMarkup(ttTh) : '';
 
+  const hasCompetitors = (typeof COMPETITORS !== 'undefined' && COMPETITORS && COMPETITORS.CLIENT);
+  const compNav = hasCompetitors ? `<div class="nav-section">Competitors</div>
+      <a href="#" class="comp-nav-link" data-comp-tab="competitors">Competitor Ads</a>` : '';
+  const compPanel = hasCompetitors ? competitorPanelMarkup() : '';
+
   document.getElementById('app').innerHTML = `
   <div id="sidebar">
     <div class="sidebar-header">
@@ -216,6 +237,7 @@ function renderLayout(){
       <a href="#" class="nav-link" data-tab="age">Ad Age</a>
       <a href="#" class="nav-link" data-tab="creative">Creative Effectiveness</a>
       ${ttNav}
+      ${compNav}
     </nav>
     <div class="sidebar-footer">F10 | Creative Reporting<br/>Powered by BigQuery</div>
   </div>
@@ -454,6 +476,8 @@ ${ttControls}
 
   ${ttPanels}
 
+  ${compPanel}
+
   </div>`;
   initTableSorting();
 
@@ -463,4 +487,5 @@ ${ttControls}
   }
 
   if (hasTikTok && typeof initTikTok === 'function') initTikTok();
+  if (hasCompetitors && typeof initCompetitors === 'function') initCompetitors();
 }
