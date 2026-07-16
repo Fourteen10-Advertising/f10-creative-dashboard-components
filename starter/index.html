@@ -23,6 +23,14 @@ const TABLE       = 'creative_reporting';    /* leave as-is unless renamed */
 const CONV_EXPR   = 'purchase';                   /* conversion expr, e.g. '(lead + signup)' */
 const CLIENT_NAME = 'Client Name';                /* shown in the sidebar */
 
+/* Target metric. Default (unset) is CPA — a cost-efficiency lens, backward-compatible
+   with every existing dashboard. Set TARGET_METRIC = 'roas' for a revenue-return lens.
+   Only enable ROAS for purchase clients whose mart publishes a GATED revenue column;
+   REVENUE_EXPR selects that column (default 'revenue'). Never sum raw conversion_value —
+   it is forbidden by policy. ROAS Ad Production bands default to HR 4x / OB 2x / SO 1x. */
+// const TARGET_METRIC = 'roas';
+// const REVENUE_EXPR  = 'revenue';
+
 /* Top-level segment filters — one dropdown per entry, applied across all tabs.
    Values are queried dynamically and default to "All". Leave [] for none. */
 const GROUP_FILTERS = [
@@ -31,8 +39,11 @@ const GROUP_FILTERS = [
 ];
 
 /* Optional per-client Ad Production thresholds (defaults shown). Uncomment to override
-   any subset; the SQL, scatter lines, and the displayed benchmark copy all follow these. */
+   any subset; the SQL, scatter lines, and the displayed benchmark copy all follow these.
+   CPA bands are ceilings (lower is better); ROAS bands are floors (higher is better).
+   In ROAS mode the spend floors (HR/OB/SO_SPEND) are shared; set HR/OB/SO_ROAS to tune. */
 // const THRESHOLDS = { HR_SPEND: 5000, HR_CPA: 70, OB_SPEND: 1000, OB_CPA: 100, SO_SPEND: 500, SO_CPA: 140 };
+// const THRESHOLDS = { HR_SPEND: 5000, HR_ROAS: 4, OB_SPEND: 1000, OB_ROAS: 2, SO_SPEND: 500, SO_ROAS: 1 }; /* ROAS mode */
 
 /* Optional TikTok section. Define TIKTOK to add a "TikTok" nav group with its own
    Weekly Summary, Movement Board, Ad Production and Creative Effectiveness tabs,

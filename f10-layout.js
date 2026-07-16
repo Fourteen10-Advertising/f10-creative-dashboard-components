@@ -20,12 +20,43 @@
 /* Production threshold copy — built from the live HR_SPEND/HR_CPA/... globals so
  * it can be regenerated whenever a user tunes the thresholds in the UI. */
 function prodBenchmarkHTML(){
+  /* ROAS is higher-is-better: good grades clear the target (Spend & ROAS &ge; band),
+     Strike Out falls below it. CPA is lower-is-better and keeps its legacy copy. */
+  if (targetMetric() === 'roas'){
+    return `<span class="bm-item"><strong>Home Run:</strong> Spend &ge; ${fmt$(HR_SPEND)} &amp; ROAS &ge; ${fmtRatio(HR_ROAS)}</span>` +
+      `<span class="bm-item"><strong>On Base:</strong> Spend &ge; ${fmt$(OB_SPEND)} &amp; ROAS &ge; ${fmtRatio(OB_ROAS)}</span>` +
+      `<span class="bm-item"><strong>Strike Out:</strong> Spend &ge; ${fmt$(SO_SPEND)} &amp; ROAS &lt; ${fmtRatio(SO_ROAS)}</span>`;
+  }
   return `<span class="bm-item"><strong>Home Run:</strong> Spend &ge; ${fmt$(HR_SPEND)} &amp; CPA &lt; ${fmt$(HR_CPA)}</span>` +
     `<span class="bm-item"><strong>On Base:</strong> Spend &ge; ${fmt$(OB_SPEND)} &amp; CPA &lt; ${fmt$(OB_CPA)}</span>` +
     `<span class="bm-item"><strong>Strike Out:</strong> Spend &ge; ${fmt$(SO_SPEND)} &amp; CPA &gt; ${fmt$(SO_CPA)}</span>`;
 }
 function prodThresholdLegendHTML(){
+  if (targetMetric() === 'roas'){
+    return `<span class="tl-item"><span class="tl-line dashed" style="color:#727272;"></span> ROAS Target (${fmtRatio(HR_ROAS)})</span><span class="tl-item"><span class="tl-line dashed" style="color:#4a90e2;"></span> Ad Hit (${fmt$(HR_SPEND)})</span>`;
+  }
   return `<span class="tl-item"><span class="tl-line dashed" style="color:#727272;"></span> CPA Limit (${fmt$(HR_CPA)})</span><span class="tl-item"><span class="tl-line dashed" style="color:#4a90e2;"></span> Ad Hit (${fmt$(HR_SPEND)})</span>`;
+}
+/* Live threshold-tuning inputs for the Ad Production tab, metric-aware. The three
+ * spend floors are shared across metrics; the efficiency band flips with the
+ * active target metric — CPA is a ceiling ("max CPA", th-*-cpa) while ROAS is a
+ * floor ("min ROAS", th-*-roas), except Strike Out which inverts ("min CPA" vs
+ * "max ROAS"). The id set here must match productionInputMap() in f10-monthly.js
+ * so Apply/Reset read the right inputs and re-run the production load. */
+function prodThresholdFieldsHTML(){
+  const spend = `<div class="tc-field"><label for="th-hr-spend">Home Run — min spend ($)</label><input type="number" id="th-hr-spend" min="0" step="100" /></div>` +
+    `<div class="tc-field"><label for="th-ob-spend">On Base — min spend ($)</label><input type="number" id="th-ob-spend" min="0" step="100" /></div>` +
+    `<div class="tc-field"><label for="th-so-spend">Strike Out — min spend ($)</label><input type="number" id="th-so-spend" min="0" step="100" /></div>`;
+  if (targetMetric() === 'roas'){
+    return spend +
+      `<div class="tc-field"><label for="th-hr-roas">Home Run — min ROAS (x)</label><input type="number" id="th-hr-roas" min="0" step="0.1" /></div>` +
+      `<div class="tc-field"><label for="th-ob-roas">On Base — min ROAS (x)</label><input type="number" id="th-ob-roas" min="0" step="0.1" /></div>` +
+      `<div class="tc-field"><label for="th-so-roas">Strike Out — max ROAS (x)</label><input type="number" id="th-so-roas" min="0" step="0.1" /></div>`;
+  }
+  return spend +
+    `<div class="tc-field"><label for="th-hr-cpa">Home Run — max CPA ($)</label><input type="number" id="th-hr-cpa" min="0" step="1" /></div>` +
+    `<div class="tc-field"><label for="th-ob-cpa">On Base — max CPA ($)</label><input type="number" id="th-ob-cpa" min="0" step="1" /></div>` +
+    `<div class="tc-field"><label for="th-so-cpa">Strike Out — min CPA ($)</label><input type="number" id="th-so-cpa" min="0" step="1" /></div>`;
 }
 /* Refresh every piece of threshold-derived copy in the Ad Production tab from the
  * current threshold values. Safe to call before the tab exists (guards on null). */
@@ -179,7 +210,7 @@ const HOW_TO_READ = {
   summary:    'Start here each week for a quick read on how the account is tracking versus the previous 7 days. The tiles are your headline numbers and how each one moved; the note and chart below explain what drove the change.',
   board:      'Come here to act on individual ads. It flags whether each ad is growing, slipping, brand new, or gone, so you can decide what to back and what to pause. The note below covers how the list is built.',
   map:        'A bird&rsquo;s&#8209;eye view for spotting outliers fast: your best ads gather in one corner and the budget&#8209;drainers in another. Use it to see where the winners and problem ads sit; the note below explains the axes.',
-  powerlaw:   'Use this to answer one question: are your biggest&#8209;spending ads also your most efficient? Skim the top of the ranking and read across to CPA. The note and concentration chart below explain the bigger picture.',
+  powerlaw:   `Use this to answer one question: are your biggest&#8209;spending ads also your most efficient? Skim the top of the ranking and read across to ${targetMetricDef().label}. The note and concentration chart below explain the bigger picture.`,
   production: 'Use this to judge your testing as a whole rather than single ads &mdash; what share of everything you launch turns into a winner. The target hit rate and the thresholds behind each grade (which you can tune) are defined below.',
   decay:      'Use this for planning ahead: it shows how quickly older ads fade, which tells you how much fresh creative to line up to keep spend steady. The note and cohort charts below go into the detail.',
   age:        'Use this to check how fresh your running creative is. If a few older ads are doing most of the work, take it as a nudge to test more. The age bands and the healthy&#8209;mix benchmark are explained below.',
@@ -189,6 +220,9 @@ const HOW_TO_READ = {
 function convDefinitionHTML(){
   const p = convLabelPlural();
   const sl = convLabel().toLowerCase();
+  if (targetMetric() === 'roas'){
+    return `<div class="dash-note-def"><strong>Conversions on this dashboard = ${p}.</strong> Every conversion count shown here is based on ${p.toLowerCase()}; <strong>ROAS</strong> is revenue &divide; spend.</div>`;
+  }
   return `<div class="dash-note-def"><strong>Conversions on this dashboard = ${p}.</strong> Every conversion count and <strong>CPA</strong> (cost per ${sl}) shown here is based on ${p.toLowerCase()}.</div>`;
 }
 /* Full note block for a tab, or '' when notes are switched off. */
@@ -197,6 +231,48 @@ function howToNote(tabKey){
   const body = HOW_TO_READ[tabKey] || '';
   return `<div class="dash-note"><div class="dash-note-title">How to read this tab</div>` +
     `<div class="dash-note-body">${body}</div>${convDefinitionHTML()}</div>`;
+}
+
+/* ── Revenue-integrity guard (US-010) ──────────────────────────────────────
+ * Dashboard-side half of the revenue guard; a warehouse-side integrity check
+ * on the gated revenue column is the complementary half. Neither replaces the
+ * other.
+ *
+ * In ROAS mode, a window whose BLENDED revenue is 0 while spend > 0 is the
+ * signature of a missing or zeroed gated revenue column (REVENUE_EXPR). Rendering
+ * a confident "0.0x" there would launder a broken pipeline into a real headline.
+ * We show a warning banner instead so nobody acts on an understated number —
+ * decisions should be downstream of clean data.
+ *
+ * Scope is deliberately BLENDED-only. A single real-spend / zero-revenue ad is a
+ * legitimate 0 ROAS (a Strike Out) and still renders its own 0.0x on the board
+ * and scatter — this guard never touches per-ad classification. It fires only
+ * when EVERY dollar of spend in the window returned zero revenue, which no live
+ * ROAS account produces; that is what separates "no revenue column / all rows
+ * null" from "genuinely zero revenue on one ad". CPA mode (TARGET_METRIC unset)
+ * can never trip it. */
+const REVENUE_GUARD_MSG = 'Revenue data looks incomplete for this window — ROAS may be understated. Check the pipeline before acting.';
+
+/* Pure predicate over an already-fetched blended aggregate — no query, no DOM. */
+function revenueSignalBroken(revenue, spend){
+  return targetMetric() === 'roas' && Number(spend) > 0 && !(Number(revenue) > 0);
+}
+
+function revenueGuardBannerHTML(){
+  return `<div class="revenue-guard" role="alert" style="background:rgba(250,2,60,0.06);border:2px solid var(--bad);border-left-width:6px;border-radius:8px;padding:13px 16px;margin-bottom:18px;font-size:12.5px;line-height:1.5;color:var(--young-blood);">`
+    + `<strong style="display:block;letter-spacing:0.06em;text-transform:uppercase;font-size:11px;color:var(--bad);margin-bottom:4px;">Revenue integrity warning</strong>`
+    + `${REVENUE_GUARD_MSG}`
+    + `</div>`;
+}
+
+/* Inject-or-clear the guard banner into `slotId`. `broken` is a boolean the
+ * caller already derived from the tab's own aggregates (weekly: blended
+ * revenue/spend; production: whether any ad has positive ROAS against spend), so
+ * this adds no query and no measurable load. Returns `broken` for convenience. */
+function applyRevenueGuard(slotId, broken){
+  const slot = document.getElementById(slotId);
+  if(slot) slot.innerHTML = broken ? revenueGuardBannerHTML() : '';
+  return broken;
 }
 
 function renderLayout(){
@@ -214,6 +290,16 @@ function renderLayout(){
       <a href="#" class="tt-nav-link" data-tt-tab="tt-creative">Creative Effectiveness</a>` : '';
   const ttControls = hasTikTok ? ttControlsMarkup() : '';
   const ttPanels = hasTikTok ? ttPanelsMarkup(ttTh) : '';
+
+  /* Efficiency-metric dropdown is metric-aware. In ROAS mode ROAS leads the list
+   * and is selected by default so the Movement Board/Map and blended tile render
+   * ROAS out of the box (they read METRICS[ctrl-metric.value]); CPA/CPC/CPM/CTR
+   * remain available. In CPA mode the option set is exactly the legacy list, so
+   * existing dashboards are unchanged. */
+  const isRoas = (typeof targetMetric === 'function') && targetMetric() === 'roas';
+  const metricOptions = isRoas
+    ? `<option value="ROAS" selected>ROAS (revenue / spend)</option><option value="CPA">CPA (cost / conversion)</option><option value="CPC">CPC (cost / click)</option><option value="CPM">CPM (cost / 1k impr)</option><option value="CTR">CTR (clicks / impr)</option>`
+    : `<option value="CPA" selected>CPA (cost / conversion)</option><option value="CPC">CPC (cost / click)</option><option value="CPM">CPM (cost / 1k impr)</option><option value="CTR">CTR (clicks / impr)</option>`;
 
   document.getElementById('app').innerHTML = `
   <div id="sidebar">
@@ -259,7 +345,7 @@ function renderLayout(){
         </div>
         <div class="ctrl"><label>Current window ends</label><input type="date" id="ctrl-enddate" /></div>
         <div class="ctrl"><label>Efficiency metric</label>
-          <select id="ctrl-metric"><option value="CPA" selected>CPA (cost / conversion)</option><option value="CPC">CPC (cost / click)</option><option value="CPM">CPM (cost / 1k impr)</option><option value="CTR">CTR (clicks / impr)</option></select>
+          <select id="ctrl-metric">${metricOptions}</select>
         </div>
         <div class="ctrl"><label>Noise floor</label>
           <div class="seg" id="ctrl-floor"><button data-floor="cpaMult">&times; target CPA</button><button data-floor="fixed" class="active">Fixed spend</button><button data-floor="conv">Min conv.</button></div>
@@ -281,6 +367,7 @@ ${ttControls}
       <div class="window-note" id="summary-window-note"></div>
       <div id="summary-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
       <div id="summary-body" style="display:none;">
+        <div id="summary-revenue-guard"></div>
         <div class="scorecard-grid" id="summary-scorecards"></div>
         <div class="chart-card">
           <h3>Blended Metric Decomposition &mdash; Prior &rarr; Current</h3>
@@ -332,7 +419,7 @@ ${ttControls}
         <div class="table-scroll">
           <div id="powerlaw-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="powerlaw-table" style="display:none;">
-            <thead><tr><th>#</th><th>Campaign</th><th>Adset</th><th>Ad</th><th>Launch Date</th><th>Last Spend</th><th>Preview</th><th>Spend</th><th>Spend %</th><th>Rolling %</th><th>CPA</th></tr></thead>
+            <thead><tr><th>#</th><th>Campaign</th><th>Adset</th><th>Ad</th><th>Launch Date</th><th>Last Spend</th><th>Preview</th><th>Spend</th><th>Spend %</th><th>Rolling %</th><th>${targetMetricDef().label}</th></tr></thead>
             <tbody id="powerlaw-table-body"></tbody>
           </table>
         </div>
@@ -350,19 +437,13 @@ ${ttControls}
           <strong>Adjust thresholds</strong>
           <span class="tc-note">Tune the classification bands for this session. Reset restores the client defaults; a page reload also reverts.</span>
         </div>
-        <div class="tc-grid">
-          <div class="tc-field"><label for="th-hr-spend">Home Run — min spend ($)</label><input type="number" id="th-hr-spend" min="0" step="100" /></div>
-          <div class="tc-field"><label for="th-ob-spend">On Base — min spend ($)</label><input type="number" id="th-ob-spend" min="0" step="100" /></div>
-          <div class="tc-field"><label for="th-so-spend">Strike Out — min spend ($)</label><input type="number" id="th-so-spend" min="0" step="100" /></div>
-          <div class="tc-field"><label for="th-hr-cpa">Home Run — max CPA ($)</label><input type="number" id="th-hr-cpa" min="0" step="1" /></div>
-          <div class="tc-field"><label for="th-ob-cpa">On Base — max CPA ($)</label><input type="number" id="th-ob-cpa" min="0" step="1" /></div>
-          <div class="tc-field"><label for="th-so-cpa">Strike Out — min CPA ($)</label><input type="number" id="th-so-cpa" min="0" step="1" /></div>
-        </div>
+        <div class="tc-grid">${prodThresholdFieldsHTML()}</div>
         <div class="tc-actions">
           <button class="tc-apply" id="th-apply">Apply thresholds</button>
           <button class="tc-reset" id="th-reset">Reset to defaults</button>
         </div>
       </div>
+      <div id="production-revenue-guard"></div>
       <div id="production-scorecards-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
       <div id="production-scorecards" style="display:none;">
         <div class="scorecard-grid">
@@ -376,7 +457,7 @@ ${ttControls}
         </div>
       </div>
       <div class="two-col">
-        <div class="chart-card" style="margin-bottom:0;"><h3>Lifetime Spend vs CPA &mdash; All Ads</h3>
+        <div class="chart-card" style="margin-bottom:0;"><h3>Lifetime Spend vs ${targetMetricDef().label} &mdash; All Ads</h3>
           <div class="threshold-legend" id="prod-threshold-legend">${prodThresholdLegendHTML()}</div>
           <div id="scatter-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <div class="chart-wrapper" id="scatter-wrapper" style="display:none; height:320px;"><canvas id="scatter-chart"></canvas></div>
@@ -390,7 +471,7 @@ ${ttControls}
         <div class="table-scroll">
           <div id="production-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="production-table" style="display:none;">
-            <thead><tr><th>Launch Month</th><th>Spend</th><th>Ads Launched</th><th>Home Runs</th><th>HR Rate</th><th>On Base</th><th>OB Rate</th><th>CPA</th><th>Conversions</th><th>Strike Outs</th><th>SO Rate</th></tr></thead>
+            <thead><tr><th>Launch Month</th><th>Spend</th><th>Ads Launched</th><th>Home Runs</th><th>HR Rate</th><th>On Base</th><th>OB Rate</th><th>${targetMetricDef().label}</th><th>Conversions</th><th>Strike Outs</th><th>SO Rate</th></tr></thead>
             <tbody id="production-table-body"></tbody>
           </table>
         </div>
@@ -399,7 +480,7 @@ ${ttControls}
         <div class="table-scroll">
           <div id="scatter-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="scatter-table" style="display:none;">
-            <thead><tr><th>Ad</th><th>Campaign</th><th>Adset</th><th>Launch Date</th><th>Lifetime Spend</th><th>Lifetime CPA</th><th>Conversions</th><th class="num">Hold %</th><th class="num">Compl. %</th><th class="num">Out CTR</th><th>Preview</th><th>Classification</th></tr></thead>
+            <thead><tr><th>Ad</th><th>Campaign</th><th>Adset</th><th>Launch Date</th><th>Lifetime Spend</th><th>Lifetime ${targetMetricDef().label}</th><th>Conversions</th><th class="num">Hold %</th><th class="num">Compl. %</th><th class="num">Out CTR</th><th>Preview</th><th>Classification</th></tr></thead>
             <tbody id="scatter-table-body"></tbody>
           </table>
         </div>
@@ -414,7 +495,7 @@ ${ttControls}
         <div class="table-scroll">
           <div id="decay-summary-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="decay-summary-table" style="display:none;">
-            <thead><tr><th>Launch Month</th><th>Ads Launched</th><th>Avg Days Running</th><th>Spend</th><th>CPA</th></tr></thead>
+            <thead><tr><th>Launch Month</th><th>Ads Launched</th><th>Avg Days Running</th><th>Spend</th><th>${targetMetricDef().label}</th></tr></thead>
             <tbody id="decay-summary-body"></tbody>
           </table>
         </div>
@@ -443,7 +524,7 @@ ${ttControls}
         <div class="table-scroll">
           <div id="age-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="age-table" style="display:none;">
-            <thead><tr><th>Campaign</th><th>Adset</th><th>Ad</th><th>Launch Date</th><th>Last Spend</th><th>Preview</th><th>Spend &darr;</th><th>CPA</th><th>Conversions</th></tr></thead>
+            <thead><tr><th>Campaign</th><th>Adset</th><th>Ad</th><th>Launch Date</th><th>Last Spend</th><th>Preview</th><th>Spend &darr;</th><th>${targetMetricDef().label}</th><th>Conversions</th></tr></thead>
             <tbody id="age-table-body"></tbody>
           </table>
         </div>
@@ -453,7 +534,7 @@ ${ttControls}
     <!-- MONTHLY: CREATIVE EFFECTIVENESS -->
     <div class="tab-panel" id="tab-creative">
       ${howToNote('creative')}
-      <div class="insight-box"><strong>Creative Effectiveness:</strong> performance beyond CPA &mdash; how well each creative holds attention. <strong>Hold rate</strong> is the share of impressions that watched 15 seconds; <strong>completion</strong> watched to the end; the <strong>retention curve</strong> (25 &rarr; 100%) shows where viewers drop off. Hover any ad to see its creative and curve. Rates cover the last 90 days; non-video ads show &ndash;.</div>
+      <div class="insight-box"><strong>Creative Effectiveness:</strong> performance beyond ${targetMetricDef().label} &mdash; how well each creative holds attention. <strong>Hold rate</strong> is the share of impressions that watched 15 seconds; <strong>completion</strong> watched to the end; the <strong>retention curve</strong> (25 &rarr; 100%) shows where viewers drop off. Hover any ad to see its creative and curve. Rates cover the last 90 days; non-video ads show &ndash;.</div>
       <div class="chart-card"><h3>Average Video Retention Curve &mdash; % of Impressions Reaching Each Quartile</h3>
         <div id="creative-chart-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
         <div class="chart-wrapper" id="creative-chart-wrapper" style="display:none; height:320px;"><canvas id="creative-chart"></canvas></div>
