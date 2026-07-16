@@ -184,12 +184,77 @@ async function resolveMedia(body, credentials, cors) {
       WHERE l.ad_id IN UNNEST(@adIds)
       QUALIFY ROW_NUMBER() OVER (PARTITION BY l.ad_id ORDER BY l.created_time DESC) = 1`
       : `
+      -- Representative asset per ad, matching the creative-audit pick order
+      -- (audit.py / sql/creative_band_mining.sql): the asset actually DELIVERING
+      -- the most impressions ("dominant in asset insights") wins first, then the
+      -- most recently created asset, then one already stored in the bucket, then
+      -- newest by created_time. Ads with no per-asset delivery data (the
+      -- image/video_asset_insights feeds re-synced 2026-07-07, history still
+      -- accruing) fall back to recency through the LEFT JOINs.
+      WITH asset_delivery AS (
+        SELECT ad_id, asset_id AS top_delivered_asset_id
+        FROM (
+          SELECT ad_id, asset_id, SUM(impressions) AS impr,
+                 ROW_NUMBER() OVER (PARTITION BY ad_id ORDER BY SUM(impressions) DESC, asset_id) AS rn
+          FROM (
+            SELECT CAST(vi.ad_id AS STRING) AS ad_id, vi.video_asset_video_id AS asset_id,
+                   SAFE_CAST(vi.impressions AS INT64) AS impressions
+            FROM \`mcc-poc-477801.all_clients_meta.video_asset_insights\` vi
+            WHERE CAST(vi.ad_id AS STRING) IN UNNEST(@adIds)
+              AND vi.video_asset_video_id IS NOT NULL AND vi.video_asset_video_id != ''
+            UNION ALL
+            SELECT CAST(ii.ad_id AS STRING) AS ad_id, ii.image_asset_hash AS asset_id,
+                   SAFE_CAST(ii.impressions AS INT64) AS impressions
+            FROM \`mcc-poc-477801.all_clients_meta.image_asset_insights\` ii
+            WHERE CAST(ii.ad_id AS STRING) IN UNNEST(@adIds)
+              AND ii.image_asset_hash IS NOT NULL AND ii.image_asset_hash != ''
+          )
+          GROUP BY ad_id, asset_id
+        )
+        WHERE rn = 1 AND impr >= 100
+      ),
+      feed_recency AS (
+        SELECT ad_id, asset_id, MAX(recency_ms) AS recency_ms
+        FROM (
+          SELECT ac.ad_id, JSON_VALUE(img, '$.hash') AS asset_id,
+                 SAFE_CAST(REGEXP_EXTRACT(JSON_VALUE(al, '$.name'), r'_(\\d{13})$') AS INT64) AS recency_ms
+          FROM (SELECT DISTINCT ad_id, creative_id FROM \`mcc-poc-477801.all_clients.meta_creative_links\`
+                WHERE ad_id IN UNNEST(@adIds) AND creative_id IS NOT NULL) ac
+          JOIN \`mcc-poc-477801.all_clients_meta.ad_creatives_from_ads\` cr ON cr.id = ac.creative_id,
+               UNNEST(JSON_QUERY_ARRAY(cr.asset_feed_spec, '$.images')) img,
+               UNNEST(JSON_QUERY_ARRAY(img, '$.adlabels')) al
+          UNION ALL
+          SELECT ac.ad_id, JSON_VALUE(vid, '$.video_id') AS asset_id,
+                 SAFE_CAST(REGEXP_EXTRACT(JSON_VALUE(al, '$.name'), r'_(\\d{13})$') AS INT64) AS recency_ms
+          FROM (SELECT DISTINCT ad_id, creative_id FROM \`mcc-poc-477801.all_clients.meta_creative_links\`
+                WHERE ad_id IN UNNEST(@adIds) AND creative_id IS NOT NULL) ac
+          JOIN \`mcc-poc-477801.all_clients_meta.ad_creatives_from_ads\` cr ON cr.id = ac.creative_id,
+               UNNEST(JSON_QUERY_ARRAY(cr.asset_feed_spec, '$.videos')) vid,
+               UNNEST(JSON_QUERY_ARRAY(vid, '$.adlabels')) al
+        )
+        WHERE asset_id IS NOT NULL AND recency_ms IS NOT NULL
+        GROUP BY ad_id, asset_id
+      ),
+      asset_pref AS (
+        SELECT ad_id, ARRAY_AGG(asset_id ORDER BY recency_ms DESC, asset_id)[OFFSET(0)] AS pref_asset_id
+        FROM feed_recency GROUP BY ad_id
+      )
       SELECT l.ad_id, m.asset_type, m.gcs_uri, m.fetch_status
       FROM \`mcc-poc-477801.all_clients.meta_creative_links\` l
       LEFT JOIN \`mcc-poc-477801.all_clients.creative_manifest\` m
         ON m.asset_id = COALESCE(l.video_id, l.image_hash) AND m.platform = 'meta'
+      LEFT JOIN asset_pref h ON h.ad_id = l.ad_id
+      LEFT JOIN asset_delivery d ON d.ad_id = l.ad_id
       WHERE l.ad_id IN UNNEST(@adIds)
-      QUALIFY ROW_NUMBER() OVER (PARTITION BY l.ad_id ORDER BY l.created_time DESC) = 1`;
+      QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY l.ad_id
+        ORDER BY
+          IF(COALESCE(l.video_id, l.image_hash) = d.top_delivered_asset_id, 0, 1),
+          IF(COALESCE(l.video_id, l.image_hash) = h.pref_asset_id, 0, 1),
+          IF(m.gcs_uri IS NOT NULL, 0, 1),
+          l.created_time DESC,
+          COALESCE(l.video_id, l.image_hash)
+      ) = 1`;
 
     const [rows] = await bq.query({
       query: sql,
