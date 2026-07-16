@@ -152,9 +152,10 @@ function ttPanelsMarkup(ttTh){
 `;
 }
 
-/* Competitor Ad Library markup (single panel), rendered only when a COMPETITORS
- * config object is present. Groups every tracked competitor's live Meta ads by
- * competitor in the F10 card layout. f10-competitors.js drives this panel. */
+/* Competitor Ad Library markup (single panel), rendered only when the
+ * visibility probe finds competitor rows for this client (probe-driven, US-003).
+ * Not part of the base layout: f10-competitors.js injects this panel (and the
+ * matching nav entry) after its existence probe passes, and drives the panel. */
 function competitorPanelMarkup(){
   return `
     <!-- COMPETITORS: AD LIBRARY -->
@@ -214,11 +215,6 @@ function renderLayout(){
   const ttControls = hasTikTok ? ttControlsMarkup() : '';
   const ttPanels = hasTikTok ? ttPanelsMarkup(ttTh) : '';
 
-  const hasCompetitors = (typeof COMPETITORS !== 'undefined' && COMPETITORS && COMPETITORS.CLIENT);
-  const compNav = hasCompetitors ? `<div class="nav-section">Competitors</div>
-      <a href="#" class="comp-nav-link" data-comp-tab="competitors">Competitor Ads</a>` : '';
-  const compPanel = hasCompetitors ? competitorPanelMarkup() : '';
-
   document.getElementById('app').innerHTML = `
   <div id="sidebar">
     <div class="sidebar-header">
@@ -237,7 +233,6 @@ function renderLayout(){
       <a href="#" class="nav-link" data-tab="age">Ad Age</a>
       <a href="#" class="nav-link" data-tab="creative">Creative Effectiveness</a>
       ${ttNav}
-      ${compNav}
     </nav>
     <div class="sidebar-footer">F10 | Creative Reporting<br/>Powered by BigQuery</div>
   </div>
@@ -476,8 +471,6 @@ ${ttControls}
 
   ${ttPanels}
 
-  ${compPanel}
-
   </div>`;
   initTableSorting();
 
@@ -487,5 +480,8 @@ ${ttControls}
   }
 
   if (hasTikTok && typeof initTikTok === 'function') initTikTok();
-  if (hasCompetitors && typeof initCompetitors === 'function') initCompetitors();
+  /* Competitor tab visibility is probe-driven (US-003): f10-competitors.js runs a
+   * cheap existence probe and registers its own nav entry + panel only when the
+   * client has competitor rows — so this call is unconditional. */
+  if (typeof initCompetitors === 'function') initCompetitors();
 }

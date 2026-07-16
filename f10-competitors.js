@@ -1,23 +1,32 @@
 /**
- * f10-competitors.js — F10 Creative Dashboard Competitor Ad Library (config-gated)
+ * f10-competitors.js — F10 Creative Dashboard Competitor Ad Library (probe-driven, US-003)
  * Load via: <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@TAG/f10-competitors.js"></script>
  *
  * Must be loaded AFTER f10-utils.js and f10-layout.js, and (for inline media
  * rendering) AFTER f10-preview.js — it reuses that module's f10MediaMarkup()
  * helper to build <img>/<video> markup rather than duplicating it.
  *
- * This module is a NO-OP unless the dashboard defines a COMPETITORS config
- * object BEFORE the scripts load, so every existing dashboard is unaffected:
+ * Visibility is DATA-DRIVEN: on boot, a cheap existence probe (the US-001
+ * function's `probe:true` path — a BQ EXISTS on ad_registry, no snapshot-history
+ * scan) asks whether this client has any competitor rows in all_clients_adlib.
+ * Only when rows exist does the module inject its "Competitors" nav section and
+ * panel (via f10-layout.js's competitorPanelMarkup()). No rows / probe error →
+ * fail closed: zero trace in the DOM. No per-client config edit is required —
+ * adding competitor rows in the warehouse is enough for the tab to appear on
+ * next dashboard load.
+ *
+ * The f10_client key is derived from the page's DATASET global by stripping a
+ * trailing `_marts` or `_clean` suffix (e.g. mosh_marts → mosh). COMPETITORS is
+ * now an OPTIONAL overrides object only:
  *
  *   const COMPETITORS = {
- *     CLIENT:      'mosh',   // f10_client key in all_clients_adlib (required)
+ *     CLIENT:      'mosh',   // optional override when DATASET doesn't follow the convention
  *     PER_PAGE:    30,       // optional; competitor cards shown per in-page page
  *     MAX_PER_PAGE: 0,       // optional hard cap on ads rendered per competitor
  *   };
  *
- * It renders its own "Competitors" nav section + a single panel (built by
- * f10-layout.js) that groups every tracked competitor's live Meta ads by
- * competitor page_name, in the F10 card layout — a JS port of the static
+ * The panel groups every tracked competitor's live Meta ads by competitor
+ * page_name, in the F10 card layout — a JS port of the static
  * build_competitor_page.py surface. Data comes from the shared framework's
  * Netlify function via the data-driven `competitor` action (US-001), which
  * returns the latest snapshot per ad with longevity fields, request-time v4
@@ -27,18 +36,30 @@
  * time with Prev / Next, and ONLY the currently visible page's cards are mounted
  * in the DOM — so only that page's media (signed URLs) is fetched by the browser.
  *
- * Entrypoint — f10-layout.js calls initCompetitors() during boot when COMPETITORS
- * exists. The tab loads its data lazily on first activation.
+ * Entrypoint — f10-layout.js calls initCompetitors() unconditionally during
+ * boot; the probe decides whether the tab exists. The tab loads its data lazily
+ * on first activation.
  */
 (function () {
-  if (typeof COMPETITORS === 'undefined' || !COMPETITORS || !COMPETITORS.CLIENT) return; // no config → no section
+  /* COMPETITORS is optional overrides only (CLIENT, PER_PAGE, MAX_PER_PAGE). */
+  const CFG = (typeof COMPETITORS !== 'undefined' && COMPETITORS) ? COMPETITORS : {};
 
-  const COMP_PER_PAGE = Number(COMPETITORS.PER_PAGE) > 0 ? Number(COMPETITORS.PER_PAGE) : 30;
-  const COMP_MAX = Number(COMPETITORS.MAX_PER_PAGE) > 0 ? Number(COMPETITORS.MAX_PER_PAGE) : 0;
+  const COMP_PER_PAGE = Number(CFG.PER_PAGE) > 0 ? Number(CFG.PER_PAGE) : 30;
+  const COMP_MAX = Number(CFG.MAX_PER_PAGE) > 0 ? Number(CFG.MAX_PER_PAGE) : 0;
   const COMP_TOKEN_RE = /\{\{[^}]+\}\}/g;
 
   let compLoaded = false;
+  let compClient = ''; // resolved f10_client key (set during initCompetitors)
   let compSections = []; // [{ page_name, cards:[html], total, live, cur }]
+
+  /* Resolve the f10_client key: an explicit COMPETITORS.CLIENT override wins;
+   * otherwise derive it from the DATASET global by stripping a trailing `_marts`
+   * or `_clean` suffix (mosh_marts → mosh). Returns '' when nothing resolves. */
+  function compClientKey() {
+    if (CFG.CLIENT) return String(CFG.CLIENT);
+    if (typeof DATASET !== 'undefined' && DATASET) return String(DATASET).replace(/_(marts|clean)$/, '');
+    return '';
+  }
 
   /* ── Small local helpers ── */
 
@@ -156,7 +177,7 @@
   async function compLoad() {
     showEl('comp-loading'); hideEl('comp-body');
     try {
-      const res = await fetchCompetitor(COMPETITORS.CLIENT);
+      const res = await fetchCompetitor(compClient);
       compRender((res && Array.isArray(res.ads)) ? res.ads : []);
     } catch (err) {
       console.error('Competitor load error:', err);
@@ -292,8 +313,40 @@
 
   /* ── Boot ── */
 
-  function initCompetitors() {
+  /* Probe passed → register the tab: append the nav section to the sidebar nav
+   * and the panel (f10-layout.js's competitorPanelMarkup()) to #content, then
+   * wire the tab controls. Nothing here runs for a no-competitor client. */
+  function compRegisterTab() {
+    const nav = document.querySelector('#sidebar nav');
+    const content = document.getElementById('content');
+    if (!nav || !content || typeof competitorPanelMarkup !== 'function') return;
+    nav.insertAdjacentHTML('beforeend',
+      '<div class="nav-section">Competitors</div>'
+      + '<a href="#" class="comp-nav-link" data-comp-tab="competitors">Competitor Ads</a>');
+    content.insertAdjacentHTML('beforeend', competitorPanelMarkup());
     compWireControls();
+  }
+
+  /* Called unconditionally by f10-layout.js during boot. Fires the cheap
+   * existence probe (US-001 `probe:true` path — BQ EXISTS on ad_registry, no
+   * snapshot-history scan) and registers the tab only when the client has
+   * competitor rows. exists:false is silent (the normal case); probe errors
+   * warn once and fail closed — no nav entry, no panel, no empty state. */
+  async function initCompetitors() {
+    compClient = compClientKey();
+    if (!compClient || typeof BQ_FUNCTION === 'undefined' || !BQ_FUNCTION) return; // no key or endpoint → silent no-op
+    try {
+      const r = await fetch(BQ_FUNCTION, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'competitor', client: compClient, probe: true }),
+      });
+      if (!r.ok) { console.warn('Competitor visibility probe failed: HTTP ' + r.status); return; }
+      const res = await r.json();
+      if (res && res.exists === true) compRegisterTab();
+    } catch (err) {
+      console.warn('Competitor visibility probe error:', err && err.message ? err.message : err);
+    }
   }
 
   window.initCompetitors = initCompetitors;

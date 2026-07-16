@@ -53,13 +53,14 @@ const GROUP_FILTERS = [
 // const SHOW_HOW_TO_NOTES = true;
 // const CONV_LABEL        = 'Purchase';   /* singular, e.g. 'Purchase', 'Lead'; plural auto-adds 's' */
 
-/* Optional Competitor Ad Library. Define COMPETITORS to add a "Competitors" nav group
-   with a tab that groups this client's tracked competitors' live Meta ads by competitor,
-   in the F10 card layout. Data is served by the shared function's data-driven `competitor`
-   action, keyed by the CLIENT value below (the f10_client key in all_clients_adlib).
-   Leave commented for a dashboard with no competitor tracking. */
+/* Competitor Ad Library — automatic, no config needed. The "Competitors" nav group and
+   tab appear on their own when this client has competitor rows in all_clients_adlib:
+   on load, a cheap probe checks for rows keyed by the f10_client derived from DATASET
+   above (e.g. mosh_marts → mosh); no rows → no tab. Adding competitor rows in the
+   warehouse is all it takes for the tab to show up on the next dashboard load.
+   COMPETITORS is OPTIONAL overrides only — uncomment just what you need. */
 // const COMPETITORS = {
-//   CLIENT:       'your_client',   // f10_client key in all_clients_adlib (required)
+//   CLIENT:       'your_client',   // override the f10_client key only when the DATASET name doesn't follow the {client}_marts / {client}_clean convention
 //   PER_PAGE:     30,              // optional; competitor cards shown per in-page page
 //   MAX_PER_PAGE: 0,              // optional hard cap on ads rendered per competitor (0 = no cap)
 // };
