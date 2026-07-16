@@ -84,10 +84,31 @@
     show('<div class="f10-preview-msg">' + where + '&nbsp;&#8599;</div>' + metricsHtml(adId));
   }
 
+  // Build the <img>/<video> markup for one resolved media object ({type, url}).
+  // Shared so anything rendering framework creatives (this hover card, the
+  // competitor tab's inline cards) constructs media the same way instead of
+  // duplicating it. opts toggles the attributes each surface needs:
+  //   className, controls, muted, loop, autoplay, preload, loading, alt.
+  // The hover card wants a muted autoplay loop; inline cards want controls.
+  function mediaMarkup(m, opts) {
+    m = m || {};
+    opts = opts || {};
+    function a(k, v) {
+      if (v == null || v === false) return '';
+      return v === true ? ' ' + k : ' ' + k + '="' + v + '"';
+    }
+    var head = a('class', opts.className) + a('src', m.url);
+    if (m.type === 'video') {
+      return '<video' + head + a('controls', opts.controls) + a('muted', opts.muted) +
+        a('loop', opts.loop) + a('autoplay', opts.autoplay) + a('preload', opts.preload) +
+        ' playsinline></video>';
+    }
+    return '<img' + head + a('loading', opts.loading) + ' alt="' + (opts.alt || 'creative preview') + '" />';
+  }
+  window.f10MediaMarkup = mediaMarkup;
+
   function showMedia(m, adId) {
-    var media = (m.type === 'video')
-      ? '<video src="' + m.url + '" muted loop autoplay playsinline></video>'
-      : '<img src="' + m.url + '" alt="creative preview" />';
+    var media = mediaMarkup(m, { muted: true, loop: true, autoplay: true });
     show(media + metricsHtml(adId));
     // The media box may resize once it loads; reposition so it stays on-screen.
     var el = card.querySelector('img, video');

@@ -152,6 +152,23 @@ function ttPanelsMarkup(ttTh){
 `;
 }
 
+/* Competitor Ad Library markup (single panel), rendered only when the
+ * visibility probe finds competitor rows for this client (probe-driven, US-003).
+ * Not part of the base layout: f10-competitors.js injects this panel (and the
+ * matching nav entry) after its existence probe passes, and drives the panel. */
+function competitorPanelMarkup(){
+  return `
+    <!-- COMPETITORS: AD LIBRARY -->
+    <div class="tab-panel comp-tab-panel" id="panel-competitors">
+      <div class="insight-box"><strong>Competitor Ad Library:</strong> every tracked competitor's live Meta ads, grouped by competitor. Longevity (<strong>Nd active</strong>) is the winner signal &mdash; AU has no public spend or impressions data, so how long a competitor keeps an ad live is the clearest read on what is working for them. Play any video or scroll multi-asset ads in place.</div>
+      <div class="window-note" id="comp-meta"></div>
+      <div class="window-note" id="comp-note"></div>
+      <div id="comp-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+      <div id="comp-body" style="display:none;"></div>
+    </div>
+`;
+}
+
 /* ── "How to read this tab" notes ──
  * Plain-English, client-facing guidance shown at the top of every tab, plus a
  * one-line definition of what a "conversion" is for this account. Rendered only
@@ -463,4 +480,8 @@ ${ttControls}
   }
 
   if (hasTikTok && typeof initTikTok === 'function') initTikTok();
+  /* Competitor tab visibility is probe-driven (US-003): f10-competitors.js runs a
+   * cheap existence probe and registers its own nav entry + panel only when the
+   * client has competitor rows — so this call is unconditional. */
+  if (typeof initCompetitors === 'function') initCompetitors();
 }
