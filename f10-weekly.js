@@ -52,6 +52,14 @@ async function fetchMaxDate(){
 async function fetchWindows(c){
   const curStart=isoOffset(c.end,-(c.length-1)), curEnd=c.end;
   const priEnd=isoOffset(curStart,-1), priStart=isoOffset(priEnd,-(c.length-1));
+  /* Windowed revenue is fetched ONLY in ROAS mode. In CPA mode we never emit a
+   * revenue SELECT — a lead-gen mart has no gated revenue column and the query
+   * would error. Revenue comes exclusively from the gated REVENUE_EXPR column
+   * (default 'revenue'), never from raw conversion_value (hard policy). */
+  const wantRev = targetMetric() === 'roas';
+  const revCols = wantRev ? `,
+      SUM(IF(date_start BETWEEN '${curStart}' AND '${curEnd}', ${revenueExpr()}, 0))  AS cur_revenue,
+      SUM(IF(date_start BETWEEN '${priStart}' AND '${priEnd}', ${revenueExpr()}, 0))  AS pri_revenue` : '';
   const sql = `
     SELECT ad_id,
       ANY_VALUE(ad_name)       AS ad_name,
@@ -72,7 +80,7 @@ async function fetchWindows(c){
       SUM(IF(date_start BETWEEN '${priStart}' AND '${priEnd}', spend, 0))         AS pri_spend,
       SUM(IF(date_start BETWEEN '${priStart}' AND '${priEnd}', impressions, 0))   AS pri_impressions,
       SUM(IF(date_start BETWEEN '${priStart}' AND '${priEnd}', clicks, 0))        AS pri_clicks,
-      SUM(IF(date_start BETWEEN '${priStart}' AND '${priEnd}', ${CONV_EXPR}, 0))  AS pri_conv
+      SUM(IF(date_start BETWEEN '${priStart}' AND '${priEnd}', ${CONV_EXPR}, 0))  AS pri_conv${revCols}
     FROM \`${PROJECT}.${DATASET}.${TABLE}\`
     WHERE date_start BETWEEN '${priStart}' AND '${curEnd}'${scopeWhere()}
     GROUP BY ad_id
@@ -84,8 +92,8 @@ async function fetchWindows(c){
     ads[r.ad_id] = {
       ad_id: r.ad_id, ad_name: r.ad_name, campaign_name: r.campaign_name,
       adset_name: r.adset_name, creative_link: r.creative_link,
-      cur: { spend:cs, impressions:Number(r.cur_impressions)||0, clicks:Number(r.cur_clicks)||0, conv:Number(r.cur_conv)||0, conv_cost_num:cs, video_15s:Number(r.cur_v15s)||0, video_p25:Number(r.cur_p25)||0, video_p50:Number(r.cur_p50)||0, video_p75:Number(r.cur_p75)||0, video_p100:Number(r.cur_p100)||0, video_plays:Number(r.cur_plays)||0, outbound_clicks:Number(r.cur_outbound)||0 },
-      pri: { spend:ps, impressions:Number(r.pri_impressions)||0, clicks:Number(r.pri_clicks)||0, conv:Number(r.pri_conv)||0, conv_cost_num:ps },
+      cur: { spend:cs, impressions:Number(r.cur_impressions)||0, clicks:Number(r.cur_clicks)||0, conv:Number(r.cur_conv)||0, conv_cost_num:cs, video_15s:Number(r.cur_v15s)||0, video_p25:Number(r.cur_p25)||0, video_p50:Number(r.cur_p50)||0, video_p75:Number(r.cur_p75)||0, video_p100:Number(r.cur_p100)||0, video_plays:Number(r.cur_plays)||0, outbound_clicks:Number(r.cur_outbound)||0, revenue:Number(r.cur_revenue)||0 },
+      pri: { spend:ps, impressions:Number(r.pri_impressions)||0, clicks:Number(r.pri_clicks)||0, conv:Number(r.pri_conv)||0, conv_cost_num:ps, revenue:Number(r.pri_revenue)||0 },
     };
   });
   return { ads, curStart, curEnd, priStart, priEnd };
@@ -231,7 +239,7 @@ function refreshWeeklyBoard(){
 function renderSummary(all, c, w){
   const m   = c.metric;
   const tot = { cur: emptyAgg(), pri: emptyAgg() };
-  all.forEach(a => { ['spend','impressions','clicks','conv','conv_cost_num'].forEach(k => { tot.cur[k]+=a.cur[k]; tot.pri[k]+=a.pri[k]; }); });
+  all.forEach(a => { ['spend','impressions','clicks','conv','conv_cost_num','revenue'].forEach(k => { tot.cur[k]+=a.cur[k]; tot.pri[k]+=a.pri[k]; }); });
   const mCur=metricValue(tot.cur,m), mPri=metricValue(tot.pri,m);
 
   function deltaHtml(cur, pri, lowerBetter){
@@ -242,12 +250,36 @@ function renderSummary(all, c, w){
     return `<div class="scorecard-delta ${cls}">${arrow} ${Math.abs(chg).toFixed(1)}% vs prior</div>`;
   }
 
-  const cards = [
-    { label: 'Spend',            val: fmt$(tot.cur.spend),           d: deltaHtml(tot.cur.spend,       tot.pri.spend,       false) },
-    { label: 'Conversions',      val: fmtNum(tot.cur.conv),          d: deltaHtml(tot.cur.conv,        tot.pri.conv,        false) },
-    { label: 'Impressions',      val: fmtNum(tot.cur.impressions),   d: deltaHtml(tot.cur.impressions, tot.pri.impressions, false) },
-    { label: 'Blended '+m.label, val: fmtMetric(mCur,m),            d: deltaHtml(mCur,                mPri,                m.dir==='lower') },
-  ];
+  /* Scorecard set is metric-aware, not a blanket replace. In ROAS mode the
+   * revenue story leads: Spend, Revenue, blended ROAS, Conversions (Conversions
+   * retained). In CPA mode the set is exactly the legacy four so lead-gen
+   * dashboards are byte-for-byte unchanged. The blended tile tracks the active
+   * efficiency metric `m` (defaults to ROAS in ROAS mode via the metric dropdown). */
+  /* Revenue-integrity guard (US-010): in ROAS mode, a window with blended
+   * revenue 0 while spend > 0 means the gated revenue column is missing/zeroed —
+   * show the warning banner and suppress the confident 0.0x on the blended tile
+   * rather than present an understated headline. Runs on the aggregates already
+   * summed above (no query). Always false in CPA mode, so CPA is unchanged. */
+  const revBroken = applyRevenueGuard('summary-revenue-guard', revenueSignalBroken(tot.cur.revenue, tot.cur.spend));
+
+  const spendCard = { label: 'Spend', val: fmt$(tot.cur.spend), d: deltaHtml(tot.cur.spend, tot.pri.spend, false) };
+  const convCard  = { label: 'Conversions', val: fmtNum(tot.cur.conv), d: deltaHtml(tot.cur.conv, tot.pri.conv, false) };
+  const blendCard = revBroken
+    ? { label: 'Blended '+m.label, val: '–', d: `<div class="scorecard-delta delta-flat">revenue check needed</div>` }
+    : { label: 'Blended '+m.label, val: fmtMetric(mCur,m), d: deltaHtml(mCur, mPri, m.dir==='lower') };
+  const cards = targetMetric() === 'roas'
+    ? [
+        spendCard,
+        { label: 'Revenue', val: fmt$(tot.cur.revenue), d: deltaHtml(tot.cur.revenue, tot.pri.revenue, false) },
+        blendCard,
+        convCard,
+      ]
+    : [
+        spendCard,
+        convCard,
+        { label: 'Impressions', val: fmtNum(tot.cur.impressions), d: deltaHtml(tot.cur.impressions, tot.pri.impressions, false) },
+        blendCard,
+      ];
   document.getElementById('summary-scorecards').innerHTML = cards.map(c2 =>
     `<div class="scorecard"><div class="scorecard-label">${c2.label}</div><div class="scorecard-value">${c2.val}</div>${c2.d}</div>`
   ).join('');
