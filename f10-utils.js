@@ -29,6 +29,13 @@ const PRODUCTION_DEFAULTS = Object.freeze({
   OB_CPA:   _TH.OB_CPA   ?? 100,
   SO_SPEND: _TH.SO_SPEND ?? 500,
   SO_CPA:   _TH.SO_CPA   ?? 140,
+  /* ROAS Ad Production bands (used when TARGET_METRIC='roas'). Polarity is
+   * inverted vs CPA — higher ROAS is better — so Home Run is a FLOOR to clear
+   * and Strike Out a ceiling to fall under. Spend floors are shared with CPA
+   * (HR_SPEND/OB_SPEND/SO_SPEND) and are not duplicated. */
+  HR_ROAS:  _TH.HR_ROAS  ?? 4,
+  OB_ROAS:  _TH.OB_ROAS  ?? 2,
+  SO_ROAS:  _TH.SO_ROAS  ?? 1,
 });
 let HR_SPEND = PRODUCTION_DEFAULTS.HR_SPEND;
 let HR_CPA   = PRODUCTION_DEFAULTS.HR_CPA;
@@ -36,16 +43,36 @@ let OB_SPEND = PRODUCTION_DEFAULTS.OB_SPEND;
 let OB_CPA   = PRODUCTION_DEFAULTS.OB_CPA;
 let SO_SPEND = PRODUCTION_DEFAULTS.SO_SPEND;
 let SO_CPA   = PRODUCTION_DEFAULTS.SO_CPA;
+let HR_ROAS  = PRODUCTION_DEFAULTS.HR_ROAS;
+let OB_ROAS  = PRODUCTION_DEFAULTS.OB_ROAS;
+let SO_ROAS  = PRODUCTION_DEFAULTS.SO_ROAS;
 
-/* Read the active production thresholds as a plain object. */
+/* The threshold keys exposed for the ACTIVE target metric. Spend floors are
+ * always included; the efficiency band is CPA (lower-is-better) in CPA mode or
+ * ROAS (higher-is-better) in ROAS mode. In CPA mode this is exactly the legacy
+ * key set, so existing dashboards see no change. */
+function _thresholdKeys(){
+  return targetMetric() === 'roas'
+    ? ['HR_SPEND','HR_ROAS','OB_SPEND','OB_ROAS','SO_SPEND','SO_ROAS']
+    : ['HR_SPEND','HR_CPA','OB_SPEND','OB_CPA','SO_SPEND','SO_CPA'];
+}
+
+/* Read the active production thresholds as a plain object. Only the active
+ * metric's bands are surfaced (CPA bands in CPA mode, ROAS bands in ROAS mode);
+ * the shared spend floors are always present. */
 function getProductionThresholds(){
-  return { HR_SPEND, HR_CPA, OB_SPEND, OB_CPA, SO_SPEND, SO_CPA };
+  const all = { HR_SPEND, HR_CPA, OB_SPEND, OB_CPA, SO_SPEND, SO_CPA, HR_ROAS, OB_ROAS, SO_ROAS };
+  const out = {};
+  for (const k of _thresholdKeys()) out[k] = all[k];
+  return out;
 }
 /* Apply a subset of thresholds. Only finite, non-negative numbers are accepted;
- * anything else leaves that threshold unchanged. Returns the active set. */
+ * anything else leaves that threshold unchanged. Accepts both CPA and ROAS band
+ * keys so a caller can set either metric's bands regardless of the active one.
+ * Returns the active set. */
 function setProductionThresholds(partial){
   const next = partial || {};
-  for (const k of ['HR_SPEND','HR_CPA','OB_SPEND','OB_CPA','SO_SPEND','SO_CPA']){
+  for (const k of ['HR_SPEND','HR_CPA','OB_SPEND','OB_CPA','SO_SPEND','SO_CPA','HR_ROAS','OB_ROAS','SO_ROAS']){
     if (!(k in next)) continue;
     const v = Number(next[k]);
     if (!Number.isFinite(v) || v < 0) continue;
@@ -55,22 +82,47 @@ function setProductionThresholds(partial){
     else if (k === 'OB_CPA') OB_CPA = v;
     else if (k === 'SO_SPEND') SO_SPEND = v;
     else if (k === 'SO_CPA') SO_CPA = v;
+    else if (k === 'HR_ROAS') HR_ROAS = v;
+    else if (k === 'OB_ROAS') OB_ROAS = v;
+    else if (k === 'SO_ROAS') SO_ROAS = v;
   }
   return getProductionThresholds();
 }
 /* Restore the per-client (or built-in) defaults. Returns the active set. */
 function resetProductionThresholds(){
-  ({ HR_SPEND, HR_CPA, OB_SPEND, OB_CPA, SO_SPEND, SO_CPA } = PRODUCTION_DEFAULTS);
+  ({ HR_SPEND, HR_CPA, OB_SPEND, OB_CPA, SO_SPEND, SO_CPA, HR_ROAS, OB_ROAS, SO_ROAS } = PRODUCTION_DEFAULTS);
   return getProductionThresholds();
 }
 
+/* ── Target metric selection (config-selectable, backward-compatible) ──
+ * A dashboard may pick which efficiency metric headlines the account by defining,
+ * BEFORE the scripts load (same guarded-global idiom as CONV_EXPR/GROUP_FILTERS):
+ *   TARGET_METRIC — 'cpa' (default) or 'roas'. Unset ⇒ 'cpa', so every existing
+ *                   dashboard behaves exactly as before.
+ *   REVENUE_EXPR  — SQL expression for the mart's GATED revenue column
+ *                   (default 'revenue'). ROAS must consume this gated column;
+ *                   raw conversion_value is forbidden by policy.
+ * Only 'roas' flips the mode — any other value falls back to 'cpa'. */
+function targetMetric(){
+  const t = (typeof TARGET_METRIC !== 'undefined' && TARGET_METRIC) ? String(TARGET_METRIC).toLowerCase() : 'cpa';
+  return t === 'roas' ? 'roas' : 'cpa';
+}
+function revenueExpr(){ return (typeof REVENUE_EXPR !== 'undefined' && REVENUE_EXPR) ? String(REVENUE_EXPR) : 'revenue'; }
+
 /* Weekly efficiency metric definitions */
 const METRICS = {
-  CPA: { num: 'conv_cost_num', den: 'conv',        scale: 1,    dir: 'lower',  fmt: 'money', label: 'CPA' },
-  CPC: { num: 'spend',         den: 'clicks',       scale: 1,    dir: 'lower',  fmt: 'money', label: 'CPC' },
-  CPM: { num: 'spend',         den: 'impressions',  scale: 1000, dir: 'lower',  fmt: 'money', label: 'CPM' },
-  CTR: { num: 'clicks',        den: 'impressions',  scale: 100,  dir: 'higher', fmt: 'pct',   label: 'CTR' },
+  CPA:  { num: 'conv_cost_num', den: 'conv',        scale: 1,    dir: 'lower',  fmt: 'money', label: 'CPA' },
+  CPC:  { num: 'spend',         den: 'clicks',       scale: 1,    dir: 'lower',  fmt: 'money', label: 'CPC' },
+  CPM:  { num: 'spend',         den: 'impressions',  scale: 1000, dir: 'lower',  fmt: 'money', label: 'CPM' },
+  CTR:  { num: 'clicks',        den: 'impressions',  scale: 100,  dir: 'higher', fmt: 'pct',   label: 'CTR' },
+  /* ROAS = SUM(revenue) / spend. Higher is better (dir:'higher'); rendered as a
+   * ratio (e.g. '4.8x'). Revenue comes from the gated `revenue` agg field, never
+   * raw conversion_value. */
+  ROAS: { num: 'revenue',       den: 'spend',        scale: 1,    dir: 'higher', fmt: 'ratio', label: 'ROAS' },
 };
+
+/* Resolve the active target metric's METRICS entry (CPA by default). */
+function targetMetricDef(){ return targetMetric() === 'roas' ? METRICS.ROAS : METRICS.CPA; }
 
 /* Monthly chart palettes */
 const COHORT_COLORS = ['#c8ff00','#fa023c','#4a90e2','#f5a623','#7ed321','#9b59b6','#1abc9c','#e67e22','#2ecc71','#e74c3c','#3498db','#f39c12'];
@@ -92,7 +144,14 @@ function bqStr(v){ if(v==null) return null; if(typeof v==='object'&&v.value!==un
 function fmt$(n){ if(n==null||n===''||isNaN(n)) return '–'; return '$'+Number(n).toLocaleString('en-AU',{maximumFractionDigits:0}); }
 function fmtPct(n, dp=1){ if(n==null||isNaN(n)) return '–'; return Number(n).toFixed(dp)+'%'; }
 function fmtNum(n){ if(n==null||isNaN(n)) return '–'; return Number(n).toLocaleString('en-AU',{maximumFractionDigits:0}); }
-function fmtMetric(v, m){ if(v==null||isNaN(v)||!isFinite(v)) return '–'; return m.fmt==='money' ? '$'+Number(v).toLocaleString('en-AU',{maximumFractionDigits: v<10?2:0}) : Number(v).toFixed(2)+'%'; }
+function fmtRatio(n, dp=1){ if(n==null||isNaN(n)||!isFinite(n)) return '–'; return Number(n).toFixed(dp)+'x'; }
+function fmtMetric(v, m){
+  if(v==null||isNaN(v)||!isFinite(v)) return '–';
+  const f = m && m.fmt;
+  if(f==='money') return '$'+Number(v).toLocaleString('en-AU',{maximumFractionDigits: v<10?2:0});
+  if(f==='ratio') return fmtRatio(v);
+  return Number(v).toFixed(2)+'%';
+}
 function fmtDate(s){ const str=bqStr(s); if(!str) return '–'; const [y,mo,d]=str.split('-').map(Number); const dt=new Date(Date.UTC(y,mo-1,d)); return dt.toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric',timeZone:'UTC'}); }
 function isoOffset(isoDate, days){ const [y,mo,d]=isoDate.split('-').map(Number); const dt=new Date(Date.UTC(y,mo-1,d)); dt.setUTCDate(dt.getUTCDate()+days); return dt.toISOString().slice(0,10); }
 
@@ -346,8 +405,13 @@ function showHowToNotes(){ return (typeof SHOW_HOW_TO_NOTES !== 'undefined') && 
 async function runQuery(sql){ const r=await fetch(BQ_FUNCTION,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:sql})}); if(!r.ok) throw new Error(await r.text()); return r.json(); }
 
 /* ── Aggregation helpers ── */
-function emptyAgg(){ return { spend:0, impressions:0, clicks:0, conv:0, conv_cost_num:0 }; }
-function addRow(a, r){ a.spend+=r.spend; a.impressions+=r.impressions; a.clicks+=r.clicks; a.conv+=r.conv; a.conv_cost_num+=r.conv_cost_num; }
+/* `revenue` is the gated revenue field (sourced from REVENUE_EXPR, default the
+ * mart's 'revenue' column) — deliberately NOT `conv_value`, so it can never be
+ * confused with the policy-forbidden raw conversion_value. It is summed with
+ * `|| 0` so CPA-mode rows (which carry no revenue) contribute 0 and never poison
+ * the aggregate into NaN. */
+function emptyAgg(){ return { spend:0, impressions:0, clicks:0, conv:0, conv_cost_num:0, revenue:0 }; }
+function addRow(a, r){ a.spend+=r.spend; a.impressions+=r.impressions; a.clicks+=r.clicks; a.conv+=r.conv; a.conv_cost_num+=r.conv_cost_num; a.revenue += r.revenue || 0; }
 function metricValue(agg, m){ const den=agg[m.den]; if(!den) return null; return (agg[m.num]/den)*m.scale; }
 
 /* ── Noise floor ── */
