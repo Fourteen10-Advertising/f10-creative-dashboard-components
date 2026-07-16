@@ -450,6 +450,42 @@ async function queryCompetitor(body, credentials, cors) {
       console.warn('competitor_vision_attributes unavailable, continuing without vision:', e.message);
     }
 
+    // Optional age-metrics read (US-004) — absent-safe: the competitor_age_by_client
+    // and competitor_age_by_page marts may not exist for a client/account yet, so a
+    // table-not-found is swallowed (same pattern as the vision block above) and the
+    // frontend age-metrics header simply doesn't render. The two marts are read
+    // independently so one present / one absent still yields what data exists.
+    const ageMetrics = { client: null, byPage: {} };
+    try {
+      const [clientAgeRows] = await runQuery(`
+        SELECT f10_client, ads_tracked, ads_live, avg_age_live_days,
+               live_lt_7d, live_7_30d, live_30_90d, live_90d_plus, last_refreshed
+        FROM \`${PROJECT}.${DATASET}.competitor_age_by_client\`
+        WHERE f10_client = @client
+      `);
+      ageMetrics.client = clientAgeRows.length ? clientAgeRows[0] : null;
+    } catch (e) {
+      const notFound = e && (e.code === 404 || /not found|does not exist/i.test(e.message || ''));
+      if (!notFound) throw e;
+      console.warn('competitor_age_by_client unavailable, continuing without client age metrics:', e.message);
+    }
+    try {
+      const [pageAgeRows] = await runQuery(`
+        SELECT f10_client, page_id, page_name, ads_tracked, ads_live, avg_age_live_days,
+               live_lt_7d, live_7_30d, live_30_90d, live_90d_plus, last_refreshed
+        FROM \`${PROJECT}.${DATASET}.competitor_age_by_page\`
+        WHERE f10_client = @client
+      `);
+      // Key by page_name to match how the frontend groups competitor sections.
+      for (const p of pageAgeRows) {
+        if (p.page_name != null && p.page_name !== '') ageMetrics.byPage[String(p.page_name)] = p;
+      }
+    } catch (e) {
+      const notFound = e && (e.code === 404 || /not found|does not exist/i.test(e.message || ''));
+      if (!notFound) throw e;
+      console.warn('competitor_age_by_page unavailable, continuing without per-page age metrics:', e.message);
+    }
+
     // Sign every fetched creative at request time, mutating in place so the
     // per-ad ordering above survives the parallel signing.
     const storage = new Storage({ projectId: PROJECT, credentials });
@@ -474,7 +510,7 @@ async function queryCompetitor(body, credentials, cors) {
       vision: visionByAd[a.ad_archive_id] || null,
     }));
 
-    return json(200, { ads: out });
+    return json(200, { ads: out, ageMetrics });
   } catch (err) {
     console.error('Competitor query error:', err);
     return json(500, { error: err.message });
