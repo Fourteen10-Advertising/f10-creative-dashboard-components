@@ -30,7 +30,7 @@
  * build_competitor_page.py surface. Data comes from the shared framework's
  * Netlify function via the data-driven `competitor` action (US-001), which
  * returns the latest snapshot per ad with longevity fields, request-time v4
- * signed creative URLs, and absent-safe vision enrichment.
+ * signed creative URLs, and absent-safe age-metrics enrichment.
  *
  * Pagination mirrors the static page: each competitor shows PER_PAGE cards at a
  * time with Prev / Next, and ONLY the currently visible page's cards are mounted
@@ -209,16 +209,6 @@
     tags.push(`<span class="comp-tag ${live ? 'live' : 'off'}">${live ? 'live' : 'stopped'}</span>`);
     if (days != null) tags.push(`<span class="comp-tag days">${days}d active</span>`);
 
-    // Vision enrichment when present; absent → no empty labels rendered.
-    let vis = '';
-    const v = ad.vision;
-    if (v && (v.hook || v.angle || v.format_read)) {
-      vis = '<div class="comp-vision">'
-        + (v.hook ? `<div><b>Hook:</b> ${esc(v.hook)}</div>` : '')
-        + (v.angle ? `<div><b>Angle:</b> ${esc(v.angle)}</div>` : '')
-        + (v.format_read ? `<div><b>Format:</b> ${esc(v.format_read)}</div>` : '')
-        + '</div>';
-    }
     const link = snap ? `<a href="${esc(snap)}" target="_blank" rel="noopener">View on Meta &rarr;</a>` : '';
 
     return `<div class="comp-card">${compMediaHtml(ad.creatives)}<div class="comp-body">`
@@ -226,7 +216,7 @@
       + (since && since !== '–' ? `<div class="comp-since">Live since ${esc(since)}</div>` : '')
       + `<div class="comp-copy${cc.dyn ? ' dyn' : ''}">${copy}</div>`
       + `<div class="comp-foot"><span class="comp-cta">${cta || '&nbsp;'}</span>${link}</div>`
-      + `</div>${vis}</div>`;
+      + `</div></div>`;
   }
 
   /* ── Load + render orchestration ── */
@@ -268,12 +258,11 @@
       return;
     }
 
-    let total = 0, visionRan = false;
+    let total = 0;
     compSections = groups.map((g) => {
       let rows = g.rows;
       if (COMP_MAX && rows.length > COMP_MAX) rows = rows.slice(0, COMP_MAX);
       const live = rows.reduce((n, a) => n + (((a.still_active != null ? a.still_active : a.is_active)) ? 1 : 0), 0);
-      rows.forEach((a) => { if (a.vision && (a.vision.hook || a.vision.angle || a.vision.format_read)) visionRan = true; });
       total += rows.length;
       return { page_name: g.page_name, cards: rows.map(compCardHtml), total: rows.length, live: live, cur: 0 };
     });
@@ -283,10 +272,7 @@
         + `${total} ad${total === 1 ? '' : 's'} · source: Meta Ad Library (AU)`;
     }
     if (note) {
-      const pageHint = `Each competitor shows ${COMP_PER_PAGE} ads at a time — use Prev / Next to page through the rest.`;
-      note.textContent = visionRan
-        ? `Cards show the observed hook, angle and format from the vision read. ${pageHint}`
-        : `Vision analysis has not been run yet — cards show the raw scraped ads; play any video or scroll multi-asset ads in place. ${pageHint}`;
+      note.textContent = `Each competitor shows ${COMP_PER_PAGE} ads at a time — use Prev / Next to page through the rest.`;
     }
 
     body.innerHTML = compSummaryHtml(ageClient, groups.length)

@@ -210,6 +210,4 @@ tbody tr:hover { background: rgba(75,0,15,0.03); }
 .comp-foot .comp-cta { color: var(--grey); text-transform: uppercase; letter-spacing: 0.05em; }
 .comp-foot a { color: var(--young-blood); font-weight: 600; text-decoration: none; white-space: nowrap; }
 .comp-foot a:hover { color: var(--stabilo-red); }
-.comp-vision { background: rgba(75,0,15,0.05); border-top: 1px dashed var(--paper-dark); padding: 10px 13px; font-size: 12px; line-height: 1.5; }
-.comp-vision b { color: var(--young-blood); font-weight: 600; }
 .comp-pager { display: flex; gap: 12px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
