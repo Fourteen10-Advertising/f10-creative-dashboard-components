@@ -96,6 +96,8 @@ Visibility is **probe-driven** — no per-client config is needed. On dashboard 
 
 The tab groups this client's tracked competitor Meta ads by competitor, in the F10 card layout — image inline / video with controls / carousel strip, plus ad copy, CTA, format, "Live since" date and longevity (days active + still-active). Vision hook/angle/format enrich each card when the vision read has run; otherwise cards render from the raw scraped fields. Each competitor paginates (Prev / Next) and only the visible page's cards mount their media, so only that page's signed creatives are fetched. Data is served by the shared function's data-driven `competitor` action, keyed by the resolved client key.
 
+The **performance controls bar is hidden on the competitor tab** — its group filter, ad-name search, ad-status, window length, efficiency metric, noise floor and min-spend controls are irrelevant to competitor ads. `compSelectTab()` hides `#controls-bar` on activation, and `applyControlsVisibility()` (f10-weekly.js) checks whether `#panel-competitors` is active and keeps the bar suppressed, so a later weekly re-render (tab switch back, refresh, filter change) can't re-show it over the competitor tab.
+
 `COMPETITORS` is an **optional overrides object** only:
 
 ```js
@@ -115,7 +117,7 @@ const COMPETITORS = {
 
 ## Ad status filter & ad-name search
 
-Both controls live in the controls bar on **every tab** and need no per-client config — they serve all dashboards automatically.
+Both controls live in the controls bar on **every Meta/monthly tab** and need no per-client config — they serve all dashboards automatically. (The bar is hidden on the competitor tab; see Competitor Ad Library above.)
 
 - **Ad status** (`All ads` / `Active only`) — server-side filter. `Active only` scopes every query to ads whose latest Meta delivery status is ACTIVE, via the `is_active` column on the `creative_reporting` mart. Composed with group filters through `scopeWhere()` (group + status predicates, correct WHERE/AND leading).
   - **Requires** the mart to expose `is_active` (and `effective_status`), added by the `f10-dataform` `stg_meta_ad_status` model. Pin a client to a framework tag that ships this control **only after** that column is live in the client's mart, or `Active only` queries will error.

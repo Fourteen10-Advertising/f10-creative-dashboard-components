@@ -132,10 +132,19 @@ function onGroupChange(e){
   if(!isWeekly(activeTab) && typeof loadMonthlyTab === 'function') loadMonthlyTab(activeTab);
 }
 
-/* Controls-bar visibility: the bar itself stays visible on every tab (it always
- * carries the universal ad-name search + status filter); the weekly-only
- * controls show on weekly tabs. */
+/* Controls-bar visibility: the bar itself stays visible on every Meta/monthly
+ * tab (it always carries the universal ad-name search + status filter); the
+ * weekly-only controls show on weekly tabs. The whole bar is suppressed on the
+ * competitor tab, whose ads are irrelevant to these performance controls — the
+ * competitor module hides the bar on activation, and this guard keeps any later
+ * weekly re-render (tab switch back, refresh, filter change) from re-showing it. */
 function applyControlsVisibility(){
+  const compPanel = document.getElementById('panel-competitors');
+  const compActive = compPanel && compPanel.classList.contains('active');
+  if(compActive){
+    document.getElementById('controls-bar').style.display = 'none';
+    return;
+  }
   const showWeekly = isWeekly(activeTab);
   document.getElementById('controls-bar').style.display = 'flex';
   const wc = document.getElementById('weekly-controls');
