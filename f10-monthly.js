@@ -21,17 +21,25 @@ let decayChart = null, decayPctChart = null, ageChart = null,
 
 let productionControlsWired = false;
 
-/* Map of Ad Production threshold input ids → threshold keys. */
-const PRODUCTION_INPUT_MAP = {
-  'th-hr-spend': 'HR_SPEND', 'th-hr-cpa': 'HR_CPA',
-  'th-ob-spend': 'OB_SPEND', 'th-ob-cpa': 'OB_CPA',
-  'th-so-spend': 'SO_SPEND', 'th-so-cpa': 'SO_CPA',
-};
+/* Map of Ad Production threshold input ids → threshold keys, for the ACTIVE
+ * target metric. Spend floors are shared; the efficiency-band inputs differ:
+ * CPA mode uses the th-*-cpa ids (HR/OB/SO_CPA), ROAS mode uses the th-*-roas ids
+ * (HR/OB/SO_ROAS). The layout renders whichever id set matches the active metric
+ * (see prodThresholdFieldsHTML), so exactly one set is present in the DOM. */
+function productionInputMap(){
+  return targetMetric() === 'roas'
+    ? { 'th-hr-spend':'HR_SPEND', 'th-hr-roas':'HR_ROAS',
+        'th-ob-spend':'OB_SPEND', 'th-ob-roas':'OB_ROAS',
+        'th-so-spend':'SO_SPEND', 'th-so-roas':'SO_ROAS' }
+    : { 'th-hr-spend':'HR_SPEND', 'th-hr-cpa':'HR_CPA',
+        'th-ob-spend':'OB_SPEND', 'th-ob-cpa':'OB_CPA',
+        'th-so-spend':'SO_SPEND', 'th-so-cpa':'SO_CPA' };
+}
 
 /* Fill the threshold inputs from the active thresholds. */
 function fillProductionInputs(){
   const th = getProductionThresholds();
-  for (const [id, key] of Object.entries(PRODUCTION_INPUT_MAP)){
+  for (const [id, key] of Object.entries(productionInputMap())){
     const el = document.getElementById(id);
     if (el) el.value = th[key];
   }
@@ -49,7 +57,7 @@ function ensureProductionControls(){
   fillProductionInputs();
   apply.addEventListener('click', () => {
     const partial = {};
-    for (const [id, key] of Object.entries(PRODUCTION_INPUT_MAP)){
+    for (const [id, key] of Object.entries(productionInputMap())){
       const el = document.getElementById(id);
       if (el && el.value !== '') partial[key] = el.value;
     }
@@ -163,26 +171,37 @@ async function loadProduction(){
         MIN(min_date) AS launch_date, ANY_VALUE(creative_link) AS creative_link,
         ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend,
         ROUND(SUM(${CONV_EXPR}), 0) AS total_conversions,
-        ROUND(SAFE_DIVIDE(ANY_VALUE(lifetime_spend), NULLIF(SUM(${CONV_EXPR}), 0)), 2) AS lifetime_cpa,
+        ROUND(${lifetimeMetricSQL('ANY_VALUE(lifetime_spend)', `SUM(${CONV_EXPR})`)}, 2) AS ${lifetimeMetricCol()},
         SUM(impressions) AS impressions, SUM(clicks) AS clicks, SUM(video_15s) AS video_15s,
         SUM(video_p25) AS video_p25, SUM(video_p50) AS video_p50, SUM(video_p75) AS video_p75,
         SUM(video_p100) AS video_p100, SUM(video_plays) AS video_plays, SUM(outbound_clicks) AS outbound_clicks
       FROM \`${PROJECT}.${DATASET}.${TABLE}\`${scopeWhere('WHERE')} GROUP BY 1
     )
     SELECT *,
-      CASE WHEN lifetime_spend >= ${HR_SPEND} AND lifetime_cpa > 0 AND lifetime_cpa < ${HR_CPA} THEN 'Home Run'
-           WHEN lifetime_spend >= ${OB_SPEND} AND lifetime_cpa > 0 AND lifetime_cpa < ${OB_CPA} THEN 'On Base'
-           WHEN lifetime_spend >= ${SO_SPEND} AND lifetime_cpa > ${SO_CPA} THEN 'Strike Out' ELSE 'Unclassified' END AS classification
+      ${classificationCaseSQL('lifetime_spend', lifetimeMetricCol())} AS classification
     FROM per_ad ORDER BY lifetime_spend DESC`;
+  /* Metric-aware rollup: unique_ads carries the same per-ad lifetime metric the
+     scatter uses (lifetime_cpa or lifetime_roas), classified by the single shared
+     builder. period_revenue is selected ONLY in ROAS mode so CPA-mode marts are
+     never queried for a revenue column. The month-level avg is SUM(revenue)/
+     SUM(spend) in ROAS mode and SUM(spend)/SUM(conversions) in CPA mode; the
+     alias stays `avg_cpa` so the existing summary-table render is unchanged
+     (metric-aware formatting of that cell is US-005). */
+  const rollupMetricCol = lifetimeMetricCol();
+  const rollupIsRoas = targetMetric() === 'roas';
+  const rollupRevSel = rollupIsRoas ? `, ROUND(SUM(${revenueExpr()}),2) AS period_revenue` : '';
+  const rollupAvgSQL = rollupIsRoas
+    ? `ROUND(SAFE_DIVIDE(SUM(period_revenue), NULLIF(SUM(period_spend),0)),2)`
+    : `ROUND(SAFE_DIVIDE(SUM(period_spend), NULLIF(SUM(total_conversions),0)),0)`;
   const monthlySQL = `
     WITH unique_ads AS (
-      SELECT ad_id, MIN(min_date) AS launch_date, ROUND(ANY_VALUE(lifetime_spend),2) AS lifetime_spend, ROUND(SAFE_DIVIDE(ANY_VALUE(lifetime_spend), NULLIF(SUM(${CONV_EXPR}),0)),2) AS lifetime_cpa,
-        ROUND(SUM(spend),2) AS period_spend, ROUND(SUM(${CONV_EXPR}),0) AS total_conversions
+      SELECT ad_id, MIN(min_date) AS launch_date, ROUND(ANY_VALUE(lifetime_spend),2) AS lifetime_spend, ROUND(${lifetimeMetricSQL('ANY_VALUE(lifetime_spend)', `SUM(${CONV_EXPR})`)},2) AS ${rollupMetricCol},
+        ROUND(SUM(spend),2) AS period_spend, ROUND(SUM(${CONV_EXPR}),0) AS total_conversions${rollupRevSel}
       FROM \`${PROJECT}.${DATASET}.${TABLE}\`${scopeWhere('WHERE')} GROUP BY 1 ),
-    classified AS ( SELECT *, CASE WHEN lifetime_spend>=${HR_SPEND} AND lifetime_cpa>0 AND lifetime_cpa<${HR_CPA} THEN 'Home Run' WHEN lifetime_spend>=${OB_SPEND} AND lifetime_cpa>0 AND lifetime_cpa<${OB_CPA} THEN 'On Base' WHEN lifetime_spend>=${SO_SPEND} AND lifetime_cpa>${SO_CPA} THEN 'Strike Out' ELSE 'Unclassified' END AS classification FROM unique_ads )
+    classified AS ( SELECT *, ${classificationCaseSQL('lifetime_spend', rollupMetricCol)} AS classification FROM unique_ads )
     SELECT FORMAT_DATE('%b %Y', launch_date) AS launch_month, DATE_TRUNC(launch_date, MONTH) AS launch_month_sort,
       COUNT(*) AS ads_launched, COUNTIF(classification='Home Run') AS home_runs, COUNTIF(classification='On Base') AS on_base, COUNTIF(classification='Strike Out') AS strike_outs,
-      ROUND(SUM(period_spend),0) AS total_spend, ROUND(SAFE_DIVIDE(SUM(period_spend), NULLIF(SUM(total_conversions),0)),0) AS avg_cpa, ROUND(SUM(total_conversions),0) AS total_conversions
+      ROUND(SUM(period_spend),0) AS total_spend, ${rollupAvgSQL} AS avg_cpa, ROUND(SUM(total_conversions),0) AS total_conversions
     FROM classified GROUP BY 1, 2 ORDER BY 2 DESC`;
   try {
     const [scatterData, monthlyData] = await Promise.all([runQuery(scatterSQL), runQuery(monthlySQL)]);

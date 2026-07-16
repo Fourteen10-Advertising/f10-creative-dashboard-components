@@ -27,6 +27,27 @@ function prodBenchmarkHTML(){
 function prodThresholdLegendHTML(){
   return `<span class="tl-item"><span class="tl-line dashed" style="color:#727272;"></span> CPA Limit (${fmt$(HR_CPA)})</span><span class="tl-item"><span class="tl-line dashed" style="color:#4a90e2;"></span> Ad Hit (${fmt$(HR_SPEND)})</span>`;
 }
+/* Live threshold-tuning inputs for the Ad Production tab, metric-aware. The three
+ * spend floors are shared across metrics; the efficiency band flips with the
+ * active target metric — CPA is a ceiling ("max CPA", th-*-cpa) while ROAS is a
+ * floor ("min ROAS", th-*-roas), except Strike Out which inverts ("min CPA" vs
+ * "max ROAS"). The id set here must match productionInputMap() in f10-monthly.js
+ * so Apply/Reset read the right inputs and re-run the production load. */
+function prodThresholdFieldsHTML(){
+  const spend = `<div class="tc-field"><label for="th-hr-spend">Home Run — min spend ($)</label><input type="number" id="th-hr-spend" min="0" step="100" /></div>` +
+    `<div class="tc-field"><label for="th-ob-spend">On Base — min spend ($)</label><input type="number" id="th-ob-spend" min="0" step="100" /></div>` +
+    `<div class="tc-field"><label for="th-so-spend">Strike Out — min spend ($)</label><input type="number" id="th-so-spend" min="0" step="100" /></div>`;
+  if (targetMetric() === 'roas'){
+    return spend +
+      `<div class="tc-field"><label for="th-hr-roas">Home Run — min ROAS (x)</label><input type="number" id="th-hr-roas" min="0" step="0.1" /></div>` +
+      `<div class="tc-field"><label for="th-ob-roas">On Base — min ROAS (x)</label><input type="number" id="th-ob-roas" min="0" step="0.1" /></div>` +
+      `<div class="tc-field"><label for="th-so-roas">Strike Out — max ROAS (x)</label><input type="number" id="th-so-roas" min="0" step="0.1" /></div>`;
+  }
+  return spend +
+    `<div class="tc-field"><label for="th-hr-cpa">Home Run — max CPA ($)</label><input type="number" id="th-hr-cpa" min="0" step="1" /></div>` +
+    `<div class="tc-field"><label for="th-ob-cpa">On Base — max CPA ($)</label><input type="number" id="th-ob-cpa" min="0" step="1" /></div>` +
+    `<div class="tc-field"><label for="th-so-cpa">Strike Out — min CPA ($)</label><input type="number" id="th-so-cpa" min="0" step="1" /></div>`;
+}
 /* Refresh every piece of threshold-derived copy in the Ad Production tab from the
  * current threshold values. Safe to call before the tab exists (guards on null). */
 function refreshProductionThresholdCopy(){
@@ -343,14 +364,7 @@ ${ttControls}
           <strong>Adjust thresholds</strong>
           <span class="tc-note">Tune the classification bands for this session. Reset restores the client defaults; a page reload also reverts.</span>
         </div>
-        <div class="tc-grid">
-          <div class="tc-field"><label for="th-hr-spend">Home Run — min spend ($)</label><input type="number" id="th-hr-spend" min="0" step="100" /></div>
-          <div class="tc-field"><label for="th-ob-spend">On Base — min spend ($)</label><input type="number" id="th-ob-spend" min="0" step="100" /></div>
-          <div class="tc-field"><label for="th-so-spend">Strike Out — min spend ($)</label><input type="number" id="th-so-spend" min="0" step="100" /></div>
-          <div class="tc-field"><label for="th-hr-cpa">Home Run — max CPA ($)</label><input type="number" id="th-hr-cpa" min="0" step="1" /></div>
-          <div class="tc-field"><label for="th-ob-cpa">On Base — max CPA ($)</label><input type="number" id="th-ob-cpa" min="0" step="1" /></div>
-          <div class="tc-field"><label for="th-so-cpa">Strike Out — min CPA ($)</label><input type="number" id="th-so-cpa" min="0" step="1" /></div>
-        </div>
+        <div class="tc-grid">${prodThresholdFieldsHTML()}</div>
         <div class="tc-actions">
           <button class="tc-apply" id="th-apply">Apply thresholds</button>
           <button class="tc-reset" id="th-reset">Reset to defaults</button>

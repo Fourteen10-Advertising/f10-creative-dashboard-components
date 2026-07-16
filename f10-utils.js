@@ -448,6 +448,57 @@ function classify(ad, c){
     metricDelta: (mCur!=null&&mPri!=null) ? mCur-mPri : null };
 }
 
+/* ── Ad Production tier classification (metric-aware, single-sourced) ──
+ * ONE SQL CASE expression grades an ad into Home Run / On Base / Strike Out /
+ * Unclassified. It is used by BOTH the Production scatter (per-ad CTE) AND the
+ * monthly rollup (unique_ads CTE), so the tier labels are produced once in the
+ * query layer and consumed verbatim by the display shell — the shell never
+ * recomputes bands (hq-classifier-own-labels-single-source).
+ *
+ * Polarity is metric-aware via the active target metric:
+ *   CPA  (dir:'lower')  — Home Run / On Base are CPA CEILINGS to stay under
+ *                         (metric > 0 AND metric < band); Strike Out is a floor
+ *                         to exceed (metric > SO_CPA).
+ *   ROAS (dir:'higher') — Home Run / On Base are ROAS FLOORS to clear
+ *                         (metric > band); Strike Out is a ceiling to fall under
+ *                         (metric < SO_ROAS). A real-spend / zero-revenue ad has
+ *                         roas 0 < SO_ROAS and correctly grades Strike Out.
+ *
+ * Column names are passed in (spendCol, metricCol) so the same fragment is valid
+ * in either query shape. NEVER hardcode one shape's column names — the scatter
+ * per-ad CTE and the rollup unique_ads CTE alias the metric differently, and a
+ * hardcoded name would silently break the rollup COUNTIF classification counts. */
+function classificationCaseSQL(spendCol, metricCol){
+  if (targetMetric() === 'roas'){
+    return `CASE WHEN ${spendCol} >= ${HR_SPEND} AND ${metricCol} > ${HR_ROAS} THEN 'Home Run'`
+         + ` WHEN ${spendCol} >= ${OB_SPEND} AND ${metricCol} > ${OB_ROAS} THEN 'On Base'`
+         + ` WHEN ${spendCol} >= ${SO_SPEND} AND ${metricCol} < ${SO_ROAS} THEN 'Strike Out'`
+         + ` ELSE 'Unclassified' END`;
+  }
+  return `CASE WHEN ${spendCol} >= ${HR_SPEND} AND ${metricCol} > 0 AND ${metricCol} < ${HR_CPA} THEN 'Home Run'`
+       + ` WHEN ${spendCol} >= ${OB_SPEND} AND ${metricCol} > 0 AND ${metricCol} < ${OB_CPA} THEN 'On Base'`
+       + ` WHEN ${spendCol} >= ${SO_SPEND} AND ${metricCol} > ${SO_CPA} THEN 'Strike Out'`
+       + ` ELSE 'Unclassified' END`;
+}
+
+/* Column alias the classifier's metric column carries in the active mode. CPA
+ * mode keeps `lifetime_cpa` (so every existing CPA render site is untouched);
+ * ROAS mode uses `lifetime_roas`. */
+function lifetimeMetricCol(){ return targetMetric() === 'roas' ? 'lifetime_roas' : 'lifetime_cpa'; }
+
+/* SQL expression for an ad's lifetime efficiency metric (no alias). CPA mode is
+ * spend / conversions (lower is better); ROAS mode is gated revenue / spend
+ * (higher is better), reading the gated ${REVENUE_EXPR} column — never raw
+ * conversion_value. `revenue` is referenced ONLY in ROAS mode, so CPA-mode marts
+ * without a revenue column are never queried for it. spendExpr is the ad's
+ * lifetime-spend SQL (e.g. ANY_VALUE(lifetime_spend)); convExpr the summed-
+ * conversions SQL. */
+function lifetimeMetricSQL(spendExpr, convExpr){
+  return targetMetric() === 'roas'
+    ? `SAFE_DIVIDE(SUM(${revenueExpr()}), NULLIF(${spendExpr}, 0))`
+    : `SAFE_DIVIDE(${spendExpr}, NULLIF(${convExpr}, 0))`;
+}
+
 /* ── Scatter axis ── */
 /* Upper bound for the Production spend axis, as a function of the top spender:
  * if the biggest spender clears the Home Run threshold, give it $1,000 of
