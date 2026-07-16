@@ -85,8 +85,8 @@ exports.handler = async function (event) {
   // ── Competitor Ad Library: this client's tracked competitor ads + creatives ──
   // Queries the shared all_clients_adlib dataset (keyed by f10_client) for the
   // latest snapshot per competitor ad, its longevity from ad_registry, its
-  // fetched creatives (served via the same short-lived signed GCS URLs) and —
-  // when the table exists — its vision read. Data-driven off body.client; the
+  // fetched creatives (served via the same short-lived signed GCS URLs).
+  // Data-driven off body.client; the
   // function itself holds no per-client config, so it serves every dashboard.
   // Pass { action:'competitor', probe:true } for a cheap rows-exist check the
   // UI can use to decide whether to show the tab at all.
@@ -335,9 +335,9 @@ async function signGcsUri(storage, gcsUri, expires) {
  * client key arrives as body.client (the frontend already knows it from the
  * dashboard config, mirroring how the query/media actions receive their inputs).
  *
- * Query shapes mirror build_competitor_page.py (fetch_ads / fetch_creatives /
- * fetch_vision): latest snapshot per ad + registry longevity, all fetched
- * creatives per ad (signed at request time), and an absent-safe vision read.
+ * Query shapes mirror build_competitor_page.py (fetch_ads / fetch_creatives):
+ * latest snapshot per ad + registry longevity, all fetched creatives per ad
+ * (signed at request time), plus absent-safe age-metrics reads.
  * Same byte-billed / timeout guardrails as every other query here.
  *
  *   { action:'competitor', client:'mosh' }              -> { ads: [...] }
@@ -430,29 +430,9 @@ async function queryCompetitor(body, credentials, cors) {
       });
     }
 
-    // Optional vision read — absent-safe: competitor_vision_attributes may not
-    // exist for a client/account yet, so a table-not-found is swallowed and the
-    // cards simply render without vision data.
-    const visionByAd = {};
-    try {
-      const [visionRows] = await runQuery(`
-        SELECT ad_archive_id, hook, angle, format_read
-        FROM \`${PROJECT}.${DATASET}.competitor_vision_attributes\`
-        WHERE f10_client = @client
-        QUALIFY ROW_NUMBER() OVER (PARTITION BY ad_archive_id ORDER BY run_date DESC) = 1
-      `);
-      for (const v of visionRows) {
-        visionByAd[v.ad_archive_id] = { hook: v.hook, angle: v.angle, format_read: v.format_read };
-      }
-    } catch (e) {
-      const notFound = e && (e.code === 404 || /not found|does not exist/i.test(e.message || ''));
-      if (!notFound) throw e;
-      console.warn('competitor_vision_attributes unavailable, continuing without vision:', e.message);
-    }
-
     // Optional age-metrics read (US-004) — absent-safe: the competitor_age_by_client
     // and competitor_age_by_page marts may not exist for a client/account yet, so a
-    // table-not-found is swallowed (same pattern as the vision block above) and the
+    // table-not-found is swallowed and the
     // frontend age-metrics header simply doesn't render. The two marts are read
     // independently so one present / one absent still yields what data exists.
     const ageMetrics = { client: null, byPage: {} };
@@ -507,7 +487,6 @@ async function queryCompetitor(body, credentials, cors) {
     const out = ads.map((a) => ({
       ...a,
       creatives: creativesByAd[a.ad_archive_id] || [],
-      vision: visionByAd[a.ad_archive_id] || null,
     }));
 
     return json(200, { ads: out, ageMetrics });
