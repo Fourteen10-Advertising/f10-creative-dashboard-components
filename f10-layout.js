@@ -198,6 +198,16 @@ function renderLayout(){
   const ttControls = hasTikTok ? ttControlsMarkup() : '';
   const ttPanels = hasTikTok ? ttPanelsMarkup(ttTh) : '';
 
+  /* Efficiency-metric dropdown is metric-aware. In ROAS mode ROAS leads the list
+   * and is selected by default so the Movement Board/Map and blended tile render
+   * ROAS out of the box (they read METRICS[ctrl-metric.value]); CPA/CPC/CPM/CTR
+   * remain available. In CPA mode the option set is exactly the legacy list, so
+   * existing dashboards are unchanged. */
+  const isRoas = (typeof targetMetric === 'function') && targetMetric() === 'roas';
+  const metricOptions = isRoas
+    ? `<option value="ROAS" selected>ROAS (revenue / spend)</option><option value="CPA">CPA (cost / conversion)</option><option value="CPC">CPC (cost / click)</option><option value="CPM">CPM (cost / 1k impr)</option><option value="CTR">CTR (clicks / impr)</option>`
+    : `<option value="CPA" selected>CPA (cost / conversion)</option><option value="CPC">CPC (cost / click)</option><option value="CPM">CPM (cost / 1k impr)</option><option value="CTR">CTR (clicks / impr)</option>`;
+
   document.getElementById('app').innerHTML = `
   <div id="sidebar">
     <div class="sidebar-header">
@@ -242,7 +252,7 @@ function renderLayout(){
         </div>
         <div class="ctrl"><label>Current window ends</label><input type="date" id="ctrl-enddate" /></div>
         <div class="ctrl"><label>Efficiency metric</label>
-          <select id="ctrl-metric"><option value="CPA" selected>CPA (cost / conversion)</option><option value="CPC">CPC (cost / click)</option><option value="CPM">CPM (cost / 1k impr)</option><option value="CTR">CTR (clicks / impr)</option></select>
+          <select id="ctrl-metric">${metricOptions}</select>
         </div>
         <div class="ctrl"><label>Noise floor</label>
           <div class="seg" id="ctrl-floor"><button data-floor="cpaMult">&times; target CPA</button><button data-floor="fixed" class="active">Fixed spend</button><button data-floor="conv">Min conv.</button></div>
