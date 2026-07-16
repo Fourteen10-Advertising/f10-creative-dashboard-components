@@ -77,6 +77,14 @@ when a file is missing. The function signs a short-lived URL per asset, so the
 dashboard's service account needs `roles/storage.objectViewer` on
 `gs://f10-creative-assets`.
 
+When an ad has more than one asset (dynamic creative, or a rebrand mid-flight),
+the `media` action picks one representative asset the same way the creative audit
+does (`audit.py` / `sql/creative_band_mining.sql`): the asset delivering the most
+impressions (dominant in the per-asset `image_asset_insights` / `video_asset_insights`
+feeds) wins first, then the most recently created asset, then one already stored in
+the bucket, then newest by created time. Ads with no per-asset delivery data fall
+back to recency, so previews degrade gracefully as that feed's history accrues.
+
 `renderLayout()` generates all markup (including the `#ctrl-groups` / `#weekly-controls` containers), so dashboards no longer hand-maintain the HTML or the monthly loaders.
 
 ## Config reference
