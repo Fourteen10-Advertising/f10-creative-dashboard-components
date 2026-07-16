@@ -156,6 +156,8 @@ When `TARGET_METRIC = 'roas'`, the framework becomes metric-aware end to end:
 - **Monthly tabs** (Power Law, Ad Production, Ad Decay, Ad Age, Creative Effectiveness) show the ROAS column/label and compute it as `SAFE_DIVIDE(SUM(revenue), NULLIF(spend, 0))`.
 - **Ad Production tiering** inverts polarity — see [Thresholds](#thresholds).
 - **Notes and headings** swap CPA copy for ROAS copy automatically (`ROAS is revenue ÷ spend`).
+- **Weekly noise floor** — the "× target CPA" spend gate relabels to a plain "spend target" (its behaviour is unchanged).
+- **TikTok section** (when a `TIKTOK` config is present) is metric-aware too: its dropdown, Ad Production classification, scatter, tables and copy switch to ROAS, reading the gated revenue column and classifying against the TikTok ROAS bands `HR_ROAS`/`OB_ROAS`/`SO_ROAS` (defaults `4`/`2`/`1`, overridable via `TIKTOK.THRESHOLDS`; revenue column via `TIKTOK.REVENUE_EXPR`, default `REVENUE_EXPR`). The revenue-integrity guard covers the TikTok tabs as well.
 
 ### Revenue-integrity guard
 

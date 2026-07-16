@@ -8,11 +8,20 @@
  * BEFORE the scripts load, so every existing Meta-only dashboard is unaffected:
  *
  *   const TIKTOK = {
- *     DATASET:   'fastcover_marts',        // optional; defaults to the Meta DATASET
- *     TABLE:     'tiktok_creative_reporting',
- *     CONV_EXPR: 'conversions',            // optional; defaults to 'conversions'
- *     THRESHOLDS:{ HR_SPEND: 4000, HR_CPA: 90, ... }, // optional Ad Production bands
+ *     DATASET:     'fastcover_marts',        // optional; defaults to the Meta DATASET
+ *     TABLE:       'tiktok_creative_reporting',
+ *     CONV_EXPR:   'conversions',            // optional; defaults to 'conversions'
+ *     REVENUE_EXPR:'revenue',                // optional; ROAS mode only, defaults to REVENUE_EXPR
+ *     THRESHOLDS:  { HR_SPEND: 4000, HR_CPA: 90, ... }, // optional Ad Production bands
  *   };
+ *
+ * The section is metric-aware (US ROAS work): when TARGET_METRIC='roas' the
+ * dropdown, Ad Production classification, scatter, tables and copy all switch to
+ * ROAS, reading the gated REVENUE_EXPR column (never raw conversion_value) and
+ * classifying against the ROAS bands HR_ROAS/OB_ROAS/SO_ROAS (defaults 4/2/1)
+ * with the same floor/ceiling polarity as the Meta engine. As on Meta, a mart
+ * with no gated revenue column trips the US-010 revenue-integrity guard rather
+ * than showing a misleading 0.0x. TARGET_METRIC unset (CPA) is unchanged.
  *
  * It renders its own "TikTok" nav section + panels (built by f10-layout.js) and
  * queries the TikTok mart with the TikTok metric profile, which adds the real
@@ -30,10 +39,37 @@
   const ttDataset = () => (TIKTOK.DATASET || (typeof DATASET !== 'undefined' ? DATASET : ''));
   const ttTable   = () => `\`${PROJECT}.${ttDataset()}.${TIKTOK.TABLE}\``;
   const ttConv    = () => (TIKTOK.CONV_EXPR || 'conversions');
+  /* Gated revenue column for ROAS mode. Defaults to the same REVENUE_EXPR the Meta
+   * engine uses (default 'revenue'); override per-mart with TIKTOK.REVENUE_EXPR.
+   * Referenced ONLY in ROAS mode, so CPA-mode TikTok marts are never queried for a
+   * revenue column. Never sum raw conversion_value (hard policy). */
+  const ttRevExpr = () => (TIKTOK.REVENUE_EXPR || (typeof revenueExpr === 'function' ? revenueExpr() : 'revenue'));
+  const ttIsRoas  = () => (typeof targetMetric === 'function') && targetMetric() === 'roas';
   const TT_TH = Object.assign(
-    { HR_SPEND: 5000, HR_CPA: 70, OB_SPEND: 1000, OB_CPA: 100, SO_SPEND: 500, SO_CPA: 140 },
+    { HR_SPEND: 5000, HR_CPA: 70, OB_SPEND: 1000, OB_CPA: 100, SO_SPEND: 500, SO_CPA: 140, HR_ROAS: 4, OB_ROAS: 2, SO_ROAS: 1 },
     TIKTOK.THRESHOLDS || {}
   );
+  /* Metric-aware SQL fragments built from the TikTok thresholds (TT_TH) — the
+   * shared helpers in f10-utils.js embed the GLOBAL thresholds, so TikTok needs its
+   * own. ttLifetimeMetricSQL mirrors lifetimeMetricSQL (CPA = spend/conv,
+   * ROAS = gated revenue/spend); ttClassificationCaseSQL mirrors
+   * classificationCaseSQL's polarity rules but against TT_TH. */
+  const ttLifetimeMetricSQL = (spendExpr, convExpr) => ttIsRoas()
+    ? `SAFE_DIVIDE(SUM(${ttRevExpr()}), NULLIF(${spendExpr}, 0))`
+    : `SAFE_DIVIDE(${spendExpr}, NULLIF(${convExpr}, 0))`;
+  const ttLifetimeMetricCol = () => ttIsRoas() ? 'lifetime_roas' : 'lifetime_cpa';
+  function ttClassificationCaseSQL(spendCol, metricCol){
+    if (ttIsRoas()){
+      return `CASE WHEN ${spendCol} >= ${TT_TH.HR_SPEND} AND ${metricCol} > ${TT_TH.HR_ROAS} THEN 'Home Run'`
+           + ` WHEN ${spendCol} >= ${TT_TH.OB_SPEND} AND ${metricCol} > ${TT_TH.OB_ROAS} THEN 'On Base'`
+           + ` WHEN ${spendCol} >= ${TT_TH.SO_SPEND} AND ${metricCol} < ${TT_TH.SO_ROAS} THEN 'Strike Out'`
+           + ` ELSE 'Unclassified' END`;
+    }
+    return `CASE
+      WHEN ${spendCol} >= ${TT_TH.HR_SPEND} AND ${metricCol} > 0 AND ${metricCol} < ${TT_TH.HR_CPA} THEN 'Home Run'
+      WHEN ${spendCol} >= ${TT_TH.OB_SPEND} AND ${metricCol} > 0 AND ${metricCol} < ${TT_TH.OB_CPA} THEN 'On Base'
+      WHEN ${spendCol} >= ${TT_TH.SO_SPEND} AND ${metricCol} > ${TT_TH.SO_CPA} THEN 'Strike Out' ELSE 'Unclassified' END`;
+  }
 
   const TT_TABS = ['tt-summary', 'tt-board', 'tt-production', 'tt-creative'];
   const ttTitles = {
@@ -56,7 +92,7 @@
   function ttControls() {
     const length = parseInt((document.getElementById('tt-ctrl-length') || {}).value || '7', 10);
     const end = (document.getElementById('tt-ctrl-enddate') || {}).value || TT_MAXDATE;
-    const metricKey = (document.getElementById('tt-ctrl-metric') || {}).value || 'CPA';
+    const metricKey = (document.getElementById('tt-ctrl-metric') || {}).value || (ttIsRoas() ? 'ROAS' : 'CPA');
     const minSpend = Number((document.getElementById('tt-ctrl-minspend') || {}).value) || 0;
     return { length, end, metricKey, metric: METRICS[metricKey], floorMode: 'fixed', fixedSpend: minSpend };
   }
@@ -66,6 +102,13 @@
     const priEnd = isoOffset(curStart, -1), priStart = isoOffset(priEnd, -(c.length - 1));
     const inCur = `date_start BETWEEN '${curStart}' AND '${curEnd}'`;
     const inPri = `date_start BETWEEN '${priStart}' AND '${priEnd}'`;
+    /* Windowed revenue is SELECTed ONLY in ROAS mode — a CPA-mode TikTok mart has
+     * no gated revenue column and the query would error. Mirrors f10-weekly.js. */
+    const revSel = ttIsRoas()
+      ? `,
+        SUM(IF(${inCur}, ${ttRevExpr()}, 0))     AS cur_revenue,
+        SUM(IF(${inPri}, ${ttRevExpr()}, 0))     AS pri_revenue`
+      : '';
     const sql = `
       SELECT ad_id,
         ANY_VALUE(ad_name)       AS ad_name,
@@ -83,7 +126,7 @@
         SUM(IF(${inPri}, spend, 0))              AS pri_spend,
         SUM(IF(${inPri}, impressions, 0))        AS pri_impressions,
         SUM(IF(${inPri}, clicks, 0))             AS pri_clicks,
-        SUM(IF(${inPri}, ${ttConv()}, 0))        AS pri_conv
+        SUM(IF(${inPri}, ${ttConv()}, 0))        AS pri_conv${revSel}
       FROM ${ttTable()}
       WHERE date_start BETWEEN '${priStart}' AND '${curEnd}'
       GROUP BY ad_id
@@ -97,11 +140,11 @@
         adset_name: r.adgroup_name, creative_link: r.creative_link,
         cur: {
           spend: cs, impressions: Number(r.cur_impressions) || 0, clicks: Number(r.cur_clicks) || 0,
-          conv: Number(r.cur_conv) || 0, conv_cost_num: cs,
+          conv: Number(r.cur_conv) || 0, conv_cost_num: cs, revenue: Number(r.cur_revenue) || 0,
           video_watched_2s: Number(r.cur_hook) || 0, video_watched_6s: Number(r.cur_hold) || 0,
           video_views_p100: Number(r.cur_p100) || 0, video_play_actions: Number(r.cur_plays) || 0,
         },
-        pri: { spend: ps, impressions: Number(r.pri_impressions) || 0, clicks: Number(r.pri_clicks) || 0, conv: Number(r.pri_conv) || 0, conv_cost_num: ps },
+        pri: { spend: ps, impressions: Number(r.pri_impressions) || 0, clicks: Number(r.pri_clicks) || 0, conv: Number(r.pri_conv) || 0, conv_cost_num: ps, revenue: Number(r.pri_revenue) || 0 },
       };
     });
     return { ads, curStart, curEnd, priStart, priEnd };
@@ -138,7 +181,7 @@
     const tot = { cur: emptyAgg(), pri: emptyAgg() };
     let curImpr = 0, curHook = 0, curHold = 0, priImpr = 0, priHook = 0, priHold = 0;
     all.forEach((a) => {
-      ['spend', 'impressions', 'clicks', 'conv', 'conv_cost_num'].forEach((k) => { tot.cur[k] += a.cur[k]; tot.pri[k] += a.pri[k]; });
+      ['spend', 'impressions', 'clicks', 'conv', 'conv_cost_num', 'revenue'].forEach((k) => { tot.cur[k] += a.cur[k]; tot.pri[k] += a.pri[k]; });
       curImpr += a.cur.impressions; curHook += a.cur.video_watched_2s || 0; curHold += a.cur.video_watched_6s || 0;
     });
     const mCur = metricValue(tot.cur, m), mPri = metricValue(tot.pri, m);
@@ -153,14 +196,27 @@
       return `<div class="scorecard-delta ${cls}">${arrow} ${Math.abs(chg).toFixed(1)}% vs prior</div>`;
     }
 
-    const cards = [
-      { label: 'Spend',            val: fmt$(tot.cur.spend),         d: deltaHtml(tot.cur.spend, tot.pri.spend, false) },
-      { label: 'Conversions',      val: fmtNum(tot.cur.conv),        d: deltaHtml(tot.cur.conv, tot.pri.conv, false) },
-      { label: 'Impressions',      val: fmtNum(tot.cur.impressions), d: deltaHtml(tot.cur.impressions, tot.pri.impressions, false) },
-      { label: 'Blended ' + m.label, val: fmtMetric(mCur, m),        d: deltaHtml(mCur, mPri, m.dir === 'lower') },
-      { label: 'Hook rate (2s)',   val: hookCur != null ? fmtPct(hookCur, 2) : '–', d: `<div class="scorecard-delta delta-flat">thumbstop</div>` },
-      { label: 'Hold rate (6s)',   val: holdCur != null ? fmtPct(holdCur, 2) : '–', d: `<div class="scorecard-delta delta-flat">attention</div>` },
-    ];
+    /* Revenue-integrity guard (US-010): in ROAS mode a window with blended revenue
+     * 0 while spend > 0 means the gated revenue column is missing/zeroed — show the
+     * warning banner and suppress the confident 0.0x on the blended tile. Always
+     * false in CPA mode, so CPA scorecards are byte-for-byte unchanged. */
+    const revBroken = (typeof applyRevenueGuard === 'function')
+      ? applyRevenueGuard('tt-summary-revenue-guard', revenueSignalBroken(tot.cur.revenue, tot.cur.spend))
+      : false;
+
+    const spendCard = { label: 'Spend',       val: fmt$(tot.cur.spend),         d: deltaHtml(tot.cur.spend, tot.pri.spend, false) };
+    const convCard  = { label: 'Conversions', val: fmtNum(tot.cur.conv),        d: deltaHtml(tot.cur.conv, tot.pri.conv, false) };
+    const imprCard  = { label: 'Impressions', val: fmtNum(tot.cur.impressions), d: deltaHtml(tot.cur.impressions, tot.pri.impressions, false) };
+    const blendCard = revBroken
+      ? { label: 'Blended ' + m.label, val: '–', d: `<div class="scorecard-delta delta-flat">revenue check needed</div>` }
+      : { label: 'Blended ' + m.label, val: fmtMetric(mCur, m), d: deltaHtml(mCur, mPri, m.dir === 'lower') };
+    const hookCard  = { label: 'Hook rate (2s)', val: hookCur != null ? fmtPct(hookCur, 2) : '–', d: `<div class="scorecard-delta delta-flat">thumbstop</div>` };
+    const holdCard  = { label: 'Hold rate (6s)', val: holdCur != null ? fmtPct(holdCur, 2) : '–', d: `<div class="scorecard-delta delta-flat">attention</div>` };
+    /* ROAS leads with the revenue story (Spend, Revenue, blended ROAS, Conversions)
+     * then the TikTok attention tiles; CPA keeps the legacy six-card order. */
+    const cards = ttIsRoas()
+      ? [ spendCard, { label: 'Revenue', val: fmt$(tot.cur.revenue), d: deltaHtml(tot.cur.revenue, tot.pri.revenue, false) }, blendCard, convCard, hookCard, holdCard ]
+      : [ spendCard, convCard, imprCard, blendCard, hookCard, holdCard ];
     document.getElementById('tt-summary-scorecards').innerHTML = cards.map((c2) =>
       `<div class="scorecard"><div class="scorecard-label">${c2.label}</div><div class="scorecard-value">${c2.val}</div>${c2.d}</div>`
     ).join('');
@@ -241,36 +297,53 @@
   /* ── Ad Production (lifetime spend vs CPA classification) ── */
 
   async function ttLoadProduction() {
-    const clsCase = `CASE
-      WHEN lifetime_spend >= ${TT_TH.HR_SPEND} AND lifetime_cpa > 0 AND lifetime_cpa < ${TT_TH.HR_CPA} THEN 'Home Run'
-      WHEN lifetime_spend >= ${TT_TH.OB_SPEND} AND lifetime_cpa > 0 AND lifetime_cpa < ${TT_TH.OB_CPA} THEN 'On Base'
-      WHEN lifetime_spend >= ${TT_TH.SO_SPEND} AND lifetime_cpa > ${TT_TH.SO_CPA} THEN 'Strike Out' ELSE 'Unclassified' END`;
+    /* Metric-aware: the per-ad lifetime efficiency column is `lifetime_cpa` in CPA
+     * mode and `lifetime_roas` in ROAS mode (ttLifetimeMetricCol), classified by the
+     * shared TikTok CASE builder. lifetime_roas reads the gated revenue column ONLY
+     * in ROAS mode, so CPA-mode marts are never queried for revenue. */
+    const isRoas = ttIsRoas();
+    const mCol = ttLifetimeMetricCol();
+    const perAdMetricSQL = ttLifetimeMetricSQL('ANY_VALUE(lifetime_spend)', `SUM(${ttConv()})`);
     const scatterSQL = `
       WITH per_ad AS (
         SELECT ad_id, ANY_VALUE(ad_name) AS ad_name, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(adgroup_name) AS adgroup_name,
           MIN(min_date) AS launch_date, ANY_VALUE(creative_link) AS creative_link,
           ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend,
           ROUND(SUM(${ttConv()}), 0) AS total_conversions,
-          ROUND(SAFE_DIVIDE(ANY_VALUE(lifetime_spend), NULLIF(SUM(${ttConv()}), 0)), 2) AS lifetime_cpa,
+          ROUND(${perAdMetricSQL}, 2) AS ${mCol},
           SUM(impressions) AS impressions, SUM(clicks) AS clicks,
           SUM(video_watched_2s) AS video_watched_2s, SUM(video_watched_6s) AS video_watched_6s,
           SUM(video_views_p100) AS video_views_p100, SUM(video_play_actions) AS video_play_actions
         FROM ${ttTable()} GROUP BY 1
       )
-      SELECT *, ${clsCase} AS classification FROM per_ad ORDER BY lifetime_spend DESC`;
+      SELECT *, ${ttClassificationCaseSQL('lifetime_spend', mCol)} AS classification FROM per_ad ORDER BY lifetime_spend DESC`;
+    /* Month-level avg is SUM(revenue)/SUM(spend) in ROAS mode, SUM(spend)/
+     * SUM(conversions) in CPA mode; the alias stays `avg_cpa` so downstream stays
+     * put. period_revenue is selected ONLY in ROAS mode. */
+    const rollupRevSel = isRoas ? `, ROUND(SUM(${ttRevExpr()}), 2) AS period_revenue` : '';
+    const rollupAvgSQL = isRoas
+      ? `ROUND(SAFE_DIVIDE(SUM(period_revenue), NULLIF(SUM(period_spend), 0)), 2)`
+      : `ROUND(SAFE_DIVIDE(SUM(period_spend), NULLIF(SUM(total_conversions), 0)), 0)`;
     const monthlySQL = `
       WITH unique_ads AS (
         SELECT ad_id, MIN(min_date) AS launch_date, ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend,
-          ROUND(SAFE_DIVIDE(ANY_VALUE(lifetime_spend), NULLIF(SUM(${ttConv()}), 0)), 2) AS lifetime_cpa,
-          ROUND(SUM(spend), 2) AS period_spend, ROUND(SUM(${ttConv()}), 0) AS total_conversions
+          ROUND(${perAdMetricSQL}, 2) AS ${mCol},
+          ROUND(SUM(spend), 2) AS period_spend, ROUND(SUM(${ttConv()}), 0) AS total_conversions${rollupRevSel}
         FROM ${ttTable()} GROUP BY 1 ),
-      classified AS ( SELECT *, ${clsCase} AS classification FROM unique_ads )
+      classified AS ( SELECT *, ${ttClassificationCaseSQL('lifetime_spend', mCol)} AS classification FROM unique_ads )
       SELECT FORMAT_DATE('%b %Y', launch_date) AS launch_month, DATE_TRUNC(launch_date, MONTH) AS launch_month_sort,
         COUNT(*) AS ads_launched, COUNTIF(classification='Home Run') AS home_runs, COUNTIF(classification='On Base') AS on_base, COUNTIF(classification='Strike Out') AS strike_outs,
-        ROUND(SUM(period_spend), 0) AS total_spend, ROUND(SAFE_DIVIDE(SUM(period_spend), NULLIF(SUM(total_conversions), 0)), 0) AS avg_cpa, ROUND(SUM(total_conversions), 0) AS total_conversions
+        ROUND(SUM(period_spend), 0) AS total_spend, ${rollupAvgSQL} AS avg_cpa, ROUND(SUM(total_conversions), 0) AS total_conversions
       FROM classified GROUP BY 1, 2 ORDER BY 2 DESC`;
     try {
       const [scatterData, monthlyData] = await Promise.all([runQuery(scatterSQL), runQuery(monthlySQL)]);
+      /* Revenue-integrity guard (US-010): in ROAS mode, spend present but not one ad
+       * with positive ROAS means the gated revenue column is missing/zeroed. Derived
+       * from the scatter rows already fetched (no extra query). Never fires in CPA. */
+      const revBroken = isRoas
+        && scatterData.some((r) => (Number(r.lifetime_spend) || 0) > 0)
+        && !scatterData.some((r) => (Number(r[mCol]) || 0) > 0);
+      if (typeof applyRevenueGuard === 'function') applyRevenueGuard('tt-production-revenue-guard', revBroken);
       const totals = scatterData.reduce((acc, r) => { acc.total++; if (r.classification === 'Home Run') acc.hr++; if (r.classification === 'On Base') acc.ob++; if (r.classification === 'Strike Out') acc.so++; return acc; }, { total: 0, hr: 0, ob: 0, so: 0 });
       const setTxt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
       setTxt('tt-sc-ads-produced', fmtNum(totals.total));
@@ -283,19 +356,25 @@
       hideEl('tt-production-scorecards-loading'); showEl('tt-production-scorecards');
 
       const byClass = { 'Home Run': [], 'On Base': [], 'Strike Out': [], 'Unclassified': [] };
-      scatterData.forEach((r) => { const cpa = Number(r.lifetime_cpa) || 0, spend = Number(r.lifetime_spend) || 0; if (cpa > 0 || spend > 0) byClass[r.classification].push({ x: spend, y: cpa, label: r.ad_name }); });
+      /* Read the metric generically so a dir:'higher' ROAS plots correctly. A creative
+       * with metric=0 but spend>0 (real spend, zero revenue in ROAS) is kept, not
+       * dropped — it belongs at the bottom of a higher-is-better axis. */
+      scatterData.forEach((r) => { const mVal = Number(r[mCol]) || 0, spend = Number(r.lifetime_spend) || 0; if (mVal > 0 || spend > 0) byClass[r.classification].push({ x: spend, y: mVal, label: r.ad_name }); });
       const scatterDatasets = Object.entries(byClass).map(([cls, pts]) => ({ label: cls, data: pts, backgroundColor: CLASS_COLOR[cls] + 'bb', borderColor: CLASS_COLOR[cls], borderWidth: 1.5, pointRadius: 6, pointHoverRadius: 8 }));
       hideEl('tt-scatter-loading'); showEl('tt-scatter-wrapper');
       if (ttCharts.scatter) ttCharts.scatter.destroy();
       const topSpend = Math.max(0, ...scatterData.map((r) => Number(r.lifetime_spend) || 0));
       const maxSpend = topSpend > TT_TH.HR_SPEND ? topSpend + 1000 : TT_TH.HR_SPEND * 1.2;
-      const maxCpa = Math.ceil(Math.max(...scatterData.filter((r) => Number(r.lifetime_cpa) > 0).map((r) => Number(r.lifetime_cpa) || 0), 100) * 1.2);
+      /* Y-axis max from the ACTIVE metric's values. Floor keeps the axis sane when
+       * data is sparse: 100 ($) in CPA mode, HR_ROAS (x) in ROAS mode. */
+      const yFloor = isRoas ? TT_TH.HR_ROAS : 100;
+      const maxY = Math.ceil(Math.max(...scatterData.filter((r) => Number(r[mCol]) > 0).map((r) => Number(r[mCol]) || 0), yFloor) * 1.2);
       ttCharts.scatter = new Chart(document.getElementById('tt-scatter-chart'), {
         type: 'scatter', data: { datasets: scatterDatasets },
         options: {
           responsive: true, maintainAspectRatio: false,
-          scales: { x: { title: { display: true, text: 'Lifetime Spend ($)', font: { size: 11 } }, min: 0, max: maxSpend, ticks: { callback: (v) => fmt$(v) } }, y: { title: { display: true, text: 'Lifetime CPA ($)', font: { size: 11 } }, min: 0, max: maxCpa, ticks: { callback: (v) => fmt$(v) } } },
-          plugins: { legend: { position: 'top', labels: { font: { size: 11 } } }, tooltip: { callbacks: { label: (ctx) => { const pt = ctx.raw; return [`${ctx.dataset.label}`, `Spend: ${fmt$(pt.x)}`, `CPA: ${pt.y > 0 ? fmt$(pt.y) : 'N/A'}`]; } } } },
+          scales: { x: { title: { display: true, text: 'Lifetime Spend ($)', font: { size: 11 } }, min: 0, max: maxSpend, ticks: { callback: (v) => fmt$(v) } }, y: { title: { display: true, text: `Lifetime ${targetMetricDef().label} (${isRoas ? 'x' : '$'})`, font: { size: 11 } }, min: 0, max: maxY, ticks: { callback: (v) => fmtMetricCell(v) } } },
+          plugins: { legend: { position: 'top', labels: { font: { size: 11 } } }, tooltip: { callbacks: { label: (ctx) => { const pt = ctx.raw; const mLine = isRoas ? `${targetMetricDef().label}: ${fmtMetricCell(pt.y)}` : `CPA: ${pt.y > 0 ? fmt$(pt.y) : 'N/A'}`; return [`${ctx.dataset.label}`, `Spend: ${fmt$(pt.x)}`, mLine]; } } } },
         },
       });
 
@@ -319,7 +398,7 @@
         const cls = r.classification; const badgeClass = cls === 'Home Run' ? 'badge-hr' : cls === 'On Base' ? 'badge-ob' : cls === 'Strike Out' ? 'badge-so' : 'badge-un';
         const ce = { impressions: Number(r.impressions) || 0, clicks: Number(r.clicks) || 0, video_watched_2s: Number(r.video_watched_2s) || 0, video_watched_6s: Number(r.video_watched_6s) || 0, video_views_p100: Number(r.video_views_p100) || 0, video_play_actions: Number(r.video_play_actions) || 0 };
         registerAdMetrics(r.ad_id, ce, PROFILE); const cr = creativeRates(ce, PROFILE);
-        return `<tr><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adgroup_name}">${r.adgroup_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmt$(r.lifetime_spend)}</td><td>${r.lifetime_cpa && Number(r.lifetime_cpa) > 0 ? fmt$(r.lifetime_cpa) : '–'}</td><td>${fmtNum(r.total_conversions)}</td><td class="num">${cr.hook != null ? fmtPct(cr.hook, 2) : '–'}</td><td class="num">${cr.hold != null ? fmtPct(cr.hold, 2) : '–'}</td><td class="num">${cr.completion != null ? fmtPct(cr.completion, 2) : '–'}</td><td>${r.creative_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="tiktok" href="${r.creative_link}" target="_blank">Preview</a>` : '–'}</td><td><span class="badge ${badgeClass}">${cls}</span></td></tr>`;
+        return `<tr><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adgroup_name}">${r.adgroup_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmt$(r.lifetime_spend)}</td><td>${Number(r[mCol]) > 0 ? fmtMetricCell(r[mCol]) : '–'}</td><td>${fmtNum(r.total_conversions)}</td><td class="num">${cr.hook != null ? fmtPct(cr.hook, 2) : '–'}</td><td class="num">${cr.hold != null ? fmtPct(cr.hold, 2) : '–'}</td><td class="num">${cr.completion != null ? fmtPct(cr.completion, 2) : '–'}</td><td>${r.creative_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="tiktok" href="${r.creative_link}" target="_blank">Preview</a>` : '–'}</td><td><span class="badge ${badgeClass}">${cls}</span></td></tr>`;
       }));
       hideEl('tt-scatter-table-loading'); showEl('tt-scatter-table');
     } catch (err) { console.error('TikTok production error:', err); }

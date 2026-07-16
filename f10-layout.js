@@ -69,6 +69,41 @@ function refreshProductionThresholdCopy(){
   if (hit) hit.textContent = fmt$(HR_SPEND);
 }
 
+/* Efficiency-metric <option> set, metric-aware and shared by the Meta and TikTok
+ * controls bars so the two dropdowns never drift. In ROAS mode ROAS leads and is
+ * selected by default; CPA/CPC/CPM/CTR remain available. In CPA mode the option
+ * set is exactly the legacy list, so existing dashboards are byte-for-byte
+ * unchanged. */
+function efficiencyMetricOptionsHTML(){
+  return targetMetric() === 'roas'
+    ? `<option value="ROAS" selected>ROAS (revenue / spend)</option><option value="CPA">CPA (cost / conversion)</option><option value="CPC">CPC (cost / click)</option><option value="CPM">CPM (cost / 1k impr)</option><option value="CTR">CTR (clicks / impr)</option>`
+    : `<option value="CPA" selected>CPA (cost / conversion)</option><option value="CPC">CPC (cost / click)</option><option value="CPM">CPM (cost / 1k impr)</option><option value="CTR">CTR (clicks / impr)</option>`;
+}
+/* Noise-floor "× target CPA" mode labels. That mode is a minimum-spend gate
+ * expressed as a multiple of a reference cost — a CPA-specific concept — so in
+ * ROAS mode (no target CPA) the button + input relabel to a plain spend target.
+ * The control KEYS (data-floor, ids) never change, so f10-weekly.js reads them
+ * unchanged; only the display copy flips. CPA mode returns the byte-for-byte
+ * legacy strings. */
+function noiseFloorMultLabels(){
+  return targetMetric() === 'roas'
+    ? { btn: '&times; spend target', label: 'Spend target / Mult', title: 'Spend target ($)' }
+    : { btn: '&times; target CPA',   label: 'Target CPA / Mult',   title: 'Target CPA ($)' };
+}
+/* TikTok Ad Production benchmark copy — same polarity rules as the Meta
+ * prodBenchmarkHTML() but built from the TikTok thresholds (ttTh) rather than the
+ * global HR_SPEND/... The CPA branch is byte-identical to the legacy inline copy,
+ * so CPA dashboards are unchanged; ROAS mode flips to the "floor to clear /
+ * ceiling to fall under" wording. */
+function ttProdBenchmarkHTML(ttTh){
+  if (targetMetric() === 'roas'){
+    return `<span class="bm-item"><strong>Home Run:</strong> Spend &ge; ${fmt$(ttTh.HR_SPEND)} &amp; ROAS &ge; ${fmtRatio(ttTh.HR_ROAS)}</span>` +
+      `<span class="bm-item"><strong>On Base:</strong> Spend &ge; ${fmt$(ttTh.OB_SPEND)} &amp; ROAS &ge; ${fmtRatio(ttTh.OB_ROAS)}</span>` +
+      `<span class="bm-item"><strong>Strike Out:</strong> Spend &ge; ${fmt$(ttTh.SO_SPEND)} &amp; ROAS &lt; ${fmtRatio(ttTh.SO_ROAS)}</span>`;
+  }
+  return `<span class="bm-item"><strong>Home Run:</strong> Spend &ge; ${fmt$(ttTh.HR_SPEND)} &amp; CPA &lt; ${fmt$(ttTh.HR_CPA)}</span><span class="bm-item"><strong>On Base:</strong> Spend &ge; ${fmt$(ttTh.OB_SPEND)} &amp; CPA &lt; ${fmt$(ttTh.OB_CPA)}</span><span class="bm-item"><strong>Strike Out:</strong> Spend &ge; ${fmt$(ttTh.SO_SPEND)} &amp; CPA &gt; ${fmt$(ttTh.SO_CPA)}</span>`;
+}
+
 /* TikTok section markup (controls bar + four panels), rendered only when a
  * TIKTOK config object is present. Mirrors the Meta panels with tt- ids and the
  * TikTok metric columns (Hook 2s / Hold 6s). f10-tiktok.js drives these. */
@@ -80,7 +115,7 @@ function ttControlsMarkup(){
         </div>
         <div class="ctrl"><label>Current window ends</label><input type="date" id="tt-ctrl-enddate" /></div>
         <div class="ctrl"><label>Efficiency metric</label>
-          <select id="tt-ctrl-metric"><option value="CPA" selected>CPA (cost / conversion)</option><option value="CPC">CPC (cost / click)</option><option value="CPM">CPM (cost / 1k impr)</option><option value="CTR">CTR (clicks / impr)</option></select>
+          <select id="tt-ctrl-metric">${efficiencyMetricOptionsHTML()}</select>
         </div>
         <div class="ctrl"><label>Min spend ($)</label><input type="number" id="tt-ctrl-minspend" value="1" min="0" step="50" /></div>
       </div>
@@ -94,7 +129,7 @@ function ttPanelsMarkup(ttTh){
       <div class="window-note" id="tt-summary-window-note"></div>
       <div id="tt-summary-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
       <div id="tt-summary-body" style="display:none;">
-        <div class="scorecard-grid" id="tt-summary-scorecards"></div>
+        ${targetMetric() === 'roas' ? '<div id="tt-summary-revenue-guard"></div>\n        ' : ''}<div class="scorecard-grid" id="tt-summary-scorecards"></div>
         <div class="chart-card">
           <h3>Blended Metric Decomposition &mdash; Prior &rarr; Current</h3>
           <div class="legend-row"><span class="li"><span class="dot" style="background:var(--good)"></span> Improves the metric</span><span class="li"><span class="dot" style="background:var(--bad)"></span> Worsens the metric</span></div>
@@ -123,10 +158,10 @@ function ttPanelsMarkup(ttTh){
 
     <!-- TIKTOK: AD PRODUCTION -->
     <div class="tab-panel tt-tab-panel" id="panel-tt-production">
-      <div class="insight-box"><strong>TikTok Ad Production:</strong> how many ads were launched and the share that become hits (lifetime spend &ge; the Home Run threshold at an efficient CPA). Aim for a 10&ndash;15% hit rate.<br/><br/><strong>Thresholds:</strong>
-        <div class="benchmark"><span class="bm-item"><strong>Home Run:</strong> Spend &ge; ${fmt$(ttTh.HR_SPEND)} &amp; CPA &lt; ${fmt$(ttTh.HR_CPA)}</span><span class="bm-item"><strong>On Base:</strong> Spend &ge; ${fmt$(ttTh.OB_SPEND)} &amp; CPA &lt; ${fmt$(ttTh.OB_CPA)}</span><span class="bm-item"><strong>Strike Out:</strong> Spend &ge; ${fmt$(ttTh.SO_SPEND)} &amp; CPA &gt; ${fmt$(ttTh.SO_CPA)}</span></div>
+      <div class="insight-box"><strong>TikTok Ad Production:</strong> how many ads were launched and the share that become hits (lifetime spend &ge; the Home Run threshold ${targetMetric() === 'roas' ? 'at a strong ROAS' : 'at an efficient CPA'}). Aim for a 10&ndash;15% hit rate.<br/><br/><strong>Thresholds:</strong>
+        <div class="benchmark">${ttProdBenchmarkHTML(ttTh)}</div>
       </div>
-      <div id="tt-production-scorecards-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+      ${targetMetric() === 'roas' ? '<div id="tt-production-revenue-guard"></div>\n      ' : ''}<div id="tt-production-scorecards-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
       <div id="tt-production-scorecards" style="display:none;">
         <div class="scorecard-grid">
           <div class="scorecard"><div class="scorecard-label">Ads Produced</div><div class="scorecard-value" id="tt-sc-ads-produced">&ndash;</div></div>
@@ -139,7 +174,7 @@ function ttPanelsMarkup(ttTh){
         </div>
       </div>
       <div class="two-col">
-        <div class="chart-card" style="margin-bottom:0;"><h3>Lifetime Spend vs CPA &mdash; All Ads</h3>
+        <div class="chart-card" style="margin-bottom:0;"><h3>Lifetime Spend vs ${targetMetricDef().label} &mdash; All Ads</h3>
           <div id="tt-scatter-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <div class="chart-wrapper" id="tt-scatter-wrapper" style="display:none; height:320px;"><canvas id="tt-scatter-chart"></canvas></div>
         </div>
@@ -152,7 +187,7 @@ function ttPanelsMarkup(ttTh){
         <div class="table-scroll">
           <div id="tt-scatter-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="tt-scatter-table" style="display:none;">
-            <thead><tr><th>Ad</th><th>Campaign</th><th>Ad Group</th><th>Launch Date</th><th>Lifetime Spend</th><th>Lifetime CPA</th><th>Conversions</th><th class="num">Hook %</th><th class="num">Hold %</th><th class="num">Compl. %</th><th>Preview</th><th>Classification</th></tr></thead>
+            <thead><tr><th>Ad</th><th>Campaign</th><th>Ad Group</th><th>Launch Date</th><th>Lifetime Spend</th><th>Lifetime ${targetMetricDef().label}</th><th>Conversions</th><th class="num">Hook %</th><th class="num">Hold %</th><th class="num">Compl. %</th><th>Preview</th><th>Classification</th></tr></thead>
             <tbody id="tt-scatter-table-body"></tbody>
           </table>
         </div>
@@ -161,7 +196,7 @@ function ttPanelsMarkup(ttTh){
 
     <!-- TIKTOK: CREATIVE EFFECTIVENESS -->
     <div class="tab-panel tt-tab-panel" id="panel-tt-creative">
-      <div class="insight-box"><strong>TikTok Creative Effectiveness:</strong> attention beyond CPA. <strong>Hook rate</strong> is the share of impressions watched to 2 seconds (did the ad stop the scroll?); <strong>Hold rate</strong> reached 6 seconds; <strong>completion</strong> watched to the end; the <strong>retention curve</strong> (25 &rarr; 100%) shows where viewers drop off. Rates cover the last 90 days.</div>
+      <div class="insight-box"><strong>TikTok Creative Effectiveness:</strong> attention beyond ${targetMetricDef().label}. <strong>Hook rate</strong> is the share of impressions watched to 2 seconds (did the ad stop the scroll?); <strong>Hold rate</strong> reached 6 seconds; <strong>completion</strong> watched to the end; the <strong>retention curve</strong> (25 &rarr; 100%) shows where viewers drop off. Rates cover the last 90 days.</div>
       <div class="scorecard-grid" style="margin-bottom:16px;">
         <div class="scorecard highlight"><div class="scorecard-label">Avg Hook Rate (2s)</div><div class="scorecard-value" id="tt-creative-hook">&ndash;</div></div>
         <div class="scorecard"><div class="scorecard-label">Avg Hold Rate (6s)</div><div class="scorecard-value" id="tt-creative-hold">&ndash;</div></div>
@@ -282,7 +317,7 @@ function renderLayout(){
   const prodBenchmark = prodBenchmarkHTML();
 
   const hasTikTok = (typeof TIKTOK !== 'undefined' && TIKTOK && TIKTOK.TABLE);
-  const ttTh = Object.assign({ HR_SPEND:5000, HR_CPA:70, OB_SPEND:1000, OB_CPA:100, SO_SPEND:500, SO_CPA:140 }, (hasTikTok && TIKTOK.THRESHOLDS) || {});
+  const ttTh = Object.assign({ HR_SPEND:5000, HR_CPA:70, OB_SPEND:1000, OB_CPA:100, SO_SPEND:500, SO_CPA:140, HR_ROAS:4, OB_ROAS:2, SO_ROAS:1 }, (hasTikTok && TIKTOK.THRESHOLDS) || {});
   const ttNav = hasTikTok ? `<div class="nav-section">TikTok</div>
       <a href="#" class="tt-nav-link" data-tt-tab="tt-summary">Weekly Summary</a>
       <a href="#" class="tt-nav-link" data-tt-tab="tt-board">Movement Board</a>
@@ -296,10 +331,9 @@ function renderLayout(){
    * ROAS out of the box (they read METRICS[ctrl-metric.value]); CPA/CPC/CPM/CTR
    * remain available. In CPA mode the option set is exactly the legacy list, so
    * existing dashboards are unchanged. */
-  const isRoas = (typeof targetMetric === 'function') && targetMetric() === 'roas';
-  const metricOptions = isRoas
-    ? `<option value="ROAS" selected>ROAS (revenue / spend)</option><option value="CPA">CPA (cost / conversion)</option><option value="CPC">CPC (cost / click)</option><option value="CPM">CPM (cost / 1k impr)</option><option value="CTR">CTR (clicks / impr)</option>`
-    : `<option value="CPA" selected>CPA (cost / conversion)</option><option value="CPC">CPC (cost / click)</option><option value="CPM">CPM (cost / 1k impr)</option><option value="CTR">CTR (clicks / impr)</option>`;
+  const metricOptions = efficiencyMetricOptionsHTML();
+
+  const floorMult = noiseFloorMultLabels();
 
   document.getElementById('app').innerHTML = `
   <div id="sidebar">
@@ -348,10 +382,10 @@ function renderLayout(){
           <select id="ctrl-metric">${metricOptions}</select>
         </div>
         <div class="ctrl"><label>Noise floor</label>
-          <div class="seg" id="ctrl-floor"><button data-floor="cpaMult">&times; target CPA</button><button data-floor="fixed" class="active">Fixed spend</button><button data-floor="conv">Min conv.</button></div>
+          <div class="seg" id="ctrl-floor"><button data-floor="cpaMult">${floorMult.btn}</button><button data-floor="fixed" class="active">Fixed spend</button><button data-floor="conv">Min conv.</button></div>
         </div>
         <div class="floor-inputs">
-          <div id="floor-cpaMult"><label>Target CPA / Mult</label><div style="display:flex;gap:6px;"><input type="number" id="ctrl-targetcpa" value="70" min="0" step="1" title="Target CPA ($)" /><input type="number" id="ctrl-mult" value="3" min="0" step="0.5" title="Multiple" style="width:56px;" /></div></div>
+          <div id="floor-cpaMult"><label>${floorMult.label}</label><div style="display:flex;gap:6px;"><input type="number" id="ctrl-targetcpa" value="70" min="0" step="1" title="${floorMult.title}" /><input type="number" id="ctrl-mult" value="3" min="0" step="0.5" title="Multiple" style="width:56px;" /></div></div>
           <div id="floor-fixed" class="show"><label>Min spend ($)</label><input type="number" id="ctrl-fixedspend" value="1" min="0" step="50" /></div>
           <div id="floor-conv"><label>Min conversions</label><input type="number" id="ctrl-minconv" value="3" min="0" step="1" /></div>
         </div>
