@@ -235,6 +235,70 @@ function competitorPanelMarkup(){
 `;
 }
 
+/* Competitor Vision & Text Analysis markup (Tab 2, US-009). A second competitor
+ * sub-tab: the per-competitor Gemini theme rollup (named themes, dominant
+ * angle/message narrative, format mix, on-screen/copy phrases, confidence +
+ * run_date freshness) from the US-007 `themes` action. Injected by
+ * f10-competitors.js only when the themes visibility probe finds a theme summary
+ * for this client (probe-driven, absent-safe) — same pattern as the ads panel. */
+function competitorThemesPanelMarkup(){
+  return `
+    <!-- COMPETITORS: VISION & TEXT ANALYSIS -->
+    <div class="tab-panel comp-tab-panel" id="panel-competitor-themes">
+      <div class="insight-box"><strong>Vision &amp; Text Analysis:</strong> the creative strategy behind each competitor&rsquo;s ads &mdash; the <strong>dominant angle</strong> they keep returning to, the named themes across their vision and copy, their format mix, and the on-screen &amp; copy phrases they repeat. Read the narrative first: it is the &ldquo;so what&rdquo; &mdash; what a competitor is really selling and how &mdash; not just a list of tags.</div>
+      <div class="window-note" id="compx-meta"></div>
+      <div class="window-note" id="compx-note"></div>
+      <div id="compx-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+      <div id="compx-body" style="display:none;"></div>
+    </div>
+`;
+}
+
+/* Competitor Ad Age Over Time markup (Tab 3, US-010). A third competitor sub-tab:
+ * a time-series chart of average AND median live ad age per month for every tracked
+ * competitor PLUS the client's own line, from the US-007 `age-timeseries` action
+ * (US-003 over-time mart, one shared monthly axis + one age definition). Injected by
+ * f10-competitors.js only when the age visibility probe finds age-over-time rows for
+ * this client (probe-driven, absent-safe) — same runtime nav+panel pattern as the
+ * ads and themes panels. The chart itself is drawn client-side (inline SVG multi-line,
+ * matching the framework's library-free SVG charting approach, e.g. retentionSparkline). */
+function competitorAgePanelMarkup(){
+  return `
+    <!-- COMPETITORS: AD AGE OVER TIME -->
+    <div class="tab-panel comp-tab-panel" id="panel-competitor-age">
+      <div class="insight-box"><strong>Ad Age Over Time:</strong> how creative longevity is trending &mdash; the average and median age of each competitor&rsquo;s live ads month by month, with <strong>your own line</strong> on the same axis for comparison. A line drifting up means a competitor is leaning on older, proven creative; a line staying low means they refresh often. Read it against your own trend: are you ageing faster or slower than the set?</div>
+      <div class="window-note" id="compa-meta"></div>
+      <div class="window-note" id="compa-note"></div>
+      <div id="compa-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+      <div id="compa-body" style="display:none;"></div>
+    </div>
+`;
+}
+
+/* Competitor Meta Maturity Score markup (Tab 4, US-011). The roll-up sub-tab: an
+ * explainable 0-100 Meta maturity score that ranks every tracked competitor AND the
+ * client, from the US-007 `maturity` action (competitor_meta_maturity mart). It shows
+ * the client's rank + data-owned tier alongside the composite AND its six component
+ * sub-scores (longevity, cadence, volume, active ratio, format diversity, platform
+ * spread) so the score is explainable — the "so what", not a bare number
+ * (insight-ladder-l4-l5-gate). The same panel surfaces the longevity leaderboard
+ * (`leaderboard` action), the refresh cadence + net-new-ad alerts (`net-new` action).
+ * Injected by f10-competitors.js only when the maturity visibility probe finds a
+ * maturity score for this client (probe-driven, absent-safe) — same runtime nav+panel
+ * pattern as the ads, themes, and age panels. */
+function competitorMaturityPanelMarkup(){
+  return `
+    <!-- COMPETITORS: META MATURITY SCORE -->
+    <div class="tab-panel comp-tab-panel" id="panel-competitor-maturity">
+      <div class="insight-box"><strong>Meta Maturity Score:</strong> who is winning on Meta &mdash; and <strong>why</strong>. Every competitor and <strong>you</strong> are ranked by a single 0&ndash;100 maturity score, but the score is never a black box: the six components below it (longevity, cadence, volume, active ratio, format diversity, platform spread) show exactly what drives a high or low score. Read your own rank and tier first, then read across the component bars to see where you lead the set and where to close the gap.</div>
+      <div class="window-note" id="compm-meta"></div>
+      <div class="window-note" id="compm-note"></div>
+      <div id="compm-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+      <div id="compm-body" style="display:none;"></div>
+    </div>
+`;
+}
+
 /* ── "How to read this tab" notes ──
  * Plain-English, client-facing guidance shown at the top of every tab, plus a
  * one-line definition of what a "conversion" is for this account. Rendered only
