@@ -51,6 +51,9 @@
   let compLoaded = false;
   let compClient = ''; // resolved f10_client key (set during initCompetitors)
   let compSections = []; // [{ page_name, cards:[html], total, live, cur }]
+  let compDefaultAds = null;  // cached full ad set from the default competitor load (US-008 restore)
+  let compDefaultAge = null;  // cached ageMetrics that went with compDefaultAds
+  let compSearchActive = false; // true while a search view is showing instead of the full grid
 
   /* Resolve the f10_client key: an explicit COMPETITORS.CLIENT override wins;
    * otherwise derive it from the DATASET global by stripping a trailing `_marts`
@@ -191,6 +194,42 @@
     return `<div class="comp-media">${items.join('')}${count}</div>`;
   }
 
+  /* ── Search: matched-field indicator + shared grouping (US-008) ── */
+
+  /* Human labels for the search action's matched_fields (US-006). Anything not
+   * mapped falls back to the raw field name with underscores spaced out. */
+  const COMP_MATCH_LABELS = {
+    ad_creative_bodies: 'ad copy',
+    ad_creative_link_titles: 'link title',
+    page_name: 'page name',
+    link_url: 'link URL',
+    cta_type: 'CTA',
+    on_screen_text: 'on-screen text',
+  };
+
+  /* One 'matched: …' line for a search result. Absent-safe: a card with no
+   * matched_fields (every default-grid card) renders nothing, so compCardHtml
+   * stays a single rendering path for both the full grid and search results. */
+  function compMatchedHtml(ad) {
+    const fields = Array.isArray(ad && ad.matched_fields) ? ad.matched_fields : [];
+    if (!fields.length) return '';
+    const labels = fields.map((f) => COMP_MATCH_LABELS[f] || String(f).replace(/_/g, ' '));
+    return `<div class="comp-matched">matched: ${esc(labels.join(', '))}</div>`;
+  }
+
+  /* Group ads by competitor page_name, preserving the query's ordering. Shared
+   * by the default grid (compRender) and the search view (compRenderSearch). */
+  function compGroupByPage(ads) {
+    const groups = [];
+    const idx = {};
+    (Array.isArray(ads) ? ads : []).forEach((a) => {
+      const key = (a.page_name != null && a.page_name !== '') ? String(a.page_name) : 'Unknown';
+      if (idx[key] === undefined) { idx[key] = groups.length; groups.push({ page_name: key, rows: [] }); }
+      groups[idx[key]].rows.push(a);
+    });
+    return groups;
+  }
+
   function compCardHtml(ad) {
     const fmt = esc(ad.display_format || '');
     const ctaRaw = (ad.cta_type || '').replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
@@ -213,6 +252,7 @@
 
     return `<div class="comp-card">${compMediaHtml(ad.creatives)}<div class="comp-body">`
       + `<div class="comp-tags">${tags.join('')}</div>`
+      + compMatchedHtml(ad)
       + (since && since !== '–' ? `<div class="comp-since">Live since ${esc(since)}</div>` : '')
       + `<div class="comp-copy${cc.dyn ? ' dyn' : ''}">${copy}</div>`
       + `<div class="comp-foot"><span class="comp-cta">${cta || '&nbsp;'}</span>${link}</div>`
@@ -225,7 +265,9 @@
     showEl('comp-loading'); hideEl('comp-body');
     try {
       const res = await fetchCompetitor(compClient);
-      compRender((res && Array.isArray(res.ads)) ? res.ads : [], res && res.ageMetrics);
+      compDefaultAds = (res && Array.isArray(res.ads)) ? res.ads : [];
+      compDefaultAge = res && res.ageMetrics;
+      compRender(compDefaultAds, compDefaultAge);
     } catch (err) {
       console.error('Competitor load error:', err);
       const el = document.getElementById('comp-loading');
@@ -237,14 +279,8 @@
     const age = (ageMetrics && typeof ageMetrics === 'object') ? ageMetrics : {};
     const ageClient = age.client || null;
     const ageByPage = (age.byPage && typeof age.byPage === 'object') ? age.byPage : {};
-    // Group by competitor page_name, preserving the query's ordering.
-    const groups = [];
-    const idx = {};
-    ads.forEach((a) => {
-      const key = (a.page_name != null && a.page_name !== '') ? String(a.page_name) : 'Unknown';
-      if (idx[key] === undefined) { idx[key] = groups.length; groups.push({ page_name: key, rows: [] }); }
-      groups[idx[key]].rows.push(a);
-    });
+    // Group by competitor page_name (shared with the search view).
+    const groups = compGroupByPage(ads);
 
     const body = document.getElementById('comp-body');
     const metaLine = document.getElementById('comp-meta');
@@ -325,6 +361,153 @@
     if (next) next.addEventListener('click', () => { if (s.cur < pages - 1) go(1); });
   }
 
+  /* ── Search over the competitor grid (US-008) ──
+   * A term search box above the existing card grid. Submitting calls the US-006
+   * `competitor-search` action (term search across this client's competitor ad
+   * text / link titles / page name / CTA / vision on-screen text) and re-renders
+   * the SAME grouped card grid — reusing compCardHtml / compMediaHtml /
+   * compRenderSection so media stays lazy, signed, and paginated exactly as the
+   * default view. Clearing restores the cached full grid. The shared controls bar
+   * stays suppressed as today: this search box lives inside the competitor panel,
+   * it is not the global #controls-bar. */
+
+  async function fetchCompetitorSearch(client, term) {
+    const r = await fetch(BQ_FUNCTION, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'competitor-search', client: client, term: term }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  }
+
+  /* Search bar markup. Uses the F10 form-control tokens inline (the shared
+   * controls-bar CSS is scoped to #controls-bar, which stays hidden on this tab)
+   * and the existing .pg-btn button style so it reads as native F10. */
+  function compSearchBarHtml() {
+    return '<form class="comp-search" id="comp-search" role="search"'
+      + ' style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:20px;">'
+      + '<input type="search" class="ctrl-search comp-search-input" id="comp-search-input"'
+      + ' placeholder="Search competitor ads by any text…" aria-label="Search competitor ads"'
+      + ' style="font-family:inherit;font-size:12px;padding:7px 10px;border:1px solid var(--paper-dark);'
+      + 'border-radius:4px;background:var(--white);color:var(--ink);flex:1;min-width:220px;max-width:380px;">'
+      + '<button type="submit" class="pg-btn comp-search-go">Search</button>'
+      + '<button type="button" class="pg-btn comp-search-clear" id="comp-search-clear" hidden>Clear</button>'
+      + '</form>';
+  }
+
+  /* Inject the search bar into the competitor panel, above the loading/body. */
+  function compInjectSearchBar() {
+    const anchor = document.getElementById('comp-loading');
+    if (anchor) anchor.insertAdjacentHTML('beforebegin', compSearchBarHtml());
+    else {
+      const panel = document.getElementById('panel-competitors');
+      if (panel) panel.insertAdjacentHTML('beforeend', compSearchBarHtml());
+    }
+    compWireSearch();
+  }
+
+  function compWireSearch() {
+    const form = document.getElementById('comp-search');
+    const input = document.getElementById('comp-search-input');
+    const clear = document.getElementById('comp-search-clear');
+    if (form) form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const term = input ? String(input.value || '').trim() : '';
+      if (!term) { compClearSearch(); return; }
+      compRunSearch(term);
+    });
+    if (clear) clear.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (input) input.value = '';
+      compClearSearch();
+    });
+  }
+
+  async function compRunSearch(term) {
+    compSearchActive = true;
+    const clear = document.getElementById('comp-search-clear');
+    if (clear) clear.hidden = false;
+    if (window.F10A) F10A.track('competitor.search', { term: term, client: compClient });
+    showEl('comp-loading'); hideEl('comp-body');
+    const loadingEl = document.getElementById('comp-loading');
+    if (loadingEl) loadingEl.innerHTML = '<div class="spinner"></div>Searching…';
+    try {
+      const res = await fetchCompetitorSearch(compClient, term);
+      compRenderSearch((res && Array.isArray(res.ads)) ? res.ads : [], term);
+    } catch (err) {
+      // Surface the failure loudly (hq-never-swallow-errors): log it and show it
+      // in the tab, exactly like the default-grid load path does.
+      console.error('Competitor search error:', err);
+      const el = document.getElementById('comp-loading');
+      if (el) el.innerHTML = 'Error running search: ' + esc(err && err.message ? err.message : String(err));
+    }
+  }
+
+  /* Render matched ads into the SAME grouped-section grid the default view uses,
+   * so media is lazy/signed and the pager behaves identically. */
+  function compRenderSearch(ads, term) {
+    const groups = compGroupByPage(ads);
+    const body = document.getElementById('comp-body');
+    const metaLine = document.getElementById('comp-meta');
+    const note = document.getElementById('comp-note');
+
+    if (!groups.length) {
+      compSections = [];
+      if (body) body.innerHTML = '<div class="no-data">No competitor ads match “' + esc(term) + '”.</div>';
+      if (metaLine) metaLine.textContent = 'Search “' + term + '” · 0 ads';
+      if (note) note.textContent = '';
+      hideEl('comp-loading'); showEl('comp-body');
+      return;
+    }
+
+    let total = 0;
+    compSections = groups.map((g) => {
+      let rows = g.rows;
+      if (COMP_MAX && rows.length > COMP_MAX) rows = rows.slice(0, COMP_MAX);
+      const live = rows.reduce((n, a) => n + (((a.still_active != null ? a.still_active : a.is_active)) ? 1 : 0), 0);
+      total += rows.length;
+      return { page_name: g.page_name, cards: rows.map(compCardHtml), total: rows.length, live: live, cur: 0 };
+    });
+
+    if (metaLine) {
+      metaLine.textContent = 'Search “' + term + '” · '
+        + groups.length + ' competitor' + (groups.length === 1 ? '' : 's') + ' · '
+        + total + ' ad' + (total === 1 ? '' : 's');
+    }
+    if (note) {
+      note.textContent = 'Showing ads whose text matches “' + term + '” — clear the search to return to the full library.';
+    }
+
+    body.innerHTML = groups.length ? compSections.map((s, i) =>
+      `<section class="comp-section" id="comp-sec-${i}">`
+        + `<h2 class="comp-head">${esc(s.page_name)}</h2>`
+        + `<p class="comp-pgmeta">${s.total} ad${s.total === 1 ? '' : 's'} matched &middot; ${s.live} live</p>`
+        + `<div class="comp-grid" id="comp-grid-${i}"></div>`
+        + `<div class="comp-pager" id="comp-pager-${i}"></div>`
+      + `</section>`
+    ).join('') : '';
+
+    compSections.forEach((s, i) => compRenderSection(i));
+    hideEl('comp-loading'); showEl('comp-body');
+  }
+
+  /* Restore the cached full grid. If the default grid was never loaded (search
+   * ran first), fall back to a fresh load. */
+  function compClearSearch() {
+    compSearchActive = false;
+    const clear = document.getElementById('comp-search-clear');
+    if (clear) clear.hidden = true;
+    const input = document.getElementById('comp-search-input');
+    if (input) input.value = '';
+    if (compDefaultAds) {
+      compRender(compDefaultAds, compDefaultAge);
+    } else {
+      compLoaded = true;
+      compLoad();
+    }
+  }
+
   /* ── Tab system (coordinates with the Meta engine + TikTok section) ── */
 
   function compSelectTab() {
@@ -371,6 +554,7 @@
       '<div class="nav-section">Competitors</div>'
       + '<a href="#" class="comp-nav-link" data-comp-tab="competitors">Competitor Ads</a>');
     content.insertAdjacentHTML('beforeend', competitorPanelMarkup());
+    compInjectSearchBar();
     compWireControls();
   }
 
@@ -397,4 +581,22 @@
   }
 
   window.initCompetitors = initCompetitors;
+
+  /* Test surface (US-008): expose the search internals so the acceptance test
+   * can exercise them without a full DOM/probe boot. Production code paths do
+   * not read these; they only add to window. */
+  window.f10CompetitorSearch = {
+    matchedHtml: compMatchedHtml,
+    cardHtml: compCardHtml,
+    groupByPage: compGroupByPage,
+    searchBarHtml: compSearchBarHtml,
+    fetchSearch: fetchCompetitorSearch,
+    runSearch: compRunSearch,
+    clearSearch: compClearSearch,
+    renderSearch: compRenderSearch,
+    getSections: function () { return compSections; },
+    isSearchActive: function () { return compSearchActive; },
+    setClient: function (c) { compClient = c; },
+    setDefault: function (ads, age) { compDefaultAds = ads; compDefaultAge = age; },
+  };
 })();
