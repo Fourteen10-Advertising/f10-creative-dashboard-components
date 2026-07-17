@@ -94,6 +94,16 @@ exports.handler = async function (event) {
     return queryCompetitor(body, credentials, cors);
   }
 
+  // ── Competitor Ad Search: term search across THIS client's competitor ads ──
+  // Case-insensitive substring match over ad copy, link titles, page name, link
+  // URL, CTA, and the vision on-screen text, scoped by f10_client. Fails closed
+  // (empty) for clients with no competitor data and for empty/short terms, so the
+  // search surface can hide exactly like the competitor tab (US-006).
+  // Pass { action:'competitor-search', probe:true } for the same rows-exist check.
+  if (body.action === 'competitor-search') {
+    return queryCompetitorSearch(body, credentials, cors);
+  }
+
   const { query } = body;
   if (!query || typeof query !== 'string') {
     return {
@@ -492,6 +502,197 @@ async function queryCompetitor(body, credentials, cors) {
     return json(200, { ads: out, ageMetrics });
   } catch (err) {
     console.error('Competitor query error:', err);
+    return json(500, { error: err.message });
+  }
+}
+
+/* Cross-competitor ad search for one dashboard's client (US-006).
+ *
+ * Term search across this client's tracked competitor ads: ad copy
+ * (ad_creative_bodies), link titles, page name, link URL, CTA type, and the
+ * vision-extracted on-screen text (competitor_vision_attributes.on_screen_text).
+ * Everything stays keyed by f10_client in the shared all_clients_adlib dataset,
+ * so — like the competitor action — this single action serves every dashboard
+ * with no per-client config; the client key arrives as body.client.
+ *
+ * Fails closed exactly like the competitor tab: a client with no competitor rows
+ * (probe) and an empty / too-short term both return an empty set WITHOUT a full
+ * scan, so the UI can hide the surface. Matching is CONTAINS_SUBSTR — a
+ * normalized, case-insensitive substring search — and every returned ad carries
+ * matched_fields so the UI can show which field hit. Creative URLs are the same
+ * short-lived (15-min) V4 signed GCS URLs as the competitor action: the private
+ * gs:// URI is deleted before the row leaves this function. Same
+ * maximumBytesBilled / jobTimeoutMs guardrails as every other query here.
+ *
+ *   { action:'competitor-search', client:'mosh', term:'menopause' } -> { ads:[...], term }
+ *   { action:'competitor-search', client:'mosh', probe:true }        -> { exists: true|false }
+ */
+async function queryCompetitorSearch(body, credentials, cors) {
+  const json = (statusCode, payload) => ({
+    statusCode,
+    headers: { ...cors, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  const client = typeof body.client === 'string' ? body.client.trim() : '';
+  if (!client) return json(400, { error: 'Missing "client" field for competitor-search action.' });
+
+  const PROJECT = 'mcc-poc-477801';
+  const DATASET = 'all_clients_adlib';
+  // Terms shorter than this never hit BigQuery — a 1-char substring matches most
+  // ads and would force a full scan for no real signal.
+  const MIN_TERM_LEN = 2;
+
+  try {
+    const bq = new BigQuery({
+      projectId: PROJECT,
+      credentials,
+      location: 'australia-southeast1',
+    });
+
+    // Shared per-query options so every search query carries the same byte-billed
+    // cap and timeout guardrails as the rest of this function. params/types
+    // default to the {client} scope; callers override for the term + creative reads.
+    const runQuery = (query, params = { client }, types = { client: 'STRING' }) =>
+      bq.query({
+        query,
+        params,
+        types,
+        location: 'australia-southeast1',
+        useLegacySql: false,
+        maximumBytesBilled: MAX_BYTES_BILLED,
+        jobTimeoutMs: TIMEOUT_MS,
+      });
+
+    // Same cheap existence probe as the competitor action so the search surface
+    // fails closed (hidden) for clients with no competitor data at all.
+    if (body.probe) {
+      const [rows] = await runQuery(
+        `SELECT EXISTS(
+           SELECT 1 FROM \`${PROJECT}.${DATASET}.ad_registry\`
+           WHERE f10_client = @client
+         ) AS has_data`
+      );
+      return json(200, { exists: !!(rows[0] && rows[0].has_data) });
+    }
+
+    const term = typeof body.term === 'string' ? body.term.trim() : '';
+    // Empty / too-short term returns fast without scanning anything.
+    if (term.length < MIN_TERM_LEN) return json(200, { ads: [], term });
+
+    // Latest snapshot per ad, joined to the ad's vision on-screen text. The copy
+    // arrays are flattened to text so CONTAINS_SUBSTR can search them; matched_fields
+    // records which fields hit. Everything is scoped WHERE f10_client = @client.
+    const [ads] = await runQuery(
+      `
+      WITH latest AS (
+        SELECT * EXCEPT(rn) FROM (
+          SELECT ad_archive_id, page_name, display_format, cta_type,
+                 ad_creative_bodies, ad_creative_link_titles, link_url,
+                 snapshot_url, is_active, ad_delivery_start_time,
+                 ROW_NUMBER() OVER (PARTITION BY ad_archive_id ORDER BY run_date DESC) rn
+          FROM \`${PROJECT}.${DATASET}.ad_snapshots\`
+          WHERE f10_client = @client
+        )
+        WHERE rn = 1
+      ),
+      vision AS (
+        SELECT ad_archive_id, STRING_AGG(on_screen_text, ' ') AS on_screen_text
+        FROM \`${PROJECT}.${DATASET}.competitor_vision_attributes\`
+        WHERE f10_client = @client
+        GROUP BY ad_archive_id
+      ),
+      joined AS (
+        SELECT l.*,
+               ARRAY_TO_STRING(l.ad_creative_bodies, ' ')      AS _bodies_txt,
+               ARRAY_TO_STRING(l.ad_creative_link_titles, ' ') AS _titles_txt,
+               v.on_screen_text AS on_screen_text
+        FROM latest l
+        LEFT JOIN vision v USING (ad_archive_id)
+      )
+      SELECT
+        j.* EXCEPT(_bodies_txt, _titles_txt),
+        r.days_active_observed, r.first_seen_date, r.still_active,
+        ARRAY(
+          SELECT f FROM UNNEST([
+            IF(CONTAINS_SUBSTR(j._bodies_txt, @term),    'ad_creative_bodies',      NULL),
+            IF(CONTAINS_SUBSTR(j._titles_txt, @term),    'ad_creative_link_titles', NULL),
+            IF(CONTAINS_SUBSTR(j.page_name, @term),      'page_name',               NULL),
+            IF(CONTAINS_SUBSTR(j.link_url, @term),       'link_url',                NULL),
+            IF(CONTAINS_SUBSTR(j.cta_type, @term),       'cta_type',                NULL),
+            IF(CONTAINS_SUBSTR(j.on_screen_text, @term), 'on_screen_text',          NULL)
+          ]) f WHERE f IS NOT NULL
+        ) AS matched_fields
+      FROM joined j
+      LEFT JOIN \`${PROJECT}.${DATASET}.ad_registry\` r USING (ad_archive_id)
+      WHERE CONTAINS_SUBSTR(j._bodies_txt, @term)
+         OR CONTAINS_SUBSTR(j._titles_txt, @term)
+         OR CONTAINS_SUBSTR(j.page_name, @term)
+         OR CONTAINS_SUBSTR(j.link_url, @term)
+         OR CONTAINS_SUBSTR(j.cta_type, @term)
+         OR CONTAINS_SUBSTR(j.on_screen_text, @term)
+      ORDER BY j.page_name, j.ad_delivery_start_time ASC, j.ad_archive_id
+      `,
+      { client, term },
+      { client: 'STRING', term: 'STRING' }
+    );
+
+    // No matching ads is a normal empty state, not an error.
+    if (!ads.length) return json(200, { ads: [], term });
+
+    // Fetched creatives for just the matched ads, signed the same way as the
+    // competitor action (15-min URLs, gs:// never leaked).
+    const adIds = ads.map((a) => a.ad_archive_id);
+    const [creativeRows] = await runQuery(
+      `
+      SELECT ad_archive_id, media_type, idx, gcs_uri
+      FROM \`${PROJECT}.${DATASET}.creative_manifest\`
+      WHERE f10_client = @client AND fetch_status = 'fetched'
+        AND ad_archive_id IN UNNEST(@adIds)
+      QUALIFY ROW_NUMBER() OVER (PARTITION BY ad_archive_id, idx ORDER BY fetched_at DESC) = 1
+      ORDER BY ad_archive_id, (media_type = 'video') DESC, idx
+      `,
+      { client, adIds },
+      { client: 'STRING', adIds: ['STRING'] }
+    );
+
+    const creativesByAd = {};
+    for (const c of creativeRows) {
+      if (!creativesByAd[c.ad_archive_id]) creativesByAd[c.ad_archive_id] = [];
+      creativesByAd[c.ad_archive_id].push({
+        media_type: c.media_type,
+        idx: c.idx,
+        _gcsUri: c.gcs_uri,
+        url: null,
+      });
+    }
+
+    // Sign every fetched creative at request time, mutating in place so per-ad
+    // ordering survives the parallel signing; delete the gs:// URI before return.
+    const storage = new Storage({ projectId: PROJECT, credentials });
+    const expires = Date.now() + 15 * 60 * 1000; // 15 minutes
+    const allCreatives = [];
+    for (const list of Object.values(creativesByAd)) allCreatives.push(...list);
+    await Promise.all(
+      allCreatives.map(async (item) => {
+        try {
+          item.url = await signGcsUri(storage, item._gcsUri, expires);
+        } catch (e) {
+          console.error('Signed URL error for', item._gcsUri, e.message);
+          item.url = null;
+        }
+        delete item._gcsUri; // never leak the private gs:// URI to the browser
+      })
+    );
+
+    const out = ads.map((a) => ({
+      ...a,
+      creatives: creativesByAd[a.ad_archive_id] || [],
+    }));
+
+    return json(200, { ads: out, term });
+  } catch (err) {
+    console.error('Competitor search error:', err);
     return json(500, { error: err.message });
   }
 }
