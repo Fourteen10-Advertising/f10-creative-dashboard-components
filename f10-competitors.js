@@ -520,6 +520,7 @@
     // Activate Competitors.
     document.querySelectorAll('.comp-themes-nav-link').forEach((l) => l.classList.remove('active'));
     document.querySelectorAll('.comp-age-nav-link').forEach((l) => l.classList.remove('active'));
+    document.querySelectorAll('.comp-maturity-nav-link').forEach((l) => l.classList.remove('active'));
     document.querySelectorAll('.comp-nav-link').forEach((l) => l.classList.add('active'));
     const panel = document.getElementById('panel-competitors'); if (panel) panel.classList.add('active');
     const title = document.getElementById('page-title'); if (title) title.textContent = 'Competitor Ad Library';
@@ -531,7 +532,7 @@
    * state so only one section shows at a time. */
   function compDeactivateOnOtherNav() {
     document.querySelectorAll('.comp-tab-panel').forEach((p) => p.classList.remove('active'));
-    document.querySelectorAll('.comp-nav-link, .comp-themes-nav-link, .comp-age-nav-link').forEach((l) => l.classList.remove('active'));
+    document.querySelectorAll('.comp-nav-link, .comp-themes-nav-link, .comp-age-nav-link, .comp-maturity-nav-link').forEach((l) => l.classList.remove('active'));
   }
 
   function compWireControls() {
@@ -737,6 +738,7 @@
     document.querySelectorAll('.comp-age-nav-link').forEach((l) => l.classList.remove('active'));
     const mc = document.getElementById('controls-bar'); if (mc) mc.style.display = 'none';
     const tc = document.getElementById('tt-controls-bar'); if (tc) tc.style.display = 'none';
+    document.querySelectorAll('.comp-maturity-nav-link').forEach((l) => l.classList.remove('active'));
     document.querySelectorAll('.comp-themes-nav-link').forEach((l) => l.classList.add('active'));
     const panel = document.getElementById('panel-competitor-themes'); if (panel) panel.classList.add('active');
     const title = document.getElementById('page-title'); if (title) title.textContent = 'Competitor Vision & Text Analysis';
@@ -1003,6 +1005,7 @@
     document.querySelectorAll('.comp-themes-nav-link').forEach((l) => l.classList.remove('active'));
     const mc = document.getElementById('controls-bar'); if (mc) mc.style.display = 'none';
     const tc = document.getElementById('tt-controls-bar'); if (tc) tc.style.display = 'none';
+    document.querySelectorAll('.comp-maturity-nav-link').forEach((l) => l.classList.remove('active'));
     document.querySelectorAll('.comp-age-nav-link').forEach((l) => l.classList.add('active'));
     const panel = document.getElementById('panel-competitor-age'); if (panel) panel.classList.add('active');
     const title = document.getElementById('page-title'); if (title) title.textContent = 'Competitor Ad Age Over Time';
@@ -1027,6 +1030,319 @@
       '<a href="#" class="comp-age-nav-link" data-comp-tab="comp-age">Ad Age Over Time</a>');
     content.insertAdjacentHTML('beforeend', competitorAgePanelMarkup());
     compaWireControls();
+  }
+
+
+  /* ── Tab 4: Meta Maturity Score (+ leaderboard, cadence, net-new, US-011) ──
+   * The roll-up sub-tab. Ranks every tracked competitor AND the client by an
+   * explainable 0-100 Meta maturity score from the US-007 `maturity` action
+   * (competitor_meta_maturity mart): the composite is shown TOGETHER WITH the six
+   * component sub-scores + the client's rank + the data-layer-owned maturity_tier so
+   * the decision surface explains WHY, not a bare number (insight-ladder-l4-l5-gate).
+   * The same panel surfaces the longevity leaderboard (`leaderboard` action) and the
+   * refresh cadence + net-new-ad alerts (`net-new` action). All three loads are
+   * lazy + absent-safe; the maturity load is the primary (probe-gated) surface, the
+   * leaderboard + net-new are secondary and degrade to empty on their own failure
+   * (logged, never hidden — hq-never-swallow-errors). Uses F10 design tokens inline,
+   * matching the ads/themes/age tabs, so no shared-CSS edit is needed. */
+
+  let compmLoaded = false;
+  let compmData = null; // cached { maturity, leaderboard, netnew }
+
+  /* Fixed component order + human labels so a user can read what drives the score.
+   * Keys mirror the `maturity` action's sub_scores object exactly. */
+  const COMPM_COMPONENTS = [
+    ['longevity', 'Longevity'],
+    ['cadence', 'Cadence'],
+    ['volume', 'Volume'],
+    ['active_ratio', 'Active ratio'],
+    ['format_diversity', 'Format diversity'],
+    ['platform_spread', 'Platform spread'],
+  ];
+  /* Display-only colour per tier, keyed off the DATA-OWNED maturity_tier label. The
+   * tier band is NEVER recomputed in the frontend (hq-classifier-own-labels-single-
+   * source): the data layer owns the label; this map only styles the label it hands us. */
+  const COMPM_TIER_COLORS = {
+    Leading: 'var(--young-blood)', Established: '#4a90e2', Developing: '#f5a623',
+    Emerging: '#9b59b6', Nascent: '#7f8c8d', Dormant: 'var(--grey)',
+  };
+
+  async function fetchMaturity(client) {
+    const r = await fetch(BQ_FUNCTION, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'maturity', client: client }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  }
+  async function fetchLeaderboard(client) {
+    const r = await fetch(BQ_FUNCTION, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'leaderboard', client: client }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  }
+  async function fetchNetNew(client) {
+    const r = await fetch(BQ_FUNCTION, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'net-new', client: client }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  }
+
+  function compmNum(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
+  /* Composite to one decimal for the headline number; null when not finite. */
+  function compmComposite(v) { const n = compmNum(v); return n == null ? null : Math.round(n * 10) / 10; }
+
+  /* Merge the client row (if present) with the competitor rows and sort high-to-low
+   * by score. maturity_rank is the data-owned ordering (1 = most mature within the
+   * set, which already includes the client); fall back to composite desc. */
+  function compmRankedRows(client, competitors) {
+    const rows = [];
+    if (client && typeof client === 'object') rows.push(Object.assign({}, client, { __isClient: true }));
+    (Array.isArray(competitors) ? competitors : []).forEach((c) => rows.push(Object.assign({}, c, { __isClient: false })));
+    rows.sort((a, b) => {
+      const ra = Number(a.maturity_rank), rb = Number(b.maturity_rank);
+      if (Number.isFinite(ra) && Number.isFinite(rb) && ra !== rb) return ra - rb;
+      return (Number(b.composite_score) || 0) - (Number(a.composite_score) || 0);
+    });
+    return rows;
+  }
+
+  /* Tier badge — renders the data-owned maturity_tier text verbatim (never re-banded);
+   * only the chip colour is a local display choice keyed off that same label. */
+  function compmTierBadge(tier) {
+    const label = tier == null ? '' : String(tier);
+    if (!label) return '';
+    const bg = COMPM_TIER_COLORS[label] || 'var(--paper-dark)';
+    return `<span class="compm-tier" data-tier="${esc(label)}" style="display:inline-block;padding:2px 9px;`
+      + `border-radius:999px;font-size:10px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;`
+      + `background:${bg};color:var(--white);">${esc(label)}</span>`;
+  }
+
+  /* One competitor/client row: rank + name + tier + composite, then the six labelled
+   * component bars (the explainable breakdown). The client row is highlighted and
+   * marked "(you)". */
+  function compmScoreRowHtml(entity) {
+    const e = entity && typeof entity === 'object' ? entity : {};
+    const isClient = !!e.__isClient;
+    const name = esc(String(e.page_name || e.entity_id || 'Competitor'));
+    const rank = compmNum(e.maturity_rank);
+    const composite = compmComposite(e.composite_score);
+    const subs = e.sub_scores && typeof e.sub_scores === 'object' ? e.sub_scores : {};
+    const bars = COMPM_COMPONENTS.map(([key, label]) => {
+      const v = compmNum(subs[key]);
+      const pct = v == null ? 0 : Math.max(0, Math.min(100, v));
+      return '<div class="compm-comp" style="flex:1 1 0;min-width:82px;">'
+        + `<div class="compm-comp-label" style="font-size:9px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:var(--grey);margin-bottom:3px;">${esc(label)}</div>`
+        + '<div class="compm-comp-track" style="height:7px;border-radius:4px;background:var(--paper-dark);overflow:hidden;">'
+        + `<span class="compm-comp-fill" data-comp="${esc(key)}" style="display:block;height:100%;width:${pct}%;background:${isClient ? 'var(--young-blood)' : '#4a90e2'};border-radius:4px;"></span></div>`
+        + `<div class="compm-comp-val" style="font-size:11px;font-weight:700;color:var(--ink);margin-top:2px;">${v == null ? '&mdash;' : Math.round(v)}</div>`
+        + '</div>';
+    }).join('');
+    const entId = isClient ? 'client' : ('page-' + String(e.page_id != null ? e.page_id : name).replace(/[^A-Za-z0-9_-]/g, ''));
+    return `<div class="compm-row" data-entity="${entId}" style="background:var(--white);border:2px solid ${isClient ? 'var(--young-blood)' : 'var(--paper-dark)'};`
+      + `border-radius:8px;padding:14px 16px;margin-bottom:12px;${isClient ? 'box-shadow:0 0 0 1px var(--young-blood) inset;' : ''}">`
+      + '<div class="compm-row-head" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px;">'
+      + `<span class="compm-rank" style="font-size:13px;font-weight:800;color:var(--grey);min-width:30px;">#${rank == null ? '&mdash;' : rank}</span>`
+      + `<span class="compm-name" style="font-size:15px;font-weight:700;color:var(--ink);">${name}`
+      + `${isClient ? ' <span class="compm-you" style="color:var(--young-blood);font-weight:800;">(you)</span>' : ''}</span>`
+      + compmTierBadge(e.maturity_tier)
+      + `<span class="compm-score" title="Composite Meta maturity score (0-100)" style="margin-left:auto;font-size:22px;font-weight:800;color:${isClient ? 'var(--young-blood)' : 'var(--ink)'};">${composite == null ? '&mdash;' : composite}</span>`
+      + '</div>'
+      + `<div class="compm-comps" style="display:flex;gap:10px;flex-wrap:wrap;">${bars}</div>`
+      + '</div>';
+  }
+
+  /* The client's rank + tier headline — the "so what": where you sit in the set and
+   * what tier you are, before the per-row breakdown of "why". */
+  function compmRankHeadlineHtml(client, setSize) {
+    if (!client || typeof client !== 'object') return '';
+    const rank = compmNum(client.maturity_rank);
+    const size = compmNum(setSize) != null ? compmNum(setSize) : compmNum(client.set_size);
+    const tier = client.maturity_tier;
+    const rankTxt = rank == null ? '&mdash;' : rank;
+    const ofTxt = size == null ? '' : ' of ' + size;
+    const tierTxt = tier ? ` &mdash; tier: <strong>${esc(String(tier))}</strong>` : '';
+    return '<div class="compm-headline" style="background:var(--paper);border-left:4px solid var(--young-blood);'
+      + 'border-radius:6px;padding:14px 18px;margin-bottom:18px;font-size:14px;color:var(--ink);">'
+      + `You rank <strong style="color:var(--young-blood);font-size:18px;">#${rankTxt}</strong>${ofTxt} on Meta maturity${tierTxt}. `
+      + 'Read across the component bars below to see exactly where you lead the set and where to close the gap.'
+      + '</div>';
+  }
+
+  /* Longevity leaderboard — top live competitor ads by age, from the `leaderboard`
+   * action. Only the public Ad Library snapshot_url is rendered (http(s) only — no
+   * gs:// URI can leak). Absent-safe: a clean empty state when there is nothing live. */
+  function compmLeaderboardHtml(ads) {
+    const list = Array.isArray(ads) ? ads : [];
+    if (!list.length) return '<div class="no-data">No live competitor ads to rank by longevity yet.</div>';
+    const rows = list.map((a) => {
+      const url = String((a && a.snapshot_url) || '');
+      const safe = /^https?:\/\//.test(url) ? url : '';
+      const age = compmNum(a && a.live_age_days);
+      return '<tr>'
+        + `<td style="padding:6px 10px;font-weight:700;color:var(--grey);">#${a && a.rank != null ? a.rank : '&mdash;'}</td>`
+        + `<td style="padding:6px 10px;font-weight:600;">${esc(String((a && (a.page_name || a.page_id)) || ''))}</td>`
+        + `<td style="padding:6px 10px;color:var(--grey);">${esc(String((a && a.display_format) || ''))}</td>`
+        + `<td style="padding:6px 10px;font-weight:700;text-align:right;">${age == null ? '&mdash;' : Math.round(age) + 'd'}</td>`
+        + `<td style="padding:6px 10px;text-align:right;">${safe ? `<a href="${esc(safe)}" target="_blank" rel="noopener" style="color:var(--young-blood);font-weight:600;">View</a>` : ''}</td>`
+        + '</tr>';
+    }).join('');
+    return '<div class="compm-lb-wrap" style="background:var(--white);border:2px solid var(--paper-dark);border-radius:8px;overflow:hidden;">'
+      + '<table class="compm-lb" style="width:100%;border-collapse:collapse;font-size:12px;">'
+      + '<thead><tr style="background:var(--paper);text-align:left;">'
+      + '<th style="padding:8px 10px;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--grey);">#</th>'
+      + '<th style="padding:8px 10px;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--grey);">Competitor</th>'
+      + '<th style="padding:8px 10px;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--grey);">Format</th>'
+      + '<th style="padding:8px 10px;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--grey);text-align:right;">Live age</th>'
+      + '<th style="padding:8px 10px;text-align:right;"></th>'
+      + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+  }
+
+  /* Refresh cadence + net-new alerts — from the `net-new` action. The per-competitor
+   * net_new_count over the window IS the refresh cadence read; the flagged ads are the
+   * net-new alerts. Absent-safe: a clean empty state when nothing is new this period. */
+  function compmNetNewHtml(netnew) {
+    const nn = netnew && typeof netnew === 'object' ? netnew : {};
+    const byPage = Array.isArray(nn.byPage) ? nn.byPage : [];
+    const ads = Array.isArray(nn.ads) ? nn.ads : [];
+    const win = nn.window && typeof nn.window === 'object' ? nn.window : null;
+    if (!byPage.length && !ads.length) return '<div class="no-data">No net-new competitor ads detected this period.</div>';
+    const totalNew = byPage.length
+      ? byPage.reduce((s, p) => s + (Number(p && p.net_new_count) || 0), 0)
+      : ads.length;
+    const winTxt = win ? `New-ad window: <strong>${esc(compDateStr(win.start) || '')}</strong> &rarr; <strong>${esc(compDateStr(win.end) || '')}</strong>` : '';
+    const alert = totalNew > 0
+      ? `<div class="compm-alert" style="background:var(--young-blood);color:var(--white);font-weight:700;border-radius:6px;padding:8px 14px;margin-bottom:12px;">`
+        + `${totalNew} brand-new competitor ad${totalNew === 1 ? '' : 's'} this period</div>`
+      : '<div class="compm-alert" style="background:var(--paper);color:var(--grey);border-radius:6px;padding:8px 14px;margin-bottom:12px;">No brand-new competitor ads this period.</div>';
+    const rows = byPage.map((p) => {
+      const nc = Number(p && p.net_new_count) || 0;
+      const tot = Number(p && p.ads_total) || 0;
+      return '<tr>'
+        + `<td style="padding:6px 10px;font-weight:600;">${esc(String((p && (p.page_name || p.page_id)) || ''))}</td>`
+        + `<td style="padding:6px 10px;font-weight:800;text-align:right;color:${nc > 0 ? 'var(--young-blood)' : 'var(--grey)'};">${nc}</td>`
+        + `<td style="padding:6px 10px;text-align:right;color:var(--grey);">${tot}</td>`
+        + '</tr>';
+    }).join('');
+    const table = byPage.length
+      ? '<div class="compm-nn-wrap" style="background:var(--white);border:2px solid var(--paper-dark);border-radius:8px;overflow:hidden;">'
+        + '<table class="compm-nn" style="width:100%;border-collapse:collapse;font-size:12px;">'
+        + '<thead><tr style="background:var(--paper);text-align:left;">'
+        + '<th style="padding:8px 10px;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--grey);">Competitor</th>'
+        + '<th style="padding:8px 10px;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--grey);text-align:right;">New this period</th>'
+        + '<th style="padding:8px 10px;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--grey);text-align:right;">Total live</th>'
+        + '</tr></thead><tbody>' + rows + '</tbody></table></div>'
+      : '';
+    return alert + (winTxt ? `<div class="window-note" style="margin-bottom:10px;">${winTxt}</div>` : '') + table;
+  }
+
+  function compmRender(data) {
+    const d = data && typeof data === 'object' ? data : {};
+    const mat = d.maturity && typeof d.maturity === 'object' ? d.maturity : {};
+    const lb = d.leaderboard && typeof d.leaderboard === 'object' ? d.leaderboard : {};
+    const nn = d.netnew && typeof d.netnew === 'object' ? d.netnew : {};
+    const client = mat.client && typeof mat.client === 'object' ? mat.client : null;
+    const competitors = Array.isArray(mat.competitors) ? mat.competitors : [];
+
+    const body = document.getElementById('compm-body');
+    const metaLine = document.getElementById('compm-meta');
+    const note = document.getElementById('compm-note');
+
+    if (!client && !competitors.length) {
+      if (body) body.innerHTML = '<div class="no-data">No Meta maturity score is available for this client yet.</div>';
+      if (metaLine) metaLine.textContent = '';
+      if (note) note.textContent = '';
+      hideEl('compm-loading'); showEl('compm-body');
+      return;
+    }
+
+    if (metaLine) {
+      metaLine.textContent = competitors.length + ' competitor' + (competitors.length === 1 ? '' : 's')
+        + (client ? ' + you' : '') + ' · explainable Meta maturity score · source: Meta Ad Library (AU)';
+    }
+    if (note) {
+      note.textContent = client
+        ? 'Your rank and tier are the headline read; the component bars explain what drives the score, so you know exactly where to close the gap.'
+        : 'No client maturity row is available yet, so only the competitor set is ranked. The component bars explain what drives each score.';
+    }
+
+    const ranked = compmRankedRows(client, competitors);
+    if (body) {
+      body.innerHTML =
+        compmRankHeadlineHtml(client, mat.set_size)
+        + '<div class="compm-scores">' + ranked.map(compmScoreRowHtml).join('') + '</div>'
+        + '<div class="compm-section" style="margin-top:26px;"><h3 style="font-size:13px;font-weight:800;letter-spacing:0.04em;text-transform:uppercase;color:var(--ink);margin:0 0 12px;">Longevity leaderboard</h3>'
+        + compmLeaderboardHtml(lb.ads) + '</div>'
+        + '<div class="compm-section" style="margin-top:26px;"><h3 style="font-size:13px;font-weight:800;letter-spacing:0.04em;text-transform:uppercase;color:var(--ink);margin:0 0 12px;">Refresh cadence &amp; net-new ads</h3>'
+        + compmNetNewHtml(nn) + '</div>';
+    }
+
+    const lu = document.getElementById('last-updated');
+    if (lu) lu.textContent = 'Updated ' + new Date().toLocaleTimeString('en-AU');
+    hideEl('compm-loading'); showEl('compm-body');
+  }
+
+  async function compmLoad() {
+    showEl('compm-loading'); hideEl('compm-body');
+    try {
+      // Maturity is the primary, probe-gated surface — its failure surfaces loudly.
+      // Leaderboard + net-new are secondary: on their own failure we log (never hide)
+      // and degrade that section to empty rather than blanking the whole tab.
+      const [matRes, lbRes, nnRes] = await Promise.all([
+        fetchMaturity(compClient),
+        fetchLeaderboard(compClient).catch((e) => { console.error('Competitor leaderboard load error:', e); return { ads: [] }; }),
+        fetchNetNew(compClient).catch((e) => { console.error('Competitor net-new load error:', e); return { ads: [], byPage: [] }; }),
+      ]);
+      compmData = { maturity: matRes || {}, leaderboard: lbRes || {}, netnew: nnRes || {} };
+      compmRender(compmData);
+    } catch (err) {
+      // Surface loudly (hq-never-swallow-errors): log + show in the tab, like the other tabs.
+      console.error('Competitor maturity load error:', err);
+      const el = document.getElementById('compm-loading');
+      if (el) el.innerHTML = 'Error loading maturity score: ' + esc(err && err.message ? err.message : String(err));
+    }
+  }
+
+  /* Activate the Meta Maturity sub-tab: deactivate Meta, TikTok, and the other three
+   * competitor sub-tabs, then show this panel. Emits competitor.tab.maturity on
+   * activation and loads the data lazily the first time. */
+  function compmSelectTab() {
+    document.querySelectorAll('.tab-panel').forEach((p) => p.classList.remove('active'));
+    document.querySelectorAll('.nav-link').forEach((l) => l.classList.remove('active'));
+    document.querySelectorAll('.tt-nav-link').forEach((l) => l.classList.remove('active'));
+    document.querySelectorAll('.comp-nav-link').forEach((l) => l.classList.remove('active'));
+    document.querySelectorAll('.comp-themes-nav-link').forEach((l) => l.classList.remove('active'));
+    document.querySelectorAll('.comp-age-nav-link').forEach((l) => l.classList.remove('active'));
+    const mc = document.getElementById('controls-bar'); if (mc) mc.style.display = 'none';
+    const tc = document.getElementById('tt-controls-bar'); if (tc) tc.style.display = 'none';
+    document.querySelectorAll('.comp-maturity-nav-link').forEach((l) => l.classList.add('active'));
+    const panel = document.getElementById('panel-competitor-maturity'); if (panel) panel.classList.add('active');
+    const title = document.getElementById('page-title'); if (title) title.textContent = 'Competitor Meta Maturity Score';
+    if (window.F10A) F10A.track('competitor.tab.maturity', { client: compClient });
+    if (!compmLoaded) { compmLoaded = true; compmLoad(); }
+  }
+
+  function compmWireControls() {
+    document.querySelectorAll('.comp-maturity-nav-link').forEach((link) =>
+      link.addEventListener('click', (e) => { e.preventDefault(); compmSelectTab(); })
+    );
+  }
+
+  /* Register Tab 4 — Meta Maturity Score (US-011). Same runtime nav+panel injection
+   * pattern as the ads/themes/age tabs; fired only when the maturity probe passes so a
+   * client with no maturity mart leaves zero DOM trace. */
+  function compmRegisterTab() {
+    const nav = compEnsureNavSection();
+    const content = document.getElementById('content');
+    if (!nav || !content || typeof competitorMaturityPanelMarkup !== 'function') return;
+    nav.insertAdjacentHTML('beforeend',
+      '<a href="#" class="comp-maturity-nav-link" data-comp-tab="comp-maturity">Meta Maturity Score</a>');
+    content.insertAdjacentHTML('beforeend', competitorMaturityPanelMarkup());
+    compmWireControls();
   }
 
 
@@ -1088,6 +1404,7 @@
     await compProbeAndRegister('competitor', compRegisterTab, 'Competitor visibility probe');
     await compProbeAndRegister('themes', compRegisterThemesTab, 'Competitor themes visibility probe');
     await compProbeAndRegister('age-timeseries', compaRegisterTab, 'Competitor age visibility probe');
+    await compProbeAndRegister('maturity', compmRegisterTab, 'Competitor maturity visibility probe');
   }
 
   /* Fire a `probe:true` existence check for `action` and register its tab only on
@@ -1169,5 +1486,28 @@
     setMetric: function (m) { if (COMPA_METRIC_FIELD[m]) { compaMetric = m; } },
     setClient: function (c) { compClient = c; },
     isLoaded: function () { return compaLoaded; },
+  };
+
+  /* Test surface (US-011): expose the Meta Maturity tab internals so the
+   * acceptance test can exercise score/leaderboard/net-new rendering + registration
+   * without a full boot. Production paths do not read these; they only add to window. */
+  window.f10CompetitorMaturity = {
+    scoreRowHtml: compmScoreRowHtml,
+    tierBadge: compmTierBadge,
+    rankHeadlineHtml: compmRankHeadlineHtml,
+    leaderboardHtml: compmLeaderboardHtml,
+    netNewHtml: compmNetNewHtml,
+    rankedRows: compmRankedRows,
+    components: COMPM_COMPONENTS,
+    render: compmRender,
+    load: compmLoad,
+    fetchMaturity: fetchMaturity,
+    fetchLeaderboard: fetchLeaderboard,
+    fetchNetNew: fetchNetNew,
+    registerMaturityTab: compmRegisterTab,
+    selectTab: compmSelectTab,
+    getData: function () { return compmData; },
+    setClient: function (c) { compClient = c; },
+    isLoaded: function () { return compmLoaded; },
   };
 })();

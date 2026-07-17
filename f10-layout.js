@@ -275,6 +275,30 @@ function competitorAgePanelMarkup(){
 `;
 }
 
+/* Competitor Meta Maturity Score markup (Tab 4, US-011). The roll-up sub-tab: an
+ * explainable 0-100 Meta maturity score that ranks every tracked competitor AND the
+ * client, from the US-007 `maturity` action (competitor_meta_maturity mart). It shows
+ * the client's rank + data-owned tier alongside the composite AND its six component
+ * sub-scores (longevity, cadence, volume, active ratio, format diversity, platform
+ * spread) so the score is explainable — the "so what", not a bare number
+ * (insight-ladder-l4-l5-gate). The same panel surfaces the longevity leaderboard
+ * (`leaderboard` action), the refresh cadence + net-new-ad alerts (`net-new` action).
+ * Injected by f10-competitors.js only when the maturity visibility probe finds a
+ * maturity score for this client (probe-driven, absent-safe) — same runtime nav+panel
+ * pattern as the ads, themes, and age panels. */
+function competitorMaturityPanelMarkup(){
+  return `
+    <!-- COMPETITORS: META MATURITY SCORE -->
+    <div class="tab-panel comp-tab-panel" id="panel-competitor-maturity">
+      <div class="insight-box"><strong>Meta Maturity Score:</strong> who is winning on Meta &mdash; and <strong>why</strong>. Every competitor and <strong>you</strong> are ranked by a single 0&ndash;100 maturity score, but the score is never a black box: the six components below it (longevity, cadence, volume, active ratio, format diversity, platform spread) show exactly what drives a high or low score. Read your own rank and tier first, then read across the component bars to see where you lead the set and where to close the gap.</div>
+      <div class="window-note" id="compm-meta"></div>
+      <div class="window-note" id="compm-note"></div>
+      <div id="compm-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+      <div id="compm-body" style="display:none;"></div>
+    </div>
+`;
+}
+
 /* ── "How to read this tab" notes ──
  * Plain-English, client-facing guidance shown at the top of every tab, plus a
  * one-line definition of what a "conversion" is for this account. Rendered only
