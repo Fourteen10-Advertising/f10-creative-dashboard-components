@@ -254,6 +254,27 @@ function competitorThemesPanelMarkup(){
 `;
 }
 
+/* Competitor Ad Age Over Time markup (Tab 3, US-010). A third competitor sub-tab:
+ * a time-series chart of average AND median live ad age per month for every tracked
+ * competitor PLUS the client's own line, from the US-007 `age-timeseries` action
+ * (US-003 over-time mart, one shared monthly axis + one age definition). Injected by
+ * f10-competitors.js only when the age visibility probe finds age-over-time rows for
+ * this client (probe-driven, absent-safe) — same runtime nav+panel pattern as the
+ * ads and themes panels. The chart itself is drawn client-side (inline SVG multi-line,
+ * matching the framework's library-free SVG charting approach, e.g. retentionSparkline). */
+function competitorAgePanelMarkup(){
+  return `
+    <!-- COMPETITORS: AD AGE OVER TIME -->
+    <div class="tab-panel comp-tab-panel" id="panel-competitor-age">
+      <div class="insight-box"><strong>Ad Age Over Time:</strong> how creative longevity is trending &mdash; the average and median age of each competitor&rsquo;s live ads month by month, with <strong>your own line</strong> on the same axis for comparison. A line drifting up means a competitor is leaning on older, proven creative; a line staying low means they refresh often. Read it against your own trend: are you ageing faster or slower than the set?</div>
+      <div class="window-note" id="compa-meta"></div>
+      <div class="window-note" id="compa-note"></div>
+      <div id="compa-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+      <div id="compa-body" style="display:none;"></div>
+    </div>
+`;
+}
+
 /* ── "How to read this tab" notes ──
  * Plain-English, client-facing guidance shown at the top of every tab, plus a
  * one-line definition of what a "conversion" is for this account. Rendered only

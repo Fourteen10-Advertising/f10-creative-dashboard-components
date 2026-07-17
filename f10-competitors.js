@@ -519,6 +519,7 @@
     const tc = document.getElementById('tt-controls-bar'); if (tc) tc.style.display = 'none';
     // Activate Competitors.
     document.querySelectorAll('.comp-themes-nav-link').forEach((l) => l.classList.remove('active'));
+    document.querySelectorAll('.comp-age-nav-link').forEach((l) => l.classList.remove('active'));
     document.querySelectorAll('.comp-nav-link').forEach((l) => l.classList.add('active'));
     const panel = document.getElementById('panel-competitors'); if (panel) panel.classList.add('active');
     const title = document.getElementById('page-title'); if (title) title.textContent = 'Competitor Ad Library';
@@ -530,7 +531,7 @@
    * state so only one section shows at a time. */
   function compDeactivateOnOtherNav() {
     document.querySelectorAll('.comp-tab-panel').forEach((p) => p.classList.remove('active'));
-    document.querySelectorAll('.comp-nav-link, .comp-themes-nav-link').forEach((l) => l.classList.remove('active'));
+    document.querySelectorAll('.comp-nav-link, .comp-themes-nav-link, .comp-age-nav-link').forEach((l) => l.classList.remove('active'));
   }
 
   function compWireControls() {
@@ -733,6 +734,7 @@
     document.querySelectorAll('.nav-link').forEach((l) => l.classList.remove('active'));
     document.querySelectorAll('.tt-nav-link').forEach((l) => l.classList.remove('active'));
     document.querySelectorAll('.comp-nav-link').forEach((l) => l.classList.remove('active'));
+    document.querySelectorAll('.comp-age-nav-link').forEach((l) => l.classList.remove('active'));
     const mc = document.getElementById('controls-bar'); if (mc) mc.style.display = 'none';
     const tc = document.getElementById('tt-controls-bar'); if (tc) tc.style.display = 'none';
     document.querySelectorAll('.comp-themes-nav-link').forEach((l) => l.classList.add('active'));
@@ -750,6 +752,283 @@
     // handled inside compThemesSelectTab; other-nav clicks drop this tab via the
     // ads tab's compDeactivateOnOtherNav (which now also clears .comp-themes-nav-link).
   }
+
+  /* ── Tab 3: Ad Age Over Time (competitor vs client, US-010) ──
+   * A time-series chart of the AVERAGE and MEDIAN live ad age, per month, for
+   * every tracked competitor PLUS the client's own line, from the US-007
+   * `age-timeseries` action (US-003 over-time mart: one shared monthly axis and
+   * one age definition for every series). The chart is drawn client-side as an
+   * inline SVG multi-line chart — matching the framework's library-free SVG
+   * charting approach (f10-utils.js retentionSparkline) rather than introducing a
+   * new chart library. Avg vs median is a toggle (both always available + clearly
+   * labelled); the client line is the thick young-blood brand line so it reads as
+   * distinct; the legend lets you focus a single competitor vs the client. Uses
+   * the F10 design tokens inline (matching the ads + themes tabs) so no shared-CSS
+   * edit is needed. Absent-safe: no drawable series → a clean empty state. */
+
+  let compaLoaded = false;
+  let compaData = null;      // cached { client:[...], competitors:[...] } from the age action
+  let compaMetric = 'avg';   // 'avg' | 'median' — which line the chart currently draws
+  let compaFocus = null;     // legend focus: a series id, or null for "show all"
+
+  const COMPA_METRIC_FIELD = { avg: 'avg_age_live_days', median: 'median_age_live_days' };
+  /* Competitor line palette. The client owns the young-blood brand line; competitors
+   * cycle this set (chosen to stay distinct from the maroon client line). */
+  const COMPA_COLORS = ['#4a90e2', '#f5a623', '#7ed321', '#9b59b6', '#1abc9c', '#e67e22', '#2ecc71', '#3498db', '#c8ff00', '#fa023c'];
+  const COMPA_CLIENT_COLOR = 'var(--young-blood)';
+
+  async function fetchAge(client) {
+    const r = await fetch(BQ_FUNCTION, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'age-timeseries', client: client }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  }
+
+  /* BQ period_month → 'YYYY-MM' axis key ({value:'2026-07-01'} or a raw string). */
+  function compaMonthKey(v) {
+    const s = compDateStr(v); // reuse the ads-tab date coercion (→ YYYY-MM-DD)
+    return s ? s.slice(0, 7) : null;
+  }
+
+  /* 'YYYY-MM' → short axis label, e.g. 'Jul 26'. */
+  function compaMonthLabel(key) {
+    if (!key) return '';
+    const [y, mo] = String(key).split('-').map(Number);
+    if (!y || !mo) return String(key);
+    const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return MON[mo - 1] + ' ' + String(y).slice(2);
+  }
+
+  /* Coerce one series' points to {key, value} for the chosen metric. Points with no
+   * finite value are kept as {value:null} so a gap breaks the line rather than
+   * drawing a false straight segment; points with no month key are dropped. */
+  function compaSeriesPoints(series, metric) {
+    const field = COMPA_METRIC_FIELD[metric] || COMPA_METRIC_FIELD.avg;
+    return (Array.isArray(series) ? series : []).map((p) => {
+      const n = Number(p && p[field]);
+      return { key: compaMonthKey(p && p.period_month), value: Number.isFinite(n) ? n : null };
+    }).filter((p) => p.key);
+  }
+
+  /* Unified, sorted month axis across the client line and every competitor series,
+   * so all lines share ONE time axis (acceptance criterion). Metric-agnostic — the
+   * axis is the set of months present, independent of avg vs median. */
+  function compaBuildAxis(client, competitors) {
+    const keys = {};
+    const add = (series) => compaSeriesPoints(series, 'avg').forEach((p) => { keys[p.key] = true; });
+    add(client);
+    (Array.isArray(competitors) ? competitors : []).forEach((c) => add(c && c.series));
+    return Object.keys(keys).sort();
+  }
+
+  /* Inline SVG multi-line chart of live ad age over time. One <path> per series on a
+   * single x (month) axis + y (age, days) scale; the client line is the thick
+   * young-blood brand line, competitors are thinner palette lines. Each path AND
+   * legend chip carries data-series so the legend can focus one line. Absent-safe:
+   * returns '' when there is nothing to plot. */
+  function compaChartHtml(client, competitors, metric) {
+    metric = COMPA_METRIC_FIELD[metric] ? metric : compaMetric;
+    const axis = compaBuildAxis(client, competitors);
+    const comps = Array.isArray(competitors) ? competitors : [];
+    const clientPts = compaSeriesPoints(client, metric);
+    const series = [];
+    if (clientPts.length) {
+      series.push({ id: 'client', label: (compClient || 'Client') + ' (you)', color: COMPA_CLIENT_COLOR, isClient: true, points: clientPts });
+    }
+    comps.forEach((c, i) => {
+      const pts = compaSeriesPoints(c && c.series, metric);
+      if (!pts.length) return;
+      series.push({
+        id: 'page-' + String(c && c.page_id != null ? c.page_id : i).replace(/[^A-Za-z0-9_-]/g, ''),
+        label: String((c && (c.page_name || c.page_id)) || ('Competitor ' + (i + 1))),
+        color: COMPA_COLORS[i % COMPA_COLORS.length], isClient: false, points: pts,
+      });
+    });
+    if (!axis.length || !series.length) return '';
+
+    const W = 760, H = 300, padL = 46, padR = 16, padT = 14, padB = 34;
+    const plotW = W - padL - padR, plotH = H - padT - padB;
+    const xi = {}; axis.forEach((k, i) => { xi[k] = i; });
+    const xFor = (k) => padL + (axis.length === 1 ? plotW / 2 : (xi[k] / (axis.length - 1)) * plotW);
+    let maxV = 0;
+    series.forEach((s) => s.points.forEach((p) => { if (p.value != null && p.value > maxV) maxV = p.value; }));
+    const yMax = maxV > 0 ? maxV * 1.08 : 1;
+    const yFor = (v) => padT + plotH - (v / yMax) * plotH;
+
+    const yTicks = [0, yMax / 2, yMax];
+    const grid = yTicks.map((v) =>
+      `<line x1="${padL}" y1="${yFor(v).toFixed(1)}" x2="${W - padR}" y2="${yFor(v).toFixed(1)}" stroke="var(--paper-dark)" stroke-width="1"/>`
+      + `<text x="${padL - 6}" y="${(yFor(v) + 3).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--grey)">${Math.round(v)}</text>`
+    ).join('');
+    const everyX = Math.max(1, Math.ceil(axis.length / 8));
+    const xlabels = axis.map((k, i) => (i % everyX === 0 || i === axis.length - 1)
+      ? `<text x="${xFor(k).toFixed(1)}" y="${H - 12}" text-anchor="middle" font-size="9" fill="var(--grey)">${esc(compaMonthLabel(k))}</text>` : '').join('');
+
+    const paths = series.map((s) => {
+      let d = '', started = false;
+      s.points.forEach((p) => {
+        if (p.value == null) { started = false; return; }
+        d += (started ? 'L' : 'M') + xFor(p.key).toFixed(1) + ' ' + yFor(p.value).toFixed(1) + ' ';
+        started = true;
+      });
+      const dots = s.points.filter((p) => p.value != null)
+        .map((p) => `<circle cx="${xFor(p.key).toFixed(1)}" cy="${yFor(p.value).toFixed(1)}" r="${s.isClient ? 3 : 2.4}" fill="${s.color}"/>`).join('');
+      return `<path class="compa-line" data-series="${s.id}" d="${d.trim()}" fill="none" stroke="${s.color}" `
+        + `stroke-width="${s.isClient ? 3 : 1.8}" stroke-linejoin="round" stroke-linecap="round"/>${dots}`;
+    }).join('');
+
+    const svg = `<svg class="compa-chart" width="100%" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Live ad age over time by competitor and client">`
+      + grid + paths + xlabels + '</svg>';
+
+    const legend = '<div class="compa-legend" style="display:flex;gap:14px;flex-wrap:wrap;margin-top:12px;">'
+      + series.map((s) =>
+        `<button type="button" class="compa-legend-item" data-series="${s.id}"`
+        + ' style="display:inline-flex;align-items:center;gap:7px;background:transparent;border:none;cursor:pointer;font-family:inherit;font-size:11px;color:var(--ink);padding:0;">'
+        + `<span style="width:${s.isClient ? 16 : 12}px;height:${s.isClient ? 4 : 3}px;border-radius:2px;background:${s.color};display:inline-block;"></span>`
+        + `<span${s.isClient ? ' style="font-weight:600;"' : ''}>${esc(s.label)}</span></button>`).join('')
+      + '</div>';
+
+    return '<div class="compa-chart-wrap" style="background:var(--white);border:2px solid var(--paper-dark);border-radius:8px;padding:16px 18px;">'
+      + svg + legend + '</div>';
+  }
+
+  /* Avg / Median toggle — the F10 segmented control (.seg). Both metrics are ALWAYS
+   * present and clearly labelled; switching redraws the chart from cached data. */
+  function compaToggleHtml(metric) {
+    const seg = (key, label) =>
+      `<button type="button" class="compa-metric-btn${metric === key ? ' active' : ''}" data-metric="${key}">${label}</button>`;
+    return '<div class="compa-controls" style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">'
+      + '<span style="font-size:9px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:var(--grey);">Age metric</span>'
+      + '<div class="seg">' + seg('avg', 'Average') + seg('median', 'Median') + '</div></div>';
+  }
+
+  function compaRender(data) {
+    const d = (data && typeof data === 'object') ? data : {};
+    const client = Array.isArray(d.client) ? d.client : [];
+    const competitors = Array.isArray(d.competitors) ? d.competitors : [];
+
+    const body = document.getElementById('compa-body');
+    const metaLine = document.getElementById('compa-meta');
+    const note = document.getElementById('compa-note');
+
+    const hasClient = compaSeriesPoints(client, 'avg').length > 0 || compaSeriesPoints(client, 'median').length > 0;
+    const chart = compaChartHtml(client, competitors, compaMetric);
+
+    if (!chart) {
+      if (body) body.innerHTML = '<div class="no-data">No ad-age-over-time data is available for this client yet.</div>';
+      if (metaLine) metaLine.textContent = '';
+      if (note) note.textContent = '';
+      hideEl('compa-loading'); showEl('compa-body');
+      return;
+    }
+
+    if (metaLine) {
+      metaLine.textContent = competitors.length + ' competitor' + (competitors.length === 1 ? '' : 's')
+        + (hasClient ? ' + your line' : '') + ' · avg & median live ad age by month · source: Meta Ad Library (AU)';
+    }
+    if (note) {
+      note.textContent = hasClient
+        ? 'Your line is the thick maroon line — compare its trend against the competitor set. Toggle avg / median, and use the legend to focus one line.'
+        : 'No client age line is available yet, so only the competitor set is shown. Toggle avg / median, and use the legend to focus one line.';
+    }
+
+    if (body) body.innerHTML = compaToggleHtml(compaMetric) + chart;
+    compaWireChartControls();
+
+    const lu = document.getElementById('last-updated');
+    if (lu) lu.textContent = 'Updated ' + new Date().toLocaleTimeString('en-AU');
+    hideEl('compa-loading'); showEl('compa-body');
+  }
+
+  async function compaLoad() {
+    showEl('compa-loading'); hideEl('compa-body');
+    try {
+      const res = await fetchAge(compClient);
+      compaData = {
+        client: (res && Array.isArray(res.client)) ? res.client : [],
+        competitors: (res && Array.isArray(res.competitors)) ? res.competitors : [],
+      };
+      compaRender(compaData);
+    } catch (err) {
+      // Surface loudly (hq-never-swallow-errors): log + show in the tab, like the ads/themes load paths.
+      console.error('Competitor age-over-time load error:', err);
+      const el = document.getElementById('compa-loading');
+      if (el) el.innerHTML = 'Error loading ad-age data: ' + esc(err && err.message ? err.message : String(err));
+    }
+  }
+
+  /* Wire the avg/median toggle and the focus-a-line legend. Re-entrant: called after
+   * every (re)render. Legend focus dims the other lines; clicking a focused line
+   * again clears the focus. */
+  function compaWireChartControls() {
+    document.querySelectorAll('.compa-metric-btn').forEach((btn) =>
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        const m = btn.getAttribute && btn.getAttribute('data-metric');
+        if (m && m !== compaMetric && COMPA_METRIC_FIELD[m]) { compaMetric = m; compaFocus = null; compaRender(compaData); }
+      })
+    );
+    document.querySelectorAll('.compa-legend-item').forEach((item) =>
+      item.addEventListener('click', (e) => {
+        e.preventDefault();
+        const id = item.getAttribute && item.getAttribute('data-series');
+        compaFocus = (compaFocus === id) ? null : id;
+        compaApplyFocus();
+      })
+    );
+    compaApplyFocus();
+  }
+
+  /* Apply the current legend focus: when a series is focused, fade every other line
+   * + legend chip; when none is focused, show all at full strength. */
+  function compaApplyFocus() {
+    const dim = (el, on) => { if (el && el.style) el.style.opacity = on ? '0.15' : '1'; };
+    document.querySelectorAll('.compa-line').forEach((ln) =>
+      dim(ln, compaFocus && (ln.getAttribute && ln.getAttribute('data-series')) !== compaFocus));
+    document.querySelectorAll('.compa-legend-item').forEach((it) =>
+      dim(it, compaFocus && (it.getAttribute && it.getAttribute('data-series')) !== compaFocus));
+  }
+
+  /* Activate the Ad Age Over Time sub-tab: deactivate Meta, TikTok, and the other
+   * two competitor sub-tabs, then show this panel. Emits competitor.tab.age on
+   * activation and loads the data lazily the first time. */
+  function compaSelectTab() {
+    document.querySelectorAll('.tab-panel').forEach((p) => p.classList.remove('active'));
+    document.querySelectorAll('.nav-link').forEach((l) => l.classList.remove('active'));
+    document.querySelectorAll('.tt-nav-link').forEach((l) => l.classList.remove('active'));
+    document.querySelectorAll('.comp-nav-link').forEach((l) => l.classList.remove('active'));
+    document.querySelectorAll('.comp-themes-nav-link').forEach((l) => l.classList.remove('active'));
+    const mc = document.getElementById('controls-bar'); if (mc) mc.style.display = 'none';
+    const tc = document.getElementById('tt-controls-bar'); if (tc) tc.style.display = 'none';
+    document.querySelectorAll('.comp-age-nav-link').forEach((l) => l.classList.add('active'));
+    const panel = document.getElementById('panel-competitor-age'); if (panel) panel.classList.add('active');
+    const title = document.getElementById('page-title'); if (title) title.textContent = 'Competitor Ad Age Over Time';
+    if (window.F10A) F10A.track('competitor.tab.age', { client: compClient });
+    if (!compaLoaded) { compaLoaded = true; compaLoad(); }
+  }
+
+  function compaWireControls() {
+    document.querySelectorAll('.comp-age-nav-link').forEach((link) =>
+      link.addEventListener('click', (e) => { e.preventDefault(); compaSelectTab(); })
+    );
+  }
+
+  /* Register Tab 3 — Ad Age Over Time (US-010). Same runtime nav+panel injection
+   * pattern as the ads and themes tabs; fired only when the age probe passes so a
+   * client with no age-over-time mart leaves zero DOM trace. */
+  function compaRegisterTab() {
+    const nav = compEnsureNavSection();
+    const content = document.getElementById('content');
+    if (!nav || !content || typeof competitorAgePanelMarkup !== 'function') return;
+    nav.insertAdjacentHTML('beforeend',
+      '<a href="#" class="comp-age-nav-link" data-comp-tab="comp-age">Ad Age Over Time</a>');
+    content.insertAdjacentHTML('beforeend', competitorAgePanelMarkup());
+    compaWireControls();
+  }
+
 
   /* ── Boot ── */
 
@@ -808,6 +1087,7 @@
     // and not tab 2 — and vice versa. Each fails closed on its own.
     await compProbeAndRegister('competitor', compRegisterTab, 'Competitor visibility probe');
     await compProbeAndRegister('themes', compRegisterThemesTab, 'Competitor themes visibility probe');
+    await compProbeAndRegister('age-timeseries', compaRegisterTab, 'Competitor age visibility probe');
   }
 
   /* Fire a `probe:true` existence check for `action` and register its tab only on
@@ -867,5 +1147,27 @@
     getThemes: function () { return compThemes; },
     setClient: function (c) { compClient = c; },
     isLoaded: function () { return compThemesLoaded; },
+  };
+
+  /* Test surface (US-010): expose the Ad Age Over Time tab internals so the
+   * acceptance test can exercise chart rendering + registration without a full
+   * boot. Production paths do not read these; they only add to window. */
+  window.f10CompetitorAge = {
+    chartHtml: compaChartHtml,
+    toggleHtml: compaToggleHtml,
+    seriesPoints: compaSeriesPoints,
+    buildAxis: compaBuildAxis,
+    monthKey: compaMonthKey,
+    monthLabel: compaMonthLabel,
+    render: compaRender,
+    load: compaLoad,
+    fetchAge: fetchAge,
+    registerAgeTab: compaRegisterTab,
+    selectTab: compaSelectTab,
+    getData: function () { return compaData; },
+    getMetric: function () { return compaMetric; },
+    setMetric: function (m) { if (COMPA_METRIC_FIELD[m]) { compaMetric = m; } },
+    setClient: function (c) { compClient = c; },
+    isLoaded: function () { return compaLoaded; },
   };
 })();
