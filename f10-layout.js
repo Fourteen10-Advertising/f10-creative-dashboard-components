@@ -235,6 +235,25 @@ function competitorPanelMarkup(){
 `;
 }
 
+/* Competitor Vision & Text Analysis markup (Tab 2, US-009). A second competitor
+ * sub-tab: the per-competitor Gemini theme rollup (named themes, dominant
+ * angle/message narrative, format mix, on-screen/copy phrases, confidence +
+ * run_date freshness) from the US-007 `themes` action. Injected by
+ * f10-competitors.js only when the themes visibility probe finds a theme summary
+ * for this client (probe-driven, absent-safe) — same pattern as the ads panel. */
+function competitorThemesPanelMarkup(){
+  return `
+    <!-- COMPETITORS: VISION & TEXT ANALYSIS -->
+    <div class="tab-panel comp-tab-panel" id="panel-competitor-themes">
+      <div class="insight-box"><strong>Vision &amp; Text Analysis:</strong> the creative strategy behind each competitor&rsquo;s ads &mdash; the <strong>dominant angle</strong> they keep returning to, the named themes across their vision and copy, their format mix, and the on-screen &amp; copy phrases they repeat. Read the narrative first: it is the &ldquo;so what&rdquo; &mdash; what a competitor is really selling and how &mdash; not just a list of tags.</div>
+      <div class="window-note" id="compx-meta"></div>
+      <div class="window-note" id="compx-note"></div>
+      <div id="compx-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+      <div id="compx-body" style="display:none;"></div>
+    </div>
+`;
+}
+
 /* ── "How to read this tab" notes ──
  * Plain-English, client-facing guidance shown at the top of every tab, plus a
  * one-line definition of what a "conversion" is for this account. Rendered only

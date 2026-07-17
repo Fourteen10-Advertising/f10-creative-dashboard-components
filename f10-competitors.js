@@ -518,6 +518,7 @@
     const mc = document.getElementById('controls-bar'); if (mc) mc.style.display = 'none';
     const tc = document.getElementById('tt-controls-bar'); if (tc) tc.style.display = 'none';
     // Activate Competitors.
+    document.querySelectorAll('.comp-themes-nav-link').forEach((l) => l.classList.remove('active'));
     document.querySelectorAll('.comp-nav-link').forEach((l) => l.classList.add('active'));
     const panel = document.getElementById('panel-competitors'); if (panel) panel.classList.add('active');
     const title = document.getElementById('page-title'); if (title) title.textContent = 'Competitor Ad Library';
@@ -529,7 +530,7 @@
    * state so only one section shows at a time. */
   function compDeactivateOnOtherNav() {
     document.querySelectorAll('.comp-tab-panel').forEach((p) => p.classList.remove('active'));
-    document.querySelectorAll('.comp-nav-link').forEach((l) => l.classList.remove('active'));
+    document.querySelectorAll('.comp-nav-link, .comp-themes-nav-link').forEach((l) => l.classList.remove('active'));
   }
 
   function compWireControls() {
@@ -541,21 +542,256 @@
     );
   }
 
+  /* ── Tab 2: Vision & Text Analysis (per-competitor themes, US-009) ──
+   * Reads the US-007 `themes` action (competitor_theme_summary rollup) and
+   * renders, per competitor, the DECISION surface: the dominant angle/message
+   * narrative + analysis confidence FIRST (insight-ladder-l4-l5-gate — the "so
+   * what", not a bare tag list), then the named vision themes and the text/OCR
+   * phrases visually distinguished but shown together, the format mix, and the
+   * run_date freshness. Uses the F10 design tokens inline (matching the ads tab)
+   * so no shared-CSS edit is needed. */
+
+  let compThemesLoaded = false;
+  let compThemes = null; // cached competitors array from the themes action
+
+  async function fetchThemes(client) {
+    const r = await fetch(BQ_FUNCTION, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'themes', client: client }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  }
+
+  /* Confidence badge — maps analysis_confidence to an F10 accent so the "how sure
+   * are we" read sits right next to the competitor name. */
+  function compThemesConfHtml(conf) {
+    const c = String(conf || '').toLowerCase();
+    const label = c ? c.charAt(0).toUpperCase() + c.slice(1) : 'Unrated';
+    let bg = 'var(--grey)', fg = 'var(--white)';
+    if (c === 'high') { bg = 'var(--good)'; fg = 'var(--white)'; }
+    else if (c === 'medium') { bg = 'var(--stabilo)'; fg = 'var(--ink)'; }
+    else if (c === 'low') { bg = 'var(--stabilo-red)'; fg = 'var(--white)'; }
+    return '<span class="compx-conf" style="font-size:9.5px;font-weight:600;text-transform:uppercase;'
+      + 'letter-spacing:0.06em;padding:2px 9px;border-radius:100px;background:' + bg + ';color:' + fg + ';">'
+      + esc(label) + ' confidence</span>';
+  }
+
+  /* Freshness chip — run_date of the summary. Absent-safe (no chip when missing). */
+  function compThemesFreshHtml(runDate) {
+    const d = fmtDate(compDateStr(runDate));
+    if (!d || d === '–') return '';
+    return '<span class="compx-fresh" style="font-size:10px;color:var(--grey);letter-spacing:0.04em;">as of '
+      + esc(d) + '</span>';
+  }
+
+  /* One named-theme card. A theme may carry an optional modality (vision|text) —
+   * when present it is badged and colour-distinguished (vision = solid
+   * young-blood, text = outlined) so vision themes and text themes stay visually
+   * distinct while sitting together in the same competitor section. */
+  function compThemeCardHtml(t) {
+    if (!t) return '';
+    const name = esc(t.name || t.theme || 'Theme');
+    const desc = esc(t.description || t.summary || '');
+    const modality = String(t.type || t.modality || t.source || '').toLowerCase();
+    const isText = /text|ocr|copy|phrase/.test(modality);
+    const isVision = /vision|visual|image/.test(modality);
+    let badge = '';
+    if (isVision) badge = '<span style="font-size:8.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;'
+      + 'padding:1px 7px;border-radius:100px;background:var(--young-blood);color:var(--white);margin-left:8px;">vision</span>';
+    else if (isText) badge = '<span style="font-size:8.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;'
+      + 'padding:1px 7px;border-radius:100px;background:transparent;color:var(--ink);border:1px solid var(--paper-dark);margin-left:8px;">text</span>';
+    const phrases = Array.isArray(t.example_phrases) ? t.example_phrases
+      : (Array.isArray(t.examples) ? t.examples : []);
+    const ex = phrases.length
+      ? '<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;">'
+        + phrases.map((ph) => '<span style="font-size:10px;color:var(--grey);background:var(--paper);border-radius:4px;'
+          + 'padding:2px 8px;">&ldquo;' + esc(ph) + '&rdquo;</span>').join('')
+        + '</div>'
+      : '';
+    return '<div class="compx-theme" style="background:var(--white);border:1px solid var(--paper-dark);'
+      + 'border-radius:6px;padding:11px 13px;">'
+      + '<div style="font-size:12.5px;font-weight:600;color:var(--young-blood);letter-spacing:0.02em;">' + name + badge + '</div>'
+      + (desc ? '<div style="font-size:11.5px;color:var(--ink);line-height:1.5;margin-top:3px;">' + desc + '</div>' : '')
+      + ex
+      + '</div>';
+  }
+
+  /* Format-mix strip — {video:8, image:3} rendered as the same pill chips the ads
+   * tab uses for its age distribution (.comp-dist-seg). */
+  function compFormatMixHtml(mix) {
+    const m = (mix && typeof mix === 'object' && !Array.isArray(mix)) ? mix : {};
+    const keys = Object.keys(m);
+    if (!keys.length) return '';
+    const chips = keys.map((k) =>
+      '<span class="comp-dist-seg">' + esc(String(k)) + ' <b>' + esc(String(m[k])) + '</b></span>').join('');
+    return '<div style="margin-top:12px;"><div style="font-size:9px;font-weight:600;letter-spacing:0.1em;'
+      + 'text-transform:uppercase;color:var(--grey);margin-bottom:6px;">Format mix</div>'
+      + '<div class="comp-dist" style="margin-left:0;">' + chips + '</div></div>';
+  }
+
+  /* Text/OCR phrases block — the text side of the analysis, visually distinct from
+   * the vision-theme cards above (outlined young-blood chips vs solid cards). */
+  function compPhrasesHtml(phrases) {
+    const list = Array.isArray(phrases) ? phrases.filter((ph) => ph != null && ph !== '') : [];
+    if (!list.length) return '';
+    const chips = list.map((ph) =>
+      '<span style="font-size:11px;color:var(--ink);background:transparent;border:1px solid var(--young-blood);'
+      + 'border-radius:100px;padding:3px 11px;">&ldquo;' + esc(String(ph)) + '&rdquo;</span>').join('');
+    return '<div style="margin-top:14px;"><div style="font-size:9px;font-weight:600;letter-spacing:0.1em;'
+      + 'text-transform:uppercase;color:var(--grey);margin-bottom:6px;">On-screen &amp; copy phrases (text / OCR)</div>'
+      + '<div style="display:flex;gap:7px;flex-wrap:wrap;">' + chips + '</div></div>';
+  }
+
+  /* One competitor's full theme section. Insight-ladder order: name + confidence +
+   * freshness, THEN the dominant narrative (the "so what"), THEN the structured
+   * vision themes and text phrases beneath it. */
+  function compThemesSectionHtml(c) {
+    const name = esc(c.page_name || c.page_id || 'Unknown competitor');
+    const themes = Array.isArray(c.themes) ? c.themes : [];
+    const narrative = esc(c.dominant_narrative || '');
+    const themeCards = themes.length
+      ? '<div class="compx-themes" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));'
+        + 'gap:12px;margin-top:12px;">' + themes.map(compThemeCardHtml).join('') + '</div>'
+      : '';
+    const rows = c.vision_rows_summarised;
+    const rowsNote = (rows != null || c.summary_model)
+      ? '<div style="font-size:10px;color:var(--grey);margin-top:14px;letter-spacing:0.03em;">'
+        + (rows != null ? 'Rolled up from ' + esc(String(rows)) + ' analysed ad' + (Number(rows) === 1 ? '' : 's') : '')
+        + (c.summary_model ? ((rows != null ? ' &middot; ' : '') + esc(String(c.summary_model))) : '')
+        + '</div>'
+      : '';
+    return '<section class="comp-section compx-section" style="background:var(--white);'
+      + 'border:2px solid var(--paper-dark);border-radius:8px;padding:18px 20px;">'
+      + '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px;">'
+      + '<h2 class="comp-head" style="margin-bottom:0;">' + name + '</h2>'
+      + compThemesConfHtml(c.analysis_confidence)
+      + compThemesFreshHtml(c.run_date)
+      + '</div>'
+      + (narrative
+        ? '<p class="compx-narrative" style="font-size:13px;line-height:1.6;color:var(--ink);'
+          + 'border-left:3px solid var(--young-blood);padding-left:12px;margin:0 0 4px;">' + narrative + '</p>'
+        : '<p class="no-data" style="text-align:left;padding:0;">No dominant narrative captured for this competitor yet.</p>')
+      + themeCards
+      + compFormatMixHtml(c.format_mix)
+      + compPhrasesHtml(c.common_phrases)
+      + rowsNote
+      + '</section>';
+  }
+
+  function compThemesRender(competitors) {
+    const list = Array.isArray(competitors) ? competitors : [];
+    const body = document.getElementById('compx-body');
+    const metaLine = document.getElementById('compx-meta');
+    const note = document.getElementById('compx-note');
+
+    if (!list.length) {
+      if (body) body.innerHTML = '<div class="no-data">No vision &amp; text theme summaries are available for this client yet.</div>';
+      if (metaLine) metaLine.textContent = '';
+      if (note) note.textContent = '';
+      hideEl('compx-loading'); showEl('compx-body');
+      return;
+    }
+
+    if (metaLine) {
+      metaLine.textContent = list.length + ' competitor' + (list.length === 1 ? '' : 's')
+        + ' summarised · source: Gemini vision + text rollup (Meta Ad Library AU)';
+    }
+    if (note) {
+      note.textContent = 'Each competitor is summarised from its analysed ads — the dominant angle is the headline read; '
+        + 'the themes and phrases below show how they express it.';
+    }
+
+    body.innerHTML = '<div class="compx-list" style="display:flex;flex-direction:column;gap:20px;">'
+      + list.map(compThemesSectionHtml).join('') + '</div>';
+
+    const lu = document.getElementById('last-updated');
+    if (lu) lu.textContent = 'Updated ' + new Date().toLocaleTimeString('en-AU');
+    hideEl('compx-loading'); showEl('compx-body');
+  }
+
+  async function compThemesLoad() {
+    showEl('compx-loading'); hideEl('compx-body');
+    try {
+      const res = await fetchThemes(compClient);
+      compThemes = (res && Array.isArray(res.competitors)) ? res.competitors : [];
+      compThemesRender(compThemes);
+    } catch (err) {
+      // Surface loudly (hq-never-swallow-errors): log + show in the tab, like the ads load path.
+      console.error('Competitor themes load error:', err);
+      const el = document.getElementById('compx-loading');
+      if (el) el.innerHTML = 'Error loading themes: ' + esc(err && err.message ? err.message : String(err));
+    }
+  }
+
+  /* Activate the Vision & Text sub-tab: deactivate Meta, TikTok, and the
+   * Competitor Ads sub-tab, then show this panel. Emits competitor.tab.themes on
+   * activation and loads the data lazily the first time. */
+  function compThemesSelectTab() {
+    document.querySelectorAll('.tab-panel').forEach((p) => p.classList.remove('active'));
+    document.querySelectorAll('.nav-link').forEach((l) => l.classList.remove('active'));
+    document.querySelectorAll('.tt-nav-link').forEach((l) => l.classList.remove('active'));
+    document.querySelectorAll('.comp-nav-link').forEach((l) => l.classList.remove('active'));
+    const mc = document.getElementById('controls-bar'); if (mc) mc.style.display = 'none';
+    const tc = document.getElementById('tt-controls-bar'); if (tc) tc.style.display = 'none';
+    document.querySelectorAll('.comp-themes-nav-link').forEach((l) => l.classList.add('active'));
+    const panel = document.getElementById('panel-competitor-themes'); if (panel) panel.classList.add('active');
+    const title = document.getElementById('page-title'); if (title) title.textContent = 'Competitor Vision & Text Analysis';
+    if (window.F10A) F10A.track('competitor.tab.themes', { client: compClient });
+    if (!compThemesLoaded) { compThemesLoaded = true; compThemesLoad(); }
+  }
+
+  function compWireThemesControls() {
+    document.querySelectorAll('.comp-themes-nav-link').forEach((link) =>
+      link.addEventListener('click', (e) => { e.preventDefault(); compThemesSelectTab(); })
+    );
+    // Clicking the Vision & Text tab must also drop the Meta/TikTok active state,
+    // handled inside compThemesSelectTab; other-nav clicks drop this tab via the
+    // ads tab's compDeactivateOnOtherNav (which now also clears .comp-themes-nav-link).
+  }
+
   /* ── Boot ── */
 
   /* Probe passed → register the tab: append the nav section to the sidebar nav
    * and the panel (f10-layout.js's competitorPanelMarkup()) to #content, then
    * wire the tab controls. Nothing here runs for a no-competitor client. */
-  function compRegisterTab() {
+  /* The "Competitors" nav-section header is shared by both competitor sub-tabs
+   * (Competitor Ads + Vision & Text) and must be written exactly once, even when
+   * only one of the two probes passes. */
+  let compNavSectionAdded = false;
+  function compEnsureNavSection() {
     const nav = document.querySelector('#sidebar nav');
+    if (!nav) return null;
+    if (!compNavSectionAdded) {
+      nav.insertAdjacentHTML('beforeend', '<div class="nav-section">Competitors</div>');
+      compNavSectionAdded = true;
+    }
+    return nav;
+  }
+
+  function compRegisterTab() {
+    const nav = compEnsureNavSection();
     const content = document.getElementById('content');
     if (!nav || !content || typeof competitorPanelMarkup !== 'function') return;
     nav.insertAdjacentHTML('beforeend',
-      '<div class="nav-section">Competitors</div>'
-      + '<a href="#" class="comp-nav-link" data-comp-tab="competitors">Competitor Ads</a>');
+      '<a href="#" class="comp-nav-link" data-comp-tab="competitors">Competitor Ads</a>');
     content.insertAdjacentHTML('beforeend', competitorPanelMarkup());
     compInjectSearchBar();
     compWireControls();
+  }
+
+  /* Register Tab 2 — Vision & Text Analysis (US-009). Same runtime nav+panel
+   * injection pattern as the ads tab; fired only when the themes probe passes so
+   * a client with no theme summary leaves zero DOM trace. */
+  function compRegisterThemesTab() {
+    const nav = compEnsureNavSection();
+    const content = document.getElementById('content');
+    if (!nav || !content || typeof competitorThemesPanelMarkup !== 'function') return;
+    nav.insertAdjacentHTML('beforeend',
+      '<a href="#" class="comp-themes-nav-link" data-comp-tab="comp-themes">Vision &amp; Text</a>');
+    content.insertAdjacentHTML('beforeend', competitorThemesPanelMarkup());
+    compWireThemesControls();
   }
 
   /* Called unconditionally by f10-layout.js during boot. Fires the cheap
@@ -566,17 +802,30 @@
   async function initCompetitors() {
     compClient = compClientKey();
     if (!compClient || typeof BQ_FUNCTION === 'undefined' || !BQ_FUNCTION) return; // no key or endpoint → silent no-op
+    // Two independent, cheap existence probes: the Competitor Ads tab (ad_registry)
+    // and the Vision & Text tab (competitor_theme_summary) each appear ONLY when
+    // their own data exists, so a client with ads but no theme rollup gets tab 1
+    // and not tab 2 — and vice versa. Each fails closed on its own.
+    await compProbeAndRegister('competitor', compRegisterTab, 'Competitor visibility probe');
+    await compProbeAndRegister('themes', compRegisterThemesTab, 'Competitor themes visibility probe');
+  }
+
+  /* Fire a `probe:true` existence check for `action` and register its tab only on
+   * exists:true. exists:false is silent (the normal case); a non-OK response or a
+   * network error warns once and fails closed — no nav entry, no panel, no empty
+   * state (hq-never-swallow-errors: the failure is logged, never hidden). */
+  async function compProbeAndRegister(action, register, label) {
     try {
       const r = await fetch(BQ_FUNCTION, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'competitor', client: compClient, probe: true }),
+        body: JSON.stringify({ action: action, client: compClient, probe: true }),
       });
-      if (!r.ok) { console.warn('Competitor visibility probe failed: HTTP ' + r.status); return; }
+      if (!r.ok) { console.warn(label + ' failed: HTTP ' + r.status); return; }
       const res = await r.json();
-      if (res && res.exists === true) compRegisterTab();
+      if (res && res.exists === true) register();
     } catch (err) {
-      console.warn('Competitor visibility probe error:', err && err.message ? err.message : err);
+      console.warn(label + ' error:', err && err.message ? err.message : err);
     }
   }
 
@@ -598,5 +847,25 @@
     isSearchActive: function () { return compSearchActive; },
     setClient: function (c) { compClient = c; },
     setDefault: function (ads, age) { compDefaultAds = ads; compDefaultAge = age; },
+  };
+
+  /* Test surface (US-009): expose the Vision & Text tab internals so the
+   * acceptance test can exercise rendering + registration without a full boot.
+   * Production paths do not read these; they only add to window. */
+  window.f10CompetitorThemes = {
+    themesSectionHtml: compThemesSectionHtml,
+    themeCardHtml: compThemeCardHtml,
+    confHtml: compThemesConfHtml,
+    freshHtml: compThemesFreshHtml,
+    formatMixHtml: compFormatMixHtml,
+    phrasesHtml: compPhrasesHtml,
+    render: compThemesRender,
+    load: compThemesLoad,
+    fetchThemes: fetchThemes,
+    registerThemesTab: compRegisterThemesTab,
+    selectTab: compThemesSelectTab,
+    getThemes: function () { return compThemes; },
+    setClient: function (c) { compClient = c; },
+    isLoaded: function () { return compThemesLoaded; },
   };
 })();
