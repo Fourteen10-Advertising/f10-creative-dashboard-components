@@ -78,14 +78,26 @@
     return s ? s.slice(0, 10) : null;
   }
 
-  /* Days since Meta's stated go-live date (the winner/longevity signal), NOT the
-   * warehouse observation age. Mirrors build_competitor_page.py's card "days". */
-  function daysSince(v) {
-    const d = compDateStr(v);
+  /* Parse a YYYY-MM-DD date string to UTC epoch ms; null if unparseable. */
+  function compDateToUTC(d) {
     if (!d) return null;
     const [y, mo, da] = d.split('-').map(Number);
     if (!y || !mo || !da) return null;
-    const diff = Math.floor((Date.now() - Date.UTC(y, mo - 1, da)) / 86400000);
+    return Date.UTC(y, mo - 1, da);
+  }
+
+  /* Whole days an ad has run — the winner/longevity signal, mirroring the date
+   * line on Meta's ad card, NOT the warehouse observation age. A LIVE ad counts
+   * from Meta's stated go-live date to today (still running). A STOPPED ad counts
+   * to Meta's stated stop date when we have it, so the badge freezes at the true
+   * run length (e.g. "9 Jan – 15 Jan" = 6d) instead of climbing to today forever;
+   * if the stop date is missing it falls back to today. */
+  function daysActive(ad, live) {
+    const startMs = compDateToUTC(compDateStr(ad.ad_delivery_start_time));
+    if (startMs == null) return null;
+    const stopMs = compDateToUTC(compDateStr(ad.ad_delivery_stop_time));
+    const endMs = (!live && stopMs != null) ? stopMs : Date.now();
+    const diff = Math.floor((endMs - startMs) / 86400000);
     return diff < 0 ? 0 : diff;
   }
 
@@ -237,8 +249,8 @@
     const bodies = Array.isArray(ad.ad_creative_bodies) ? ad.ad_creative_bodies : [];
     const cc = cleanCopy(bodies.length ? bodies[0] : '');
     const copy = esc(cc.text);
-    const days = daysSince(ad.ad_delivery_start_time);
     const live = (ad.still_active != null) ? ad.still_active : ad.is_active;
+    const days = daysActive(ad, live);
     const snap = ad.snapshot_url || ad.link_url || '';
     const since = fmtDate(compDateStr(ad.ad_delivery_start_time));
 
