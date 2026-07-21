@@ -430,7 +430,7 @@ async function queryCompetitor(body, credentials, cors) {
         SELECT * EXCEPT(rn) FROM (
           SELECT ad_archive_id, page_name, display_format, cta_type,
                  ad_creative_bodies, link_url, snapshot_url, is_active,
-                 ad_delivery_start_time,
+                 ad_delivery_start_time, ad_delivery_stop_time,
                  ROW_NUMBER() OVER (PARTITION BY ad_archive_id ORDER BY run_date DESC) rn
           FROM \`${PROJECT}.${DATASET}.ad_snapshots\`
           WHERE f10_client = @client
