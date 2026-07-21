@@ -23,6 +23,7 @@
  *     CLIENT:      'mosh',   // optional override when DATASET doesn't follow the convention
  *     PER_PAGE:    30,       // optional; competitor cards shown per in-page page
  *     MAX_PER_PAGE: 0,       // optional hard cap on ads rendered per competitor
+ *     EXTRA_TABS:  true,     // optional; preview the gated secondary sub-tabs (off by default until v1.15.1)
  *   };
  *
  * The panel groups every tracked competitor's live Meta ads by competitor
@@ -41,11 +42,23 @@
  * on first activation.
  */
 (function () {
-  /* COMPETITORS is optional overrides only (CLIENT, PER_PAGE, MAX_PER_PAGE). */
+  /* COMPETITORS is optional overrides only (CLIENT, PER_PAGE, MAX_PER_PAGE,
+   * EXTRA_TABS). */
   const CFG = (typeof COMPETITORS !== 'undefined' && COMPETITORS) ? COMPETITORS : {};
 
   const COMP_PER_PAGE = Number(CFG.PER_PAGE) > 0 ? Number(CFG.PER_PAGE) : 30;
   const COMP_MAX = Number(CFG.MAX_PER_PAGE) > 0 ? Number(CFG.MAX_PER_PAGE) : 0;
+
+  /* Launch gate for the SECONDARY competitor sub-tabs — Vision & Text (US-009),
+   * Ad Age Over Time (US-010) and Meta Maturity Score (US-011). Tab 1 (Competitor
+   * Ads) always ships. Held OFF by default in v1.15.0 while their output is being
+   * validated; flip COMP_EXTRA_TABS_DEFAULT to true in v1.15.1 to release them to
+   * every dashboard. A single dashboard can preview them ahead of that by setting
+   * `COMPETITORS = { EXTRA_TABS: true }` (or force-hide with `false`). This gates
+   * registration only — it AND-composes with each tab's own data probe, so a
+   * client still needs the underlying rows for a tab to appear. */
+  const COMP_EXTRA_TABS_DEFAULT = false;
+  const COMP_EXTRA_TABS = (CFG.EXTRA_TABS != null) ? (CFG.EXTRA_TABS === true) : COMP_EXTRA_TABS_DEFAULT;
   const COMP_TOKEN_RE = /\{\{[^}]+\}\}/g;
 
   let compLoaded = false;
@@ -1414,9 +1427,13 @@
     // their own data exists, so a client with ads but no theme rollup gets tab 1
     // and not tab 2 — and vice versa. Each fails closed on its own.
     await compProbeAndRegister('competitor', compRegisterTab, 'Competitor visibility probe');
-    await compProbeAndRegister('themes', compRegisterThemesTab, 'Competitor themes visibility probe');
-    await compProbeAndRegister('age-timeseries', compaRegisterTab, 'Competitor age visibility probe');
-    await compProbeAndRegister('maturity', compmRegisterTab, 'Competitor maturity visibility probe');
+    // Secondary sub-tabs are behind the launch gate (COMP_EXTRA_TABS) as well as
+    // their own data probe — held off in v1.15.0, released in v1.15.1.
+    if (COMP_EXTRA_TABS) {
+      await compProbeAndRegister('themes', compRegisterThemesTab, 'Competitor themes visibility probe');
+      await compProbeAndRegister('age-timeseries', compaRegisterTab, 'Competitor age visibility probe');
+      await compProbeAndRegister('maturity', compmRegisterTab, 'Competitor maturity visibility probe');
+    }
   }
 
   /* Fire a `probe:true` existence check for `action` and register its tab only on
