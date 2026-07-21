@@ -76,6 +76,9 @@ function makeCtx(fetchImpl) {
     window, document, console,
     F10A,
     DATASET: 'mosh_marts',
+    // Opt into the secondary-tabs launch gate so this tab's probe-registration
+    // coverage exercises the enabled path (default-off is covered by US-013).
+    COMPETITORS: { EXTRA_TABS: true },
     BQ_FUNCTION: 'https://fn.example/.netlify/functions/bq',
     fetch: fetchImpl,
     competitorPanelMarkup: () => '<div class="tab-panel comp-tab-panel" id="panel-competitors"><div id="comp-loading"></div></div>',
