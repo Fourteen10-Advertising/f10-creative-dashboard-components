@@ -4,10 +4,12 @@
  * Verifies the `action:'competitor-search'` handler in
  * starter/netlify/functions/bq.js: a client's competitor ads are searchable by
  * copy / link title / page name / link URL / CTA / vision on-screen text; every
- * matched ad reports which field matched and carries short-lived signed creative
- * URLs; the private gs:// URI never leaves the function; empty/short terms and
- * a no-data client fail closed WITHOUT a full-scan query; and every BigQuery job
- * carries the maximumBytesBilled + jobTimeoutMs guardrails.
+ * matched ad reports which field matched. The action is now METADATA ONLY — it
+ * returns no creatives and does no signing (the dashboard loads a matched page's
+ * creatives lazily via the competitor-creatives action), so the creative_manifest
+ * table is never queried here and no gs:// URI can leave the function. Empty/short
+ * terms and a no-data client fail closed WITHOUT a full-scan query; and every
+ * BigQuery job carries the maximumBytesBilled + jobTimeoutMs guardrails.
  *
  * Dependency-free: the real bq.js is compiled with the two @google-cloud modules
  * stubbed by an in-memory fake that records every query and mints a fake signed
@@ -101,11 +103,13 @@ function assertGuardrails(queries) {
 (async () => {
   console.log('US-006 cross-competitor ad search action');
 
-  // ── Scenario 1: a term that matches returns the ad with signed media + page_name ──
-  await check("term 'menopause' returns matching ad with signed media, page_name, matched_field", async () => {
+  // ── Scenario 1: a term that matches returns the ad metadata + matched_field ──
+  // (metadata-only: no creatives, no signing, no creative_manifest query)
+  await check("term 'menopause' returns matching ad metadata + matched_field, no creatives", async () => {
     const router = (opts) => {
       const sql = opts.query;
-      if (/competitor_vision_attributes|ad_snapshots/.test(sql) && !/creative_manifest/.test(sql)) {
+      assert.ok(!/creative_manifest/.test(sql), 'search must NOT query creative_manifest (metadata only)');
+      if (/competitor_vision_attributes|ad_snapshots/.test(sql)) {
         // the search snapshot query
         assert.strictEqual(opts.params.term, 'menopause', 'term param must be passed through');
         assert.strictEqual(opts.params.client, 'mosh', 'client scope must be passed through');
@@ -113,12 +117,8 @@ function assertGuardrails(queries) {
           ad_archive_id: 'A1', page_name: 'CompA', cta_type: 'SHOP_NOW',
           ad_creative_bodies: ['Managing menopause naturally'], link_url: 'https://c.example',
           on_screen_text: 'menopause relief', matched_fields: ['ad_creative_bodies', 'on_screen_text'],
-          days_active_observed: 42,
+          still_active: true,
         }];
-      }
-      if (/creative_manifest/.test(sql)) {
-        assert.deepStrictEqual(opts.params.adIds, ['A1'], 'creative read must scope to matched ad ids');
-        return [{ ad_archive_id: 'A1', media_type: 'image', idx: 0, gcs_uri: 'gs://f10-bucket/a1.jpg' }];
       }
       return [];
     };
@@ -127,9 +127,7 @@ function assertGuardrails(queries) {
     const FakeStorage = makeFakeStorage(signCalls);
     const handler = loadHandler(FakeBigQuery, FakeStorage);
 
-    const before = Date.now();
     const res = await handler(makeEvent({ action: 'competitor-search', client: 'mosh', term: 'menopause' }));
-    const after = Date.now();
 
     assert.strictEqual(res.statusCode, 200);
     const payload = JSON.parse(res.body);
@@ -137,19 +135,11 @@ function assertGuardrails(queries) {
     const ad = payload.ads[0];
     assert.strictEqual(ad.page_name, 'CompA', 'page_name returned');
     assert.ok(ad.matched_fields.includes('ad_creative_bodies'), 'matched field reported');
-    assert.strictEqual(ad.creatives.length, 1, 'creative attached');
-    assert.ok(/^https:\/\/signed\.example\//.test(ad.creatives[0].url), 'creative carries a signed https URL');
+    assert.ok(!('creatives' in ad), 'no creatives on a metadata-only search result');
 
-    // gs:// URI must never reach the browser.
+    // gs:// URI must never reach the browser and nothing is signed here.
     assert.ok(!/gs:\/\//.test(res.body), 'response must not leak any gs:// URI');
-    // Signed URL must be a 15-min V4 read URL.
-    assert.strictEqual(signCalls.length, 1, 'exactly one asset signed');
-    const so = signCalls[0].opts;
-    assert.strictEqual(so.version, 'v4');
-    assert.strictEqual(so.action, 'read');
-    const ttl = so.expires - before;
-    assert.ok(ttl >= 15 * 60 * 1000 - 50 && so.expires - after <= 15 * 60 * 1000 + 50,
-      '15-minute expiry (got ' + ttl + 'ms)');
+    assert.strictEqual(signCalls.length, 0, 'search action signs nothing (creatives are lazy)');
 
     assertGuardrails(queries);
   });
@@ -157,7 +147,7 @@ function assertGuardrails(queries) {
   // ── Scenario 2: a term with no matches returns an empty set without error ──
   await check('a no-match term returns an empty result set without error', async () => {
     const router = (opts) => {
-      if (/creative_manifest/.test(opts.query)) throw new Error('creative read must not run when nothing matched');
+      assert.ok(!/creative_manifest/.test(opts.query), 'search must never query creative_manifest');
       return []; // snapshot query finds nothing
     };
     const { FakeBigQuery, queries } = makeFakeBigQuery(router);

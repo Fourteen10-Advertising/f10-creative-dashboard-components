@@ -1,6 +1,16 @@
 /**
  * US-007 — Netlify function: competitor-intelligence tab data actions.
  *
+ * Also covers the metadata/lazy-creatives split on the core competitor surface:
+ *   - `competitor` is now METADATA ONLY — it returns ad rows with no creatives and
+ *     does no signing, accepts an optional `days` window (a positive number applies
+ *     a run_date >= DATE_SUB(...) bound inside the subquery; absent/null = all time),
+ *     drops the dead days_active_observed / first_seen_date columns (keeping
+ *     still_active), reads the two age marts in parallel, and echoes the applied
+ *     `days`.
+ *   - `competitor-creatives` is the new on-demand action that signs creative URLs
+ *     for a capped set of adIds and returns { creativesByAd } with no gs:// leak.
+ *
  * Verifies the five action-named handlers added to
  * starter/netlify/functions/bq.js — themes, age-timeseries, maturity, leaderboard,
  * net-new — that power the new dashboard tabs. Each is a thin read over a governed
@@ -106,6 +116,153 @@ function assertClientScoped(queries) {
 
 (async () => {
   console.log('US-007 competitor-intelligence tab data actions');
+
+  // ───────────────────── competitor (metadata only) ─────────────────────
+  await check('competitor with days=90 applies the run_date window, drops dead columns, returns no creatives', async () => {
+    const router = (opts) => {
+      const sql = opts.query;
+      // The competitor action must NEVER query creative_manifest anymore.
+      assert.ok(!/creative_manifest/.test(sql), 'competitor action must not query creative_manifest');
+      if (/ad_snapshots/.test(sql)) {
+        assert.ok(/run_date\s*>=\s*DATE_SUB\(CURRENT_DATE\(\),\s*INTERVAL\s*@days\s*DAY\)/.test(sql),
+          'run_date window applied inside the subquery when days is set');
+        assert.strictEqual(opts.params.days, 90, 'days param passed through');
+        assert.ok(!/days_active_observed/.test(sql), 'days_active_observed column dropped');
+        assert.ok(!/first_seen_date/.test(sql), 'first_seen_date column dropped');
+        assert.ok(/still_active/.test(sql), 'still_active is kept');
+        return [{
+          ad_archive_id: 'A1', page_name: 'CompA', display_format: 'VIDEO', cta_type: 'SHOP_NOW',
+          ad_creative_bodies: ['x'], link_url: 'https://x', snapshot_url: 'https://fb/A1',
+          is_active: true, ad_delivery_start_time: { value: '2026-05-01' }, ad_delivery_stop_time: null,
+          still_active: true,
+        }];
+      }
+      if (/competitor_age_by_client/.test(sql)) return [{ f10_client: 'mosh', ads_live: 5, avg_age_live_days: 40.5 }];
+      if (/competitor_age_by_page/.test(sql)) return [{ f10_client: 'mosh', page_id: 'P1', page_name: 'CompA', ads_live: 3 }];
+      return [];
+    };
+    const { FakeBigQuery, queries } = makeFakeBigQuery(router);
+    const handler = loadHandler(FakeBigQuery, makeFakeStorage());
+    const res = await handler(makeEvent({ action: 'competitor', client: 'mosh', days: 90 }));
+    assert.strictEqual(res.statusCode, 200);
+    const payload = JSON.parse(res.body);
+    assert.strictEqual(payload.ads.length, 1, 'one ad returned');
+    assert.ok(!('creatives' in payload.ads[0]), 'no creatives on a metadata-only ad');
+    assert.strictEqual(payload.ads[0].still_active, true, 'still_active surfaced');
+    assert.ok(payload.ageMetrics && payload.ageMetrics.client, 'age metrics client row present');
+    assert.ok(payload.ageMetrics.byPage.CompA, 'age metrics byPage keyed by page_name');
+    assert.strictEqual(payload.days, 90, 'applied days echoed back');
+    assert.ok(!/gs:\/\//.test(res.body), 'no gs:// URI in a metadata response');
+    assertGuardrails(queries);
+  });
+
+  await check('competitor with no days is all-time: no run_date window, days echoed null', async () => {
+    const router = (opts) => {
+      const sql = opts.query;
+      if (/ad_snapshots/.test(sql)) {
+        assert.ok(!/DATE_SUB/.test(sql), 'no run_date window for all-time');
+        assert.strictEqual(opts.params.days, undefined, 'no days param for all-time');
+        return [{ ad_archive_id: 'A1', page_name: 'CompA', is_active: true, still_active: true }];
+      }
+      return []; // age marts empty
+    };
+    const { FakeBigQuery, queries } = makeFakeBigQuery(router);
+    const handler = loadHandler(FakeBigQuery, makeFakeStorage());
+    const res = await handler(makeEvent({ action: 'competitor', client: 'mosh' }));
+    assert.strictEqual(res.statusCode, 200);
+    const payload = JSON.parse(res.body);
+    assert.strictEqual(payload.days, null, 'all-time echoes days:null');
+    assert.strictEqual(payload.ads.length, 1);
+    assertGuardrails(queries);
+  });
+
+  await check('competitor age-mart absence is swallowed (competitor rows still returned)', async () => {
+    const router = (opts) => {
+      const sql = opts.query;
+      if (/ad_snapshots/.test(sql)) return [{ ad_archive_id: 'A1', page_name: 'CompA', is_active: true, still_active: true }];
+      if (/competitor_age_by_/.test(sql)) throw tableNotFound('competitor_age_by_client');
+      return [];
+    };
+    const { FakeBigQuery } = makeFakeBigQuery(router);
+    const handler = loadHandler(FakeBigQuery, makeFakeStorage());
+    const res = await handler(makeEvent({ action: 'competitor', client: 'mosh', days: 30 }));
+    assert.strictEqual(res.statusCode, 200, 'absent age marts must not 500');
+    const payload = JSON.parse(res.body);
+    assert.strictEqual(payload.ads.length, 1, 'ads still returned when age marts are absent');
+    assert.strictEqual(payload.ageMetrics.client, null, 'client age metrics null when absent');
+  });
+
+  await check('competitor probe returns exists flag from a cheap EXISTS check', async () => {
+    const { FakeBigQuery } = makeFakeBigQuery((opts) => {
+      assert.ok(/EXISTS\(/.test(opts.query) && /ad_registry/.test(opts.query), 'probe hits the cheap EXISTS check');
+      return [{ has_data: true }];
+    });
+    const handler = loadHandler(FakeBigQuery, makeFakeStorage());
+    const res = await handler(makeEvent({ action: 'competitor', client: 'mosh', probe: true }));
+    assert.deepStrictEqual(JSON.parse(res.body), { exists: true });
+  });
+
+  await check('competitor missing client returns 400 without querying', async () => {
+    const { FakeBigQuery, queries } = makeFakeBigQuery(() => { throw new Error('should not query'); });
+    const handler = loadHandler(FakeBigQuery, makeFakeStorage());
+    const res = await handler(makeEvent({ action: 'competitor' }));
+    assert.strictEqual(res.statusCode, 400);
+    assert.strictEqual(queries.length, 0);
+  });
+
+  // ─────────────────── competitor-creatives (on demand) ───────────────────
+  await check('competitor-creatives signs the requested ads and returns creativesByAd (no gs:// leak)', async () => {
+    const router = (opts) => {
+      assert.ok(/creative_manifest/.test(opts.query), 'reads creative_manifest');
+      assert.ok(/ad_archive_id\s+IN\s+UNNEST\(@adIds\)/.test(opts.query), 'scoped to the requested ad ids');
+      assert.ok(/fetch_status\s*=\s*'fetched'/.test(opts.query), 'only fetched creatives');
+      assert.deepStrictEqual(opts.params.adIds, ['A1', 'A2'], 'adIds passed through');
+      return [
+        { ad_archive_id: 'A1', media_type: 'video', idx: 1, gcs_uri: 'gs://f10/a1.mp4' },
+        { ad_archive_id: 'A1', media_type: 'image', idx: 0, gcs_uri: 'gs://f10/a1.jpg' },
+        { ad_archive_id: 'A2', media_type: 'image', idx: 0, gcs_uri: 'gs://f10/a2.jpg' },
+      ];
+    };
+    const { FakeBigQuery, queries } = makeFakeBigQuery(router);
+    const handler = loadHandler(FakeBigQuery, makeFakeStorage());
+    const res = await handler(makeEvent({ action: 'competitor-creatives', client: 'mosh', adIds: ['A1', 'A2'] }));
+    assert.strictEqual(res.statusCode, 200);
+    const payload = JSON.parse(res.body);
+    assert.ok(payload.creativesByAd, 'creativesByAd returned');
+    assert.strictEqual(payload.creativesByAd.A1.length, 2, 'both A1 frames returned');
+    assert.strictEqual(payload.creativesByAd.A2.length, 1);
+    for (const cr of payload.creativesByAd.A1) {
+      assert.ok(/^https:\/\/signed\.example\//.test(cr.url), 'signed https URL');
+      assert.ok(!('_gcsUri' in cr), 'private gs:// URI deleted before return');
+    }
+    assert.ok(!/gs:\/\//.test(res.body), 'no gs:// URI leaked to the browser');
+    assertGuardrails(queries);
+  });
+
+  await check('competitor-creatives caps adIds at 60', async () => {
+    const many = Array.from({ length: 70 }, (_, i) => 'AD' + i);
+    const router = (opts) => {
+      assert.strictEqual(opts.params.adIds.length, 60, 'adIds capped at 60');
+      return [];
+    };
+    const { FakeBigQuery } = makeFakeBigQuery(router);
+    const handler = loadHandler(FakeBigQuery, makeFakeStorage());
+    const res = await handler(makeEvent({ action: 'competitor-creatives', client: 'mosh', adIds: many }));
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(JSON.parse(res.body), { creativesByAd: {} });
+  });
+
+  await check('competitor-creatives rejects a missing/empty adIds array', async () => {
+    const { FakeBigQuery, queries } = makeFakeBigQuery(() => { throw new Error('should not query'); });
+    const handler = loadHandler(FakeBigQuery, makeFakeStorage());
+    const noArr = await handler(makeEvent({ action: 'competitor-creatives', client: 'mosh' }));
+    assert.strictEqual(noArr.statusCode, 400, 'missing adIds is a 400');
+    const empty = await handler(makeEvent({ action: 'competitor-creatives', client: 'mosh', adIds: [] }));
+    assert.strictEqual(empty.statusCode, 400, 'empty adIds is a 400');
+    const noClient = await handler(makeEvent({ action: 'competitor-creatives', adIds: ['A1'] }));
+    assert.strictEqual(noClient.statusCode, 400, 'missing client is a 400');
+    assert.strictEqual(queries.length, 0, 'no query on a bad request');
+  });
 
   // ─────────────────────────── themes ───────────────────────────
   await check('themes returns the full explainable theme summary per competitor', async () => {

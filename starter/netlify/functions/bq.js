@@ -94,6 +94,15 @@ exports.handler = async function (event) {
     return queryCompetitor(body, credentials, cors);
   }
 
+  // ── Competitor creatives: on-demand signed creative URLs for specific ads ──
+  // The competitor action is metadata-only; the dashboard calls this lazily for
+  // just the ads on the visible page (capped at 60) to mint the same short-lived
+  // signed GCS URLs. Returns { creativesByAd: { <ad_archive_id>: [{media_type, idx, url}] } };
+  // the private gs:// URI is deleted before the row leaves this function.
+  if (body.action === 'competitor-creatives') {
+    return queryCompetitorCreatives(body, credentials, cors);
+  }
+
   // ── Competitor Ad Search: term search across THIS client's competitor ads ──
   // Case-insensitive substring match over ad copy, link titles, page name, link
   // URL, CTA, and the vision on-screen text, scoped by f10_client. Fails closed
@@ -372,12 +381,18 @@ async function signGcsUri(storage, gcsUri, expires) {
  * client key arrives as body.client (the frontend already knows it from the
  * dashboard config, mirroring how the query/media actions receive their inputs).
  *
- * Query shapes mirror build_competitor_page.py (fetch_ads / fetch_creatives):
- * latest snapshot per ad + registry longevity, all fetched creatives per ad
- * (signed at request time), plus absent-safe age-metrics reads.
- * Same byte-billed / timeout guardrails as every other query here.
+ * METADATA ONLY: this action returns the latest snapshot per ad WITHOUT any
+ * creatives and WITHOUT any signed-URL work — the dashboard loads a page's
+ * creatives lazily via the `competitor-creatives` action. It carries an optional
+ * date window: body.days = a positive number (e.g. 30/60/90) filters
+ * run_date >= DATE_SUB(CURRENT_DATE(), INTERVAL @days DAY) INSIDE the per-ad
+ * subquery before the latest-snapshot pick, pruning the partition scan; an
+ * absent/null days is full history (the only unpruned scan). The two age-metrics
+ * marts are read in parallel with the ads query, each absent-safe. Same
+ * byte-billed / timeout guardrails as every other query here.
  *
- *   { action:'competitor', client:'mosh' }              -> { ads: [...] }
+ *   { action:'competitor', client:'mosh', days:90 }     -> { ads:[...], ageMetrics, days:90 }
+ *   { action:'competitor', client:'mosh' }              -> { ads:[...], ageMetrics, days:null }
  *   { action:'competitor', client:'mosh', probe:true }  -> { exists: true|false }
  */
 async function queryCompetitor(body, credentials, cors) {
@@ -402,11 +417,13 @@ async function queryCompetitor(body, credentials, cors) {
 
     // Shared per-query options so every competitor query carries the same
     // byte-billed cap and timeout guardrails as the rest of this function.
-    const runQuery = (query) =>
+    // params/types default to the { client } scope; the ads query overrides to
+    // add the optional @days window bound.
+    const runQuery = (query, params = { client }, types = { client: 'STRING' }) =>
       bq.query({
         query,
-        params: { client },
-        types: { client: 'STRING' },
+        params,
+        types,
         location: 'australia-southeast1',
         useLegacySql: false,
         maximumBytesBilled: MAX_BYTES_BILLED,
@@ -424,8 +441,21 @@ async function queryCompetitor(body, credentials, cors) {
       return json(200, { exists: !!(rows[0] && rows[0].has_data) });
     }
 
-    // Latest daily snapshot per ad, joined to ad_registry longevity fields.
-    const [ads] = await runQuery(`
+    // Optional date window: a positive body.days prunes the partition scan to the
+    // last N days; absent/null is full history (the only unpruned scan). The bound
+    // is applied INSIDE the per-ad subquery, before the latest-snapshot pick.
+    const daysRaw = Number(body.days);
+    const days = Number.isFinite(daysRaw) && daysRaw > 0 ? Math.floor(daysRaw) : null;
+    const dateFilter = days != null
+      ? 'AND run_date >= DATE_SUB(CURRENT_DATE(), INTERVAL @days DAY)'
+      : '';
+    const adsParams = days != null ? { client, days } : { client };
+    const adsTypes = days != null ? { client: 'STRING', days: 'INT64' } : { client: 'STRING' };
+
+    // Latest daily snapshot per ad (metadata only — no creatives), joined to the
+    // ad_registry still_active flag. Dead columns (days_active_observed,
+    // first_seen_date) are no longer projected; the frontend never renders them.
+    const adsP = runQuery(`
       WITH latest AS (
         SELECT * EXCEPT(rn) FROM (
           SELECT ad_archive_id, page_name, display_format, cta_type,
@@ -433,33 +463,129 @@ async function queryCompetitor(body, credentials, cors) {
                  ad_delivery_start_time, ad_delivery_stop_time,
                  ROW_NUMBER() OVER (PARTITION BY ad_archive_id ORDER BY run_date DESC) rn
           FROM \`${PROJECT}.${DATASET}.ad_snapshots\`
-          WHERE f10_client = @client
+          WHERE f10_client = @client ${dateFilter}
         )
         WHERE rn = 1
       )
-      SELECT l.*, r.days_active_observed, r.first_seen_date, r.still_active
+      SELECT l.*, r.still_active
       FROM latest l
       LEFT JOIN \`${PROJECT}.${DATASET}.ad_registry\` r USING (ad_archive_id)
       ORDER BY l.page_name, l.ad_delivery_start_time ASC, l.ad_archive_id
-    `);
+    `, adsParams, adsTypes);
 
-    // No competitor rows for this client is a normal empty state, not an error.
-    if (!ads.length) return json(200, { ads: [] });
+    // Optional age-metrics reads (US-004) — absent-safe: the competitor_age_by_client
+    // and competitor_age_by_page marts may not exist for a client/account yet, so a
+    // table-not-found is swallowed and the frontend age-metrics header simply doesn't
+    // render. The two marts are read independently so one present / one absent still
+    // yields what data exists. Both run IN PARALLEL with the ads query (Promise.all);
+    // a genuine (non-not-found) error still rejects and surfaces as a loud 500.
+    const ageMetrics = { client: null, byPage: {} };
+    const clientAgeP = runQuery(`
+        SELECT f10_client, ads_tracked, ads_live, avg_age_live_days,
+               live_lt_7d, live_7_30d, live_30_90d, live_90d_plus, last_refreshed
+        FROM \`${PROJECT}.${DATASET}.competitor_age_by_client\`
+        WHERE f10_client = @client
+      `).then(([clientAgeRows]) => {
+        ageMetrics.client = clientAgeRows.length ? clientAgeRows[0] : null;
+      }).catch((e) => {
+        const notFound = e && (e.code === 404 || /not found|does not exist/i.test(e.message || ''));
+        if (!notFound) throw e;
+        console.warn('competitor_age_by_client unavailable, continuing without client age metrics:', e.message);
+      });
+    const pageAgeP = runQuery(`
+        SELECT f10_client, page_id, page_name, ads_tracked, ads_live, avg_age_live_days,
+               live_lt_7d, live_7_30d, live_30_90d, live_90d_plus, last_refreshed
+        FROM \`${PROJECT}.${DATASET}.competitor_age_by_page\`
+        WHERE f10_client = @client
+      `).then(([pageAgeRows]) => {
+        // Key by page_name to match how the frontend groups competitor sections.
+        for (const p of pageAgeRows) {
+          if (p.page_name != null && p.page_name !== '') ageMetrics.byPage[String(p.page_name)] = p;
+        }
+      }).catch((e) => {
+        const notFound = e && (e.code === 404 || /not found|does not exist/i.test(e.message || ''));
+        if (!notFound) throw e;
+        console.warn('competitor_age_by_page unavailable, continuing without per-page age metrics:', e.message);
+      });
 
-    // All fetched creatives per ad, so carousels keep every frame. Grouped in
-    // query order (video first, then idx) before signing so order is preserved.
-    const [creativeRows] = await runQuery(`
-      SELECT ad_archive_id, media_type, idx, gcs_uri
-      FROM \`${PROJECT}.${DATASET}.creative_manifest\`
-      WHERE f10_client = @client AND fetch_status = 'fetched'
-      QUALIFY ROW_NUMBER() OVER (PARTITION BY ad_archive_id, idx ORDER BY fetched_at DESC) = 1
-      ORDER BY ad_archive_id, (media_type = 'video') DESC, idx
-    `);
+    const [adsResult] = await Promise.all([adsP, clientAgeP, pageAgeP]);
+    const ads = adsResult[0];
+
+    // Return metadata only — no creatives, no signing. The dashboard loads a
+    // page's creatives on demand via the competitor-creatives action. `days`
+    // echoes the applied window (a positive number) or null for full history.
+    return json(200, { ads, ageMetrics, days });
+  } catch (err) {
+    console.error('Competitor query error:', err);
+    return json(500, { error: err.message });
+  }
+}
+
+/* On-demand signed creative URLs for a set of competitor ads (metadata/lazy
+ * split). The competitor and competitor-search actions are metadata-only; the
+ * dashboard calls this for just the ads on the page it is about to show, so only
+ * that page's private assets are ever signed and fetched by the browser.
+ *
+ * Reads creative_manifest for the requested adIds only (same latest-per
+ * (ad_archive_id, idx) QUALIFY and video-first ORDER as the old inline creatives
+ * query), signs each via signGcsUri (parallel, 15-min V4 read URLs), and deletes
+ * the private gs:// URI before the row leaves the function. adIds is capped at 60;
+ * ids beyond the cap are ignored. Same byte-billed / timeout guardrails.
+ *
+ *   { action:'competitor-creatives', client:'mosh', adIds:['A1','A2'] }
+ *     -> { creativesByAd: { A1:[{media_type, idx, url}], ... } }
+ */
+async function queryCompetitorCreatives(body, credentials, cors) {
+  const json = (statusCode, payload) => ({
+    statusCode,
+    headers: { ...cors, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  const client = typeof body.client === 'string' ? body.client.trim() : '';
+  if (!client) return json(400, { error: 'Missing "client" field for competitor-creatives action.' });
+
+  // adIds must be a non-empty array; coerce to strings, drop blanks, cap at 60.
+  const CAP = 60;
+  const adIds = Array.isArray(body.adIds)
+    ? body.adIds.map((x) => (x == null ? '' : String(x))).filter((x) => x).slice(0, CAP)
+    : [];
+  if (!adIds.length) return json(400, { error: 'competitor-creatives requires a non-empty "adIds" array.' });
+
+  const PROJECT = 'mcc-poc-477801';
+  const DATASET = 'all_clients_adlib';
+
+  try {
+    const bq = new BigQuery({
+      projectId: PROJECT,
+      credentials,
+      location: 'australia-southeast1',
+    });
+
+    // All fetched creatives for just the requested ads, so carousels keep every
+    // frame. Grouped in query order (video first, then idx) before signing.
+    const [creativeRows] = await bq.query({
+      query: `
+        SELECT ad_archive_id, media_type, idx, gcs_uri
+        FROM \`${PROJECT}.${DATASET}.creative_manifest\`
+        WHERE f10_client = @client AND fetch_status = 'fetched'
+          AND ad_archive_id IN UNNEST(@adIds)
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY ad_archive_id, idx ORDER BY fetched_at DESC) = 1
+        ORDER BY ad_archive_id, (media_type = 'video') DESC, idx
+      `,
+      params: { client, adIds },
+      types: { client: 'STRING', adIds: ['STRING'] },
+      location: 'australia-southeast1',
+      useLegacySql: false,
+      maximumBytesBilled: MAX_BYTES_BILLED,
+      jobTimeoutMs: TIMEOUT_MS,
+    });
 
     const creativesByAd = {};
     for (const c of creativeRows) {
-      if (!creativesByAd[c.ad_archive_id]) creativesByAd[c.ad_archive_id] = [];
-      creativesByAd[c.ad_archive_id].push({
+      const key = String(c.ad_archive_id);
+      if (!creativesByAd[key]) creativesByAd[key] = [];
+      creativesByAd[key].push({
         media_type: c.media_type,
         idx: c.idx,
         _gcsUri: c.gcs_uri,
@@ -467,44 +593,8 @@ async function queryCompetitor(body, credentials, cors) {
       });
     }
 
-    // Optional age-metrics read (US-004) — absent-safe: the competitor_age_by_client
-    // and competitor_age_by_page marts may not exist for a client/account yet, so a
-    // table-not-found is swallowed and the
-    // frontend age-metrics header simply doesn't render. The two marts are read
-    // independently so one present / one absent still yields what data exists.
-    const ageMetrics = { client: null, byPage: {} };
-    try {
-      const [clientAgeRows] = await runQuery(`
-        SELECT f10_client, ads_tracked, ads_live, avg_age_live_days,
-               live_lt_7d, live_7_30d, live_30_90d, live_90d_plus, last_refreshed
-        FROM \`${PROJECT}.${DATASET}.competitor_age_by_client\`
-        WHERE f10_client = @client
-      `);
-      ageMetrics.client = clientAgeRows.length ? clientAgeRows[0] : null;
-    } catch (e) {
-      const notFound = e && (e.code === 404 || /not found|does not exist/i.test(e.message || ''));
-      if (!notFound) throw e;
-      console.warn('competitor_age_by_client unavailable, continuing without client age metrics:', e.message);
-    }
-    try {
-      const [pageAgeRows] = await runQuery(`
-        SELECT f10_client, page_id, page_name, ads_tracked, ads_live, avg_age_live_days,
-               live_lt_7d, live_7_30d, live_30_90d, live_90d_plus, last_refreshed
-        FROM \`${PROJECT}.${DATASET}.competitor_age_by_page\`
-        WHERE f10_client = @client
-      `);
-      // Key by page_name to match how the frontend groups competitor sections.
-      for (const p of pageAgeRows) {
-        if (p.page_name != null && p.page_name !== '') ageMetrics.byPage[String(p.page_name)] = p;
-      }
-    } catch (e) {
-      const notFound = e && (e.code === 404 || /not found|does not exist/i.test(e.message || ''));
-      if (!notFound) throw e;
-      console.warn('competitor_age_by_page unavailable, continuing without per-page age metrics:', e.message);
-    }
-
-    // Sign every fetched creative at request time, mutating in place so the
-    // per-ad ordering above survives the parallel signing.
+    // Sign every fetched creative at request time, mutating in place so the per-ad
+    // ordering survives the parallel signing; delete the gs:// URI before return.
     const storage = new Storage({ projectId: PROJECT, credentials });
     const expires = Date.now() + 15 * 60 * 1000; // 15 minutes
     const allCreatives = [];
@@ -521,14 +611,9 @@ async function queryCompetitor(body, credentials, cors) {
       })
     );
 
-    const out = ads.map((a) => ({
-      ...a,
-      creatives: creativesByAd[a.ad_archive_id] || [],
-    }));
-
-    return json(200, { ads: out, ageMetrics });
+    return json(200, { creativesByAd });
   } catch (err) {
-    console.error('Competitor query error:', err);
+    console.error('Competitor creatives query error:', err);
     return json(500, { error: err.message });
   }
 }
@@ -546,9 +631,9 @@ async function queryCompetitor(body, credentials, cors) {
  * (probe) and an empty / too-short term both return an empty set WITHOUT a full
  * scan, so the UI can hide the surface. Matching is CONTAINS_SUBSTR — a
  * normalized, case-insensitive substring search — and every returned ad carries
- * matched_fields so the UI can show which field hit. Creative URLs are the same
- * short-lived (15-min) V4 signed GCS URLs as the competitor action: the private
- * gs:// URI is deleted before the row leaves this function. Same
+ * matched_fields so the UI can show which field hit. METADATA ONLY: like the
+ * competitor action, this returns no creatives — the dashboard loads the matched
+ * page's creatives lazily via the competitor-creatives action. Same
  * maximumBytesBilled / jobTimeoutMs guardrails as every other query here.
  *
  *   { action:'competitor-search', client:'mosh', term:'menopause' } -> { ads:[...], term }
@@ -664,60 +749,9 @@ async function queryCompetitorSearch(body, credentials, cors) {
       { client: 'STRING', term: 'STRING' }
     );
 
-    // No matching ads is a normal empty state, not an error.
-    if (!ads.length) return json(200, { ads: [], term });
-
-    // Fetched creatives for just the matched ads, signed the same way as the
-    // competitor action (15-min URLs, gs:// never leaked).
-    const adIds = ads.map((a) => a.ad_archive_id);
-    const [creativeRows] = await runQuery(
-      `
-      SELECT ad_archive_id, media_type, idx, gcs_uri
-      FROM \`${PROJECT}.${DATASET}.creative_manifest\`
-      WHERE f10_client = @client AND fetch_status = 'fetched'
-        AND ad_archive_id IN UNNEST(@adIds)
-      QUALIFY ROW_NUMBER() OVER (PARTITION BY ad_archive_id, idx ORDER BY fetched_at DESC) = 1
-      ORDER BY ad_archive_id, (media_type = 'video') DESC, idx
-      `,
-      { client, adIds },
-      { client: 'STRING', adIds: ['STRING'] }
-    );
-
-    const creativesByAd = {};
-    for (const c of creativeRows) {
-      if (!creativesByAd[c.ad_archive_id]) creativesByAd[c.ad_archive_id] = [];
-      creativesByAd[c.ad_archive_id].push({
-        media_type: c.media_type,
-        idx: c.idx,
-        _gcsUri: c.gcs_uri,
-        url: null,
-      });
-    }
-
-    // Sign every fetched creative at request time, mutating in place so per-ad
-    // ordering survives the parallel signing; delete the gs:// URI before return.
-    const storage = new Storage({ projectId: PROJECT, credentials });
-    const expires = Date.now() + 15 * 60 * 1000; // 15 minutes
-    const allCreatives = [];
-    for (const list of Object.values(creativesByAd)) allCreatives.push(...list);
-    await Promise.all(
-      allCreatives.map(async (item) => {
-        try {
-          item.url = await signGcsUri(storage, item._gcsUri, expires);
-        } catch (e) {
-          console.error('Signed URL error for', item._gcsUri, e.message);
-          item.url = null;
-        }
-        delete item._gcsUri; // never leak the private gs:// URI to the browser
-      })
-    );
-
-    const out = ads.map((a) => ({
-      ...a,
-      creatives: creativesByAd[a.ad_archive_id] || [],
-    }));
-
-    return json(200, { ads: out, term });
+    // No matching ads is a normal empty state, not an error. Return metadata only —
+    // the dashboard loads the matched page's creatives lazily via competitor-creatives.
+    return json(200, { ads, term });
   } catch (err) {
     console.error('Competitor search error:', err);
     return json(500, { error: err.message });
