@@ -2,12 +2,13 @@
  * US-008 — Tab 1: search UI over the competitor ad grid (dashboard side).
  *
  * Verifies the search surface added to f10-competitors.js: a search bar sits
- * above the existing card grid; submitting a term calls the US-006
- * `competitor-search` action and re-renders the SAME grouped card grid (reusing
- * compCardHtml / f10MediaMarkup) with a per-result "matched: …" indicator and the
- * request-time signed media; an empty result is a clean empty state; and clearing
- * the search restores the cached full grid. An analytics `competitor.search` event
- * is emitted on submit.
+ * above the existing card grid; submitting a term calls the `competitor-search`
+ * action (now metadata-only) and re-renders the SAME grouped card grid via the
+ * shared lazy-per-page path — creatives are then loaded on demand through the
+ * `competitor-creatives` action (reusing compCardHtml / f10MediaMarkup) with a
+ * per-result "matched: …" indicator; an empty result is a clean empty state; and
+ * clearing the search restores the cached full grid. An analytics
+ * `competitor.search` event is emitted on submit.
  *
  * Dependency-free: loads the real f10-utils.js + f10-competitors.js into a vm
  * sandbox with a tiny auto-slotting DOM stub, a fetch stub standing in for the
@@ -83,13 +84,24 @@ function jsonResponse(payload) {
   return { ok: true, status: 200, json: async () => payload, text: async () => JSON.stringify(payload) };
 }
 
+/* Metadata-only ad row (no creatives — the search action no longer returns them;
+ * the UI loads them lazily via competitor-creatives). */
 function ad(over) {
   return Object.assign({
     ad_archive_id: 'A?', page_name: 'CompA', display_format: 'Image', cta_type: 'SHOP_NOW',
     ad_creative_bodies: ['copy'], ad_delivery_start_time: '2026-05-01',
     is_active: true, still_active: true, matched_fields: ['on_screen_text'],
-    creatives: [{ media_type: 'image', url: 'https://signed.example/x.jpg' }],
   }, over);
+}
+
+/* Stand in for the competitor-creatives action: mint a deterministic signed URL
+ * per requested ad id so the lazy loader has something to render. */
+function creativesResponse(adIds) {
+  const creativesByAd = {};
+  (adIds || []).forEach((id) => {
+    creativesByAd[String(id)] = [{ media_type: 'image', idx: 0, url: 'https://signed.example/' + id + '.jpg' }];
+  });
+  return { creativesByAd };
 }
 
 let passed = 0;
@@ -120,22 +132,27 @@ async function check(name, fn) { await fn(); passed++; console.log('  ok -', nam
   });
 
   // ── e2e 1: submit 'menopause' -> matching ads render, grouped by page, signed media ──
-  await check("submitting 'menopause' renders only matches, grouped by page, with signed media", async () => {
-    const calls = [];
+  await check("submitting 'menopause' renders only matches, grouped by page, with lazily-loaded signed media", async () => {
+    const searchCalls = [];
+    const creativeCalls = [];
     const ctx = makeCtx(async (url, opts) => {
       const body = JSON.parse(opts.body);
-      calls.push(body);
-      assert.strictEqual(body.action, 'competitor-search', 'calls the US-006 search action');
+      if (body.action === 'competitor-creatives') {
+        creativeCalls.push(body);
+        assert.strictEqual(body.client, 'mosh', 'creatives call scoped to the client');
+        return jsonResponse(creativesResponse(body.adIds));
+      }
+      searchCalls.push(body);
+      assert.strictEqual(body.action, 'competitor-search', 'calls the search action');
       assert.strictEqual(body.term, 'menopause');
       assert.strictEqual(body.client, 'mosh', 'scoped to the client competitor set');
+      // Metadata only — the search action no longer returns creatives.
       return jsonResponse({
         term: 'menopause',
         ads: [
           ad({ ad_archive_id: 'A1', page_name: 'CompA', ad_creative_bodies: ['Managing menopause'],
-               on_screen_text: 'menopause relief', matched_fields: ['on_screen_text', 'ad_creative_bodies'],
-               creatives: [{ media_type: 'image', url: 'https://signed.example/a1.jpg' }] }),
-          ad({ ad_archive_id: 'B1', page_name: 'CompB', matched_fields: ['ad_creative_bodies'],
-               creatives: [{ media_type: 'image', url: 'https://signed.example/b1.jpg' }] }),
+               on_screen_text: 'menopause relief', matched_fields: ['on_screen_text', 'ad_creative_bodies'] }),
+          ad({ ad_archive_id: 'B1', page_name: 'CompB', matched_fields: ['ad_creative_bodies'] }),
         ],
       });
     });
@@ -144,7 +161,7 @@ async function check(name, fn) { await fn(); passed++; console.log('  ok -', nam
     await ctx.CS.runSearch('menopause');
 
     // Exactly one search action fetch, with the right shape.
-    assert.strictEqual(calls.length, 1, 'one search request issued');
+    assert.strictEqual(searchCalls.length, 1, 'one search request issued');
     // Analytics: competitor.search emitted on submit.
     const ev = ctx._tracked.find((t) => t.event === 'competitor.search');
     assert.ok(ev, 'competitor.search analytics event emitted');
@@ -155,14 +172,19 @@ async function check(name, fn) { await fn(); passed++; console.log('  ok -', nam
     assert.strictEqual(sections.length, 2, 'two competitor groups');
     assert.strictEqual(sections.map((s) => s.page_name).join(','), 'CompA,CompB');
 
+    // Creatives were loaded lazily for the visible pages via the creatives action.
+    assert.ok(creativeCalls.length >= 1, 'competitor-creatives called for the visible page(s)');
+    const requested = creativeCalls.reduce((acc, c) => acc.concat(c.adIds), []);
+    assert.ok(requested.includes('A1') && requested.includes('B1'), 'visible ad ids requested');
+
     // The section scaffold (page headers) is written to comp-body.
     const bodyHtml = ctx._slots['comp-body'].innerHTML;
     assert.ok(/CompA/.test(bodyHtml) && /CompB/.test(bodyHtml), 'both page names rendered');
 
     // compRenderSection mounted the first page's cards into the grid slots:
-    // signed media + matched indicator are present (reuses compCardHtml/f10MediaMarkup).
+    // lazily-signed media + matched indicator are present (reuses compCardHtml/f10MediaMarkup).
     const grid0 = ctx._slots['comp-grid-0'].innerHTML;
-    assert.ok(/https:\/\/signed\.example\/a1\.jpg/.test(grid0), 'signed creative URL rendered');
+    assert.ok(/https:\/\/signed\.example\/A1\.jpg/.test(grid0), 'lazily-loaded signed creative URL rendered');
     assert.ok(/matched:/.test(grid0) && /on-screen text/.test(grid0), 'matched-field indicator on the card');
     assert.ok(!/gs:\/\//.test(grid0), 'no gs:// URI leaks into the grid');
 
@@ -182,10 +204,14 @@ async function check(name, fn) { await fn(); passed++; console.log('  ok -', nam
 
   // ── e2e 2: clearing the search restores the cached full grid ──
   await check('clearing the search restores the full competitor grid', async () => {
-    const ctx = makeCtx(async () => jsonResponse({
-      term: 'menopause',
-      ads: [ad({ ad_archive_id: 'A1', page_name: 'CompA', matched_fields: ['ad_creative_bodies'] })],
-    }));
+    const ctx = makeCtx(async (url, opts) => {
+      const body = JSON.parse(opts.body);
+      if (body.action === 'competitor-creatives') return jsonResponse(creativesResponse(body.adIds));
+      return jsonResponse({
+        term: 'menopause',
+        ads: [ad({ ad_archive_id: 'A1', page_name: 'CompA', matched_fields: ['ad_creative_bodies'] })],
+      });
+    });
     ctx.CS.setClient('mosh');
 
     // Seed the cached default grid (three competitors), as compLoad would.

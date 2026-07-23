@@ -21,21 +21,31 @@
  *
  *   const COMPETITORS = {
  *     CLIENT:      'mosh',   // optional override when DATASET doesn't follow the convention
- *     PER_PAGE:    30,       // optional; competitor cards shown per in-page page
+ *     PER_PAGE:    20,       // optional; competitor cards shown per in-page page (default 20)
  *     MAX_PER_PAGE: 0,       // optional hard cap on ads rendered per competitor
  *     EXTRA_TABS:  true,     // optional; preview the gated secondary sub-tabs (off by default until v1.15.1)
  *   };
  *
- * The panel groups every tracked competitor's live Meta ads by competitor
- * page_name, in the F10 card layout — a JS port of the static
- * build_competitor_page.py surface. Data comes from the shared framework's
- * Netlify function via the data-driven `competitor` action (US-001), which
- * returns the latest snapshot per ad with longevity fields, request-time v4
- * signed creative URLs, and absent-safe age-metrics enrichment.
+ * The panel groups every tracked competitor's Meta ads by competitor page_name,
+ * in the F10 card layout — a JS port of the static build_competitor_page.py
+ * surface. A filter bar above the grid offers three controls: Status (All / Live /
+ * Inactive, default Live), Timeframe (30 / 60 / 90 days / All time, default 90
+ * days) and Competitor (All + one per competitor in the dataset, default All).
+ * Status + Competitor are instant client-side filters; a Timeframe change
+ * re-fetches metadata for the new window.
  *
- * Pagination mirrors the static page: each competitor shows PER_PAGE cards at a
- * time with Prev / Next, and ONLY the currently visible page's cards are mounted
- * in the DOM — so only that page's media (signed URLs) is fetched by the browser.
+ * DATA SPLIT — metadata + on-demand creatives: the `competitor` action returns
+ * ad METADATA only (latest snapshot per ad + still_active, absent-safe age
+ * metrics) with NO creatives and NO signing, honouring the Timeframe `days`
+ * window (All time is the only unpruned partition scan). Creatives are loaded
+ * lazily, one visible page at a time, via the `competitor-creatives` action which
+ * mints the short-lived v4 signed URLs for just that page's ads (cached per
+ * ad_archive_id so returning to a page never re-fetches).
+ *
+ * Pagination mirrors the static page: each competitor shows PER_PAGE (default 20)
+ * cards at a time with Prev / Next, and ONLY the currently visible page's cards
+ * are mounted AND only that page's creatives are ever fetched/signed. The default
+ * grid and the search results share this same lazy-per-page render path.
  *
  * Entrypoint — f10-layout.js calls initCompetitors() unconditionally during
  * boot; the probe decides whether the tab exists. The tab loads its data lazily
@@ -46,7 +56,7 @@
    * EXTRA_TABS). */
   const CFG = (typeof COMPETITORS !== 'undefined' && COMPETITORS) ? COMPETITORS : {};
 
-  const COMP_PER_PAGE = Number(CFG.PER_PAGE) > 0 ? Number(CFG.PER_PAGE) : 30;
+  const COMP_PER_PAGE = Number(CFG.PER_PAGE) > 0 ? Number(CFG.PER_PAGE) : 20;
   const COMP_MAX = Number(CFG.MAX_PER_PAGE) > 0 ? Number(CFG.MAX_PER_PAGE) : 0;
 
   /* Launch gate for the SECONDARY competitor sub-tabs — Vision & Text (US-009),
@@ -63,10 +73,20 @@
 
   let compLoaded = false;
   let compClient = ''; // resolved f10_client key (set during initCompetitors)
-  let compSections = []; // [{ page_name, cards:[html], total, live, cur }]
-  let compDefaultAds = null;  // cached full ad set from the default competitor load (US-008 restore)
-  let compDefaultAge = null;  // cached ageMetrics that went with compDefaultAds
+  let compSections = []; // [{ page_name, ads:[obj], total, live, cur }] — sections hold ad OBJECTS (creatives loaded lazily per visible page)
   let compSearchActive = false; // true while a search view is showing instead of the full grid
+
+  /* Full cached metadata ad list for the CURRENT timeframe + the ageMetrics that
+   * came with it. Status + Competitor are client-side filters over compAllAds (no
+   * refetch); a Timeframe change refetches this. */
+  let compAllAds = [];
+  let compAllAge = null;
+  /* Per-ad creative cache, keyed by ad_archive_id -> [{media_type, idx, url}].
+   * Populated lazily as pages are shown; prevents re-fetching a page you return to. */
+  let compCreativeCache = {};
+  /* Filter state. status: all|live|inactive (default live); days: 30|60|90|null
+   * (null = all time, default 90); competitor: '' = all, else a page_name. */
+  const compFilters = { status: 'live', days: 90, competitor: '' };
 
   /* Resolve the f10_client key: an explicit COMPETITORS.CLIENT override wins;
    * otherwise derive it from the DATASET global by stripping a trailing `_marts`
@@ -184,14 +204,56 @@
 
   /* ── Data fetch ── */
 
-  async function fetchCompetitor(client) {
+  /* Metadata-only fetch for the competitor ads. `days` is the timeframe window: a
+   * positive number (30/60/90) prunes the scan; null = all time (omit the field). */
+  async function fetchCompetitor(client, days) {
+    const payload = { action: 'competitor', client: client };
+    if (days != null) payload.days = days;
     const r = await fetch(BQ_FUNCTION, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'competitor', client: client }),
+      body: JSON.stringify(payload),
     });
     if (!r.ok) throw new Error(await r.text());
     return r.json();
+  }
+
+  /* On-demand signed creatives for a set of ads (the metadata/lazy split). Called
+   * per visible page for only the ad ids not already cached. */
+  async function fetchCompetitorCreatives(client, adIds) {
+    const r = await fetch(BQ_FUNCTION, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'competitor-creatives', client: client, adIds: adIds }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  }
+
+  /* Ensure every ad in `ads` has its creatives loaded and attached. Fetches only
+   * the ids not already in compCreativeCache (so returning to a page never
+   * re-fetches), caches the result per ad_archive_id (even empty, so a no-creative
+   * ad is not re-queried), then attaches `creatives` onto each ad object so
+   * compCardHtml can render it. Lets fetch errors bubble so the caller can log +
+   * show them (hq-never-swallow-errors). */
+  async function compEnsureCreatives(ads) {
+    const list = Array.isArray(ads) ? ads : [];
+    const need = [];
+    const seen = {};
+    list.forEach((a) => {
+      if (!a || a.ad_archive_id == null) return;
+      const id = String(a.ad_archive_id);
+      if (!(id in compCreativeCache) && !seen[id]) { seen[id] = true; need.push(id); }
+    });
+    if (need.length) {
+      const res = await fetchCompetitorCreatives(compClient, need);
+      const byAd = (res && res.creativesByAd && typeof res.creativesByAd === 'object') ? res.creativesByAd : {};
+      need.forEach((id) => { compCreativeCache[id] = Array.isArray(byAd[id]) ? byAd[id] : []; });
+    }
+    list.forEach((a) => {
+      if (!a || a.ad_archive_id == null) return;
+      a.creatives = compCreativeCache[String(a.ad_archive_id)] || [];
+    });
   }
 
   /* ── Card + media rendering (ports build_competitor_page.py card_html/media_html) ── */
@@ -284,15 +346,124 @@
       + `</div></div>`;
   }
 
+  /* ── Filter bar (Status / Timeframe / Competitor) ── */
+
+  /* Filter bar markup: three <select> controls styled inline with the F10 tokens
+   * the search bar uses (var(--paper-dark)/--white/--ink). Status defaults to Live,
+   * Timeframe to 90 days; the Competitor options are filled after the data loads. */
+  function compFilterBarHtml() {
+    const field = (id, label, opts) =>
+      '<label style="display:inline-flex;align-items:center;gap:7px;font-size:11px;color:var(--ink);">'
+      + '<span style="color:var(--grey);text-transform:uppercase;letter-spacing:0.06em;font-size:9.5px;font-weight:600;">' + label + '</span>'
+      + '<select id="' + id + '" class="comp-filter-select" style="font-family:inherit;font-size:12px;padding:6px 9px;'
+      + 'border:1px solid var(--paper-dark);border-radius:4px;background:var(--white);color:var(--ink);">'
+      + opts + '</select></label>';
+    const statusOpts = '<option value="all">All</option>'
+      + '<option value="live" selected>Live</option>'
+      + '<option value="inactive">Inactive</option>';
+    const timeOpts = '<option value="30">30 days</option>'
+      + '<option value="60">60 days</option>'
+      + '<option value="90" selected>90 days</option>'
+      + '<option value="all">All time</option>';
+    const compOpts = '<option value="">All competitors</option>';
+    return '<div class="comp-filters" id="comp-filters" role="group" aria-label="Competitor ad filters"'
+      + ' style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:16px;padding:12px 14px;'
+      + 'background:var(--paper-dark);border-radius:6px;">'
+      + field('comp-filter-status', 'Status', statusOpts)
+      + field('comp-filter-timeframe', 'Timeframe', timeOpts)
+      + field('comp-filter-competitor', 'Competitor', compOpts)
+      + '</div>';
+  }
+
+  /* Fill the Competitor dropdown with one option per page_name present in the
+   * loaded dataset (sorted, deduped), preserving the current selection. */
+  function compPopulateCompetitorOptions(ads) {
+    const sel = document.getElementById('comp-filter-competitor');
+    if (!sel) return;
+    const names = {};
+    (Array.isArray(ads) ? ads : []).forEach((a) => {
+      const pn = (a && a.page_name != null && a.page_name !== '') ? String(a.page_name) : 'Unknown';
+      names[pn] = true;
+    });
+    const cur = compFilters.competitor;
+    sel.innerHTML = '<option value="">All competitors</option>'
+      + Object.keys(names).sort().map((n) =>
+        '<option value="' + esc(n) + '"' + (n === cur ? ' selected' : '') + '>' + esc(n) + '</option>').join('');
+  }
+
+  /* Status + Competitor are client-side filters over the cached list (no refetch);
+   * a Timeframe change refetches with the new window. Each re-applies the client-side
+   * filters after it runs. */
+  function compOnStatusChange(val) {
+    compFilters.status = (val === 'live' || val === 'inactive') ? val : 'all';
+    if (window.F10A) F10A.track('competitor.filter', { client: compClient, filter: 'status', value: compFilters.status });
+    return compRenderFromFilters();
+  }
+  function compOnCompetitorChange(val) {
+    compFilters.competitor = val ? String(val) : '';
+    if (window.F10A) F10A.track('competitor.filter', { client: compClient, filter: 'competitor', value: compFilters.competitor || 'all' });
+    return compRenderFromFilters();
+  }
+  function compOnTimeframeChange(val) {
+    compFilters.days = (val === 'all' || val == null) ? null : (Number(val) > 0 ? Number(val) : null);
+    if (window.F10A) F10A.track('competitor.filter', { client: compClient, filter: 'timeframe', value: compFilters.days == null ? 'all' : compFilters.days });
+    return compLoad(); // Timeframe re-fetches metadata for the new window.
+  }
+
+  function compWireFilters() {
+    const st = document.getElementById('comp-filter-status');
+    const tf = document.getElementById('comp-filter-timeframe');
+    const cp = document.getElementById('comp-filter-competitor');
+    if (st) st.addEventListener('change', () => compOnStatusChange(st.value));
+    if (tf) tf.addEventListener('change', () => compOnTimeframeChange(tf.value));
+    if (cp) cp.addEventListener('change', () => compOnCompetitorChange(cp.value));
+  }
+
+  /* Inject the filter bar at the top of the competitor panel (above the search bar
+   * and grid), then wire its controls. Mirrors compInjectSearchBar. */
+  function compInjectFilterBar() {
+    const anchor = document.getElementById('comp-loading');
+    if (anchor) anchor.insertAdjacentHTML('beforebegin', compFilterBarHtml());
+    else {
+      const panel = document.getElementById('panel-competitors');
+      if (panel) panel.insertAdjacentHTML('beforeend', compFilterBarHtml());
+    }
+    compWireFilters();
+  }
+
+  /* Apply the client-side Status + Competitor filters to a metadata ad list.
+   * "Live" = still_active when known, else is_active; "Inactive" is the negation. */
+  function compApplyFilters(ads) {
+    return (Array.isArray(ads) ? ads : []).filter((a) => {
+      if (!a) return false;
+      const live = (a.still_active != null) ? a.still_active : a.is_active;
+      if (compFilters.status === 'live' && !live) return false;
+      if (compFilters.status === 'inactive' && live) return false;
+      if (compFilters.competitor) {
+        const pn = (a.page_name != null && a.page_name !== '') ? String(a.page_name) : 'Unknown';
+        if (pn !== compFilters.competitor) return false;
+      }
+      return true;
+    });
+  }
+
+  /* Re-group + re-render the cached full list through the current client-side
+   * filters. Used by the Status/Competitor controls and by clearing a search. */
+  function compRenderFromFilters() {
+    compSearchActive = false;
+    return compRender(compApplyFilters(compAllAds), compAllAge);
+  }
+
   /* ── Load + render orchestration ── */
 
   async function compLoad() {
     showEl('comp-loading'); hideEl('comp-body');
     try {
-      const res = await fetchCompetitor(compClient);
-      compDefaultAds = (res && Array.isArray(res.ads)) ? res.ads : [];
-      compDefaultAge = res && res.ageMetrics;
-      compRender(compDefaultAds, compDefaultAge);
+      const res = await fetchCompetitor(compClient, compFilters.days);
+      compAllAds = (res && Array.isArray(res.ads)) ? res.ads : [];
+      compAllAge = res && res.ageMetrics;
+      compPopulateCompetitorOptions(compAllAds);
+      await compRenderFromFilters();
     } catch (err) {
       console.error('Competitor load error:', err);
       const el = document.getElementById('comp-loading');
@@ -300,7 +471,7 @@
     }
   }
 
-  function compRender(ads, ageMetrics) {
+  async function compRender(ads, ageMetrics) {
     const age = (ageMetrics && typeof ageMetrics === 'object') ? ageMetrics : {};
     const ageClient = age.client || null;
     const ageByPage = (age.byPage && typeof age.byPage === 'object') ? age.byPage : {};
@@ -312,7 +483,8 @@
     const note = document.getElementById('comp-note');
 
     if (!groups.length) {
-      if (body) body.innerHTML = '<div class="no-data">No competitor ads are being tracked for this client yet.</div>';
+      compSections = [];
+      if (body) body.innerHTML = '<div class="no-data">No competitor ads match the current filters.</div>';
       if (metaLine) metaLine.textContent = '';
       if (note) note.textContent = '';
       hideEl('comp-loading'); showEl('comp-body');
@@ -320,12 +492,14 @@
     }
 
     let total = 0;
+    // Sections hold the ad OBJECTS for their group (not pre-built card HTML) so a
+    // page's creatives can be loaded lazily just before that page is drawn.
     compSections = groups.map((g) => {
       let rows = g.rows;
       if (COMP_MAX && rows.length > COMP_MAX) rows = rows.slice(0, COMP_MAX);
       const live = rows.reduce((n, a) => n + (((a.still_active != null ? a.still_active : a.is_active)) ? 1 : 0), 0);
       total += rows.length;
-      return { page_name: g.page_name, cards: rows.map(compCardHtml), total: rows.length, live: live, cur: 0 };
+      return { page_name: g.page_name, ads: rows, total: rows.length, live: live, cur: 0 };
     });
 
     if (metaLine) {
@@ -346,41 +520,61 @@
       + `</section>`
     ).join('');
 
-    compSections.forEach((s, i) => compRenderSection(i));
+    hideEl('comp-loading'); showEl('comp-body');
+    // Draw each section's first (visible) page — this is what lazily fetches only
+    // that page's creatives. Non-visible pages are untouched until paged to.
+    await Promise.all(compSections.map((s, i) => compRenderSection(i)));
 
     const lu = document.getElementById('last-updated');
     if (lu) lu.textContent = 'Updated ' + new Date().toLocaleTimeString('en-AU');
-    hideEl('comp-loading'); showEl('comp-body');
   }
 
-  /* Draw one competitor section's current page. Only the visible page's cards
-   * are written into the grid, so only that page's media is ever in the DOM. */
-  function compRenderSection(i) {
+  /* Draw one competitor section's current page. Only the visible page's ads are
+   * turned into cards, and only their creatives are fetched (lazily, cached), so
+   * only that page's media is ever in the DOM and only its assets are ever signed
+   * and downloaded. Shows a loading state while the page's creatives are fetched
+   * and surfaces fetch errors loudly (hq-never-swallow-errors). */
+  async function compRenderSection(i) {
     const s = compSections[i];
     const grid = document.getElementById('comp-grid-' + i);
     const pager = document.getElementById('comp-pager-' + i);
-    if (!grid) return;
-    const pages = Math.max(1, Math.ceil(s.cards.length / COMP_PER_PAGE));
+    if (!grid || !s) return;
+    const pages = Math.max(1, Math.ceil(s.ads.length / COMP_PER_PAGE));
     if (s.cur >= pages) s.cur = pages - 1;
     if (s.cur < 0) s.cur = 0;
     const start = s.cur * COMP_PER_PAGE;
-    const end = Math.min(start + COMP_PER_PAGE, s.cards.length);
-    grid.innerHTML = s.cards.slice(start, end).join('');
+    const end = Math.min(start + COMP_PER_PAGE, s.ads.length);
+    const visible = s.ads.slice(start, end);
+
+    // Lightweight loading state while this page's creatives are fetched.
+    grid.innerHTML = '<div class="comp-loading-page loading" style="grid-column:1/-1;">'
+      + '<div class="spinner"></div>Loading creatives&hellip;</div>';
+    try {
+      await compEnsureCreatives(visible);
+      grid.innerHTML = visible.map(compCardHtml).join('');
+    } catch (err) {
+      console.error('Competitor creatives load error:', err);
+      grid.innerHTML = '<div class="comp-missing" style="grid-column:1/-1;">Error loading creatives: '
+        + esc(err && err.message ? err.message : String(err)) + '</div>';
+    }
 
     if (!pager) return;
     if (pages <= 1) { pager.style.display = 'none'; pager.innerHTML = ''; return; }
     pager.style.display = 'flex';
     pager.innerHTML =
       `<button class="pg-btn" data-comp-prev${s.cur === 0 ? ' disabled' : ''}>&#8592; Prev</button>`
-      + `<span class="pg-info">Showing ${start + 1}&ndash;${end} of ${s.cards.length} &middot; page ${s.cur + 1} of ${pages}</span>`
+      + `<span class="pg-info">Showing ${start + 1}&ndash;${end} of ${s.ads.length} &middot; page ${s.cur + 1} of ${pages}</span>`
       + `<button class="pg-btn" data-comp-next${s.cur >= pages - 1 ? ' disabled' : ''}>Next &#8594;</button>`;
     const prev = pager.querySelector('[data-comp-prev]');
     const next = pager.querySelector('[data-comp-next]');
     const go = (delta) => {
       s.cur += delta;
-      compRenderSection(i);
-      const sec = document.getElementById('comp-sec-' + i);
-      if (sec) sec.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      // Fetch the new page's creatives on demand; cache prevents re-fetching a page
+      // you return to. Scroll back to the section top once the page is drawn.
+      compRenderSection(i).then(() => {
+        const sec = document.getElementById('comp-sec-' + i);
+        if (sec) sec.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      });
     };
     if (prev) prev.addEventListener('click', () => { if (s.cur > 0) go(-1); });
     if (next) next.addEventListener('click', () => { if (s.cur < pages - 1) go(1); });
@@ -459,7 +653,7 @@
     if (loadingEl) loadingEl.innerHTML = '<div class="spinner"></div>Searching…';
     try {
       const res = await fetchCompetitorSearch(compClient, term);
-      compRenderSearch((res && Array.isArray(res.ads)) ? res.ads : [], term);
+      await compRenderSearch((res && Array.isArray(res.ads)) ? res.ads : [], term);
     } catch (err) {
       // Surface the failure loudly (hq-never-swallow-errors): log it and show it
       // in the tab, exactly like the default-grid load path does.
@@ -469,9 +663,10 @@
     }
   }
 
-  /* Render matched ads into the SAME grouped-section grid the default view uses,
-   * so media is lazy/signed and the pager behaves identically. */
-  function compRenderSearch(ads, term) {
+  /* Render matched ads into the SAME grouped-section grid the default view uses
+   * (the shared lazy-per-page path): sections hold ad objects and each visible
+   * page's creatives are fetched on demand exactly as the default grid does. */
+  async function compRenderSearch(ads, term) {
     const groups = compGroupByPage(ads);
     const body = document.getElementById('comp-body');
     const metaLine = document.getElementById('comp-meta');
@@ -492,7 +687,7 @@
       if (COMP_MAX && rows.length > COMP_MAX) rows = rows.slice(0, COMP_MAX);
       const live = rows.reduce((n, a) => n + (((a.still_active != null ? a.still_active : a.is_active)) ? 1 : 0), 0);
       total += rows.length;
-      return { page_name: g.page_name, cards: rows.map(compCardHtml), total: rows.length, live: live, cur: 0 };
+      return { page_name: g.page_name, ads: rows, total: rows.length, live: live, cur: 0 };
     });
 
     if (metaLine) {
@@ -504,29 +699,29 @@
       note.textContent = 'Showing ads whose text matches “' + term + '” — clear the search to return to the full library.';
     }
 
-    body.innerHTML = groups.length ? compSections.map((s, i) =>
+    body.innerHTML = compSections.map((s, i) =>
       `<section class="comp-section" id="comp-sec-${i}">`
         + `<h2 class="comp-head">${esc(s.page_name)}</h2>`
         + `<p class="comp-pgmeta">${s.total} ad${s.total === 1 ? '' : 's'} matched &middot; ${s.live} live</p>`
         + `<div class="comp-grid" id="comp-grid-${i}"></div>`
         + `<div class="comp-pager" id="comp-pager-${i}"></div>`
       + `</section>`
-    ).join('') : '';
+    ).join('');
 
-    compSections.forEach((s, i) => compRenderSection(i));
     hideEl('comp-loading'); showEl('comp-body');
+    await Promise.all(compSections.map((s, i) => compRenderSection(i)));
   }
 
-  /* Restore the cached full grid. If the default grid was never loaded (search
-   * ran first), fall back to a fresh load. */
+  /* Restore the cached full grid through the current client-side filters. If the
+   * grid was never loaded (search ran first), fall back to a fresh load. */
   function compClearSearch() {
     compSearchActive = false;
     const clear = document.getElementById('comp-search-clear');
     if (clear) clear.hidden = true;
     const input = document.getElementById('comp-search-input');
     if (input) input.value = '';
-    if (compDefaultAds) {
-      compRender(compDefaultAds, compDefaultAge);
+    if (compAllAds && compAllAds.length) {
+      compRenderFromFilters();
     } else {
       compLoaded = true;
       compLoad();
@@ -1397,6 +1592,7 @@
     nav.insertAdjacentHTML('beforeend',
       '<a href="#" class="comp-nav-link" data-comp-tab="competitors">Competitor Ads</a>');
     content.insertAdjacentHTML('beforeend', competitorPanelMarkup());
+    compInjectFilterBar();
     compInjectSearchBar();
     compWireControls();
   }
@@ -1472,7 +1668,27 @@
     getSections: function () { return compSections; },
     isSearchActive: function () { return compSearchActive; },
     setClient: function (c) { compClient = c; },
-    setDefault: function (ads, age) { compDefaultAds = ads; compDefaultAge = age; },
+    setDefault: function (ads, age) { compAllAds = ads || []; compAllAge = age; },
+    // US-014 filters + lazy creatives test surface.
+    PER_PAGE: COMP_PER_PAGE,
+    render: compRender,
+    renderSection: compRenderSection,
+    load: compLoad,
+    fetchCompetitor: fetchCompetitor,
+    fetchCreatives: fetchCompetitorCreatives,
+    loadCreatives: compEnsureCreatives,
+    applyFilters: compApplyFilters,
+    renderFiltered: compRenderFromFilters,
+    filterBarHtml: compFilterBarHtml,
+    populateCompetitorOptions: compPopulateCompetitorOptions,
+    onStatus: compOnStatusChange,
+    onCompetitor: compOnCompetitorChange,
+    onTimeframe: compOnTimeframeChange,
+    getFilters: function () { return compFilters; },
+    setFilters: function (f) { if (f && typeof f === 'object') Object.assign(compFilters, f); },
+    getCreativeCache: function () { return compCreativeCache; },
+    resetCreativeCache: function () { compCreativeCache = {}; },
+    getAllAds: function () { return compAllAds; },
   };
 
   /* Test surface (US-009): expose the Vision & Text tab internals so the
