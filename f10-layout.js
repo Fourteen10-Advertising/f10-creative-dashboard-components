@@ -384,7 +384,11 @@ function f10ThemeVars(b){
   if (!b) return '';
   const map = { sidebarBg:'--sidebar-bg', brand:'--young-blood', accent:'--stabilo',
                 sidebarAccent:'--sidebar-accent', navActiveBg:'--nav-active-bg',
-                onBrand:'--on-brand', accentSoft:'--accent-soft' };
+                onBrand:'--on-brand', accentSoft:'--accent-soft',
+                /* good/bad signalling — the improve/worsen decomposition bars (via
+                 * colorFor) and the up/down deltas. warn = the alert-red used by warn
+                 * scorecards and Fading / Strike Out badges. */
+                good:'--good', bad:'--bad', warn:'--stabilo-red' };
   let css = '';
   for (const k in map){ if (b[k]) css += map[k] + ':' + b[k] + ';'; }
   return css;

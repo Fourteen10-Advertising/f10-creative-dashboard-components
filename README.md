@@ -285,6 +285,8 @@ Set a `BRANDING` object in the client config block. Every key is optional; any y
 | `navActiveBg` | Active-nav row background (`--nav-active-bg`) | faint lime |
 | `accentSoft` | Highlighted-scorecard fill (`--accent-soft`) | faint lime |
 | `footer` | Sidebar footer HTML | `F10 \| Creative Reporting…` |
+| `good` / `bad` | Good/bad **signalling** colours: the improve/worsen decomposition bars and the up/down deltas (`--good` / `--bad`) | F10 green / red |
+| `warn` | Alert red for warn scorecards and Fading / Strike Out badges (`--stabilo-red`) | F10 red |
 | `chartPrimary` | Hero chart series / Home Run class | F10 lime |
 | `chartSecondary` | Secondary chart series / On Base class | F10 blue |
 | `chartNegative` | Negative chart series / Strike Out class | F10 red |
@@ -309,6 +311,9 @@ const BRANDING = {
   chartPrimary:   '#13356B',   // Stake Blue 1
   chartSecondary: '#00858F',   // Stake Teal 1
   chartNegative:  '#CF3160',   // Stake Red 2
+  good:           '#2C5B39',   // Stake Green 1 — 'improves' / positive delta
+  bad:            '#CF3160',   // Stake Red 2   — 'worsens' / negative delta
+  warn:           '#CF3160',   // Stake Red 2   — warn scorecards / Strike Out badge
   chartPalette:   ['#13356B','#00858F','#A974FF','#F6D000','#FFA800','#6D7DFF','#493072','#54D1D8','#975E39','#73AAE6','#A38106','#D2A9F3'],
 };
 ```
