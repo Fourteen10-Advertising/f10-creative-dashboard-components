@@ -93,7 +93,7 @@ html, body { height: 100%; font-family: 'Archivo', system-ui, sans-serif; backgr
 .scorecard-value { font-size: 23px; font-weight: 600; line-height: 1; }
 .scorecard.highlight { border-color: var(--stabilo); background: var(--accent-soft); }
 .scorecard.highlight .scorecard-value { color: var(--young-blood); }
-.scorecard.warn { border-color: var(--stabilo-red); background: rgba(250,2,60,0.04); }
+.scorecard.warn { border-color: var(--stabilo-red); background: color-mix(in srgb, var(--stabilo-red) 5%, transparent); }
 .scorecard.warn .scorecard-value { color: var(--stabilo-red); }
 .scorecard-delta { font-size: 11px; margin-top: 6px; font-weight: 500; }
 .delta-good { color: var(--good); } .delta-bad { color: var(--bad); } .delta-flat { color: var(--grey); }
@@ -144,13 +144,13 @@ tbody tr:hover { background: rgba(75,0,15,0.03); }
 .badge { display: inline-block; font-size: 9.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; padding: 3px 8px; border-radius: 3px; white-space: nowrap; }
 .b-scaling { background: color-mix(in srgb, var(--stabilo) 20%, transparent); color: color-mix(in srgb, var(--stabilo) 45%, #000); border: 1px solid var(--stabilo); }
 .b-shrink  { background: rgba(74,144,226,0.15); color: #1a4a8a; border: 1px solid #4a90e2; }
-.b-fading  { background: rgba(250,2,60,0.1); color: #b00020; border: 1px solid #fa023c; }
+.b-fading  { background: color-mix(in srgb, var(--stabilo-red) 11%, transparent); color: color-mix(in srgb, var(--stabilo-red) 58%, #000); border: 1px solid var(--stabilo-red); }
 .b-new     { background: rgba(155,89,182,0.15); color: #6a2c8a; border: 1px solid #9b59b6; }
 .b-dropped { background: rgba(114,114,114,0.12); color: #505050; border: 1px solid #b0b0b0; }
 .b-steady  { background: rgba(245,166,35,0.13); color: #8a5a00; border: 1px solid #f5a623; }
 .badge-hr { background: color-mix(in srgb, var(--stabilo) 20%, transparent); color: color-mix(in srgb, var(--stabilo) 45%, #000); border: 1px solid var(--stabilo); }
 .badge-ob { background: rgba(74,144,226,0.15); color: #1a4a8a; border: 1px solid #4a90e2; }
-.badge-so { background: rgba(250,2,60,0.1); color: #b00020; border: 1px solid #fa023c; }
+.badge-so { background: color-mix(in srgb, var(--stabilo-red) 11%, transparent); color: color-mix(in srgb, var(--stabilo-red) 58%, #000); border: 1px solid var(--stabilo-red); }
 .badge-un { background: rgba(114,114,114,0.12); color: #505050; border: 1px solid #b0b0b0; }
 
 .table-pagination { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 10px 20px; border-top: 1px solid var(--paper-dark); background: var(--white); }

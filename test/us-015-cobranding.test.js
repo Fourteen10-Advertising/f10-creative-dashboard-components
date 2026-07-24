@@ -87,7 +87,15 @@ function check(name, fn) { fn(); passed++; console.log('  ok -', name); }
     assert.ok(/--on-brand:#ffffff/.test(style), '--on-brand set');
     assert.ok(/--nav-active-bg:rgba\(255,255,255,0\.08\)/.test(style), '--nav-active-bg set');
     assert.ok(!/--accent-soft/.test(style), 'unspecified --accent-soft must NOT be emitted');
-    assert.ok(!/--stabilo/.test(style), 'unspecified accent must NOT be emitted');
+    assert.ok(!/--stabilo:/.test(style), 'unspecified accent must NOT be emitted');
+  });
+
+  // ── good/bad/warn signalling colours are themeable (chart improve/worsen + deltas). ──
+  check('good / bad / warn map to --good / --bad / --stabilo-red', () => {
+    const { style } = bootWith({ good: '#2C5B39', bad: '#CF3160', warn: '#CF3160' });
+    assert.ok(/--good:#2C5B39/.test(style), '--good set');
+    assert.ok(/--bad:#CF3160/.test(style), '--bad set');
+    assert.ok(/--stabilo-red:#CF3160/.test(style), 'warn -> --stabilo-red set');
   });
 
   // ── clientLogo renders the co-brand lockup: client mark | divider | F10 mark. ──

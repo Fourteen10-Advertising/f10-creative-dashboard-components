@@ -103,7 +103,9 @@ const GROUP_FILTERS = [
      chartAge       { '0–14 Days','15–90 Days','90+ Days' } colour map (optional)
      chartClass     Home Run / On Base / Strike Out / Unclassified map (optional; else
                     derived from chartPrimary/Secondary/Negative)
-     chartState     movement-state colours by name (optional) */
+     chartState     movement-state colours by name (optional)
+     good / bad     good/bad SIGNALLING — improve/worsen bars + up/down deltas (green/red)
+     warn           alert red for warn scorecards + Fading / Strike Out badges */
 // const BRANDING = {
 //   clientLogo:     '<svg viewBox="0 0 48 54" xmlns="http://www.w3.org/2000/svg"><path d="…" fill="currentColor"/></svg>',
 //   sidebarBg:      '#141414',
@@ -116,6 +118,9 @@ const GROUP_FILTERS = [
 //   chartSecondary: '#00858F',
 //   chartNegative:  '#CF3160',
 //   chartPalette:   ['#13356B','#00858F','#A974FF','#F6D000','#FFA800','#6D7DFF','#493072','#54D1D8'],
+//   good:           '#2C5B39',   // 'improves' bar + positive deltas
+//   bad:            '#CF3160',   // 'worsens' bar + negative deltas
+//   warn:           '#CF3160',   // warn scorecards / Strike Out badge
 // };
 </script>
 <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.11.0/f10-analytics.js"></script>
