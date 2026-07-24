@@ -252,7 +252,7 @@ async function loadProduction(){
         scales:{ x:{ title:{display:true,text:'Lifetime Spend ($)',font:{size:11}}, min:0, max:maxSpend, ticks:{callback:v=>fmt$(v)} }, y:{ title:{display:true,text:`Lifetime ${targetMetricDef().label} (${isRoas?'x':'$'})`,font:{size:11}}, min:0, max:maxY, ticks:{callback:v=>fmtMetricCell(v)} } },
         plugins:{ legend:{position:'top',labels:{font:{size:11}}}, tooltip:{callbacks:{label:ctx=>{ const pt=ctx.raw; const mLine=isRoas?`${targetMetricDef().label}: ${fmtMetricCell(pt.y)}`:`CPA: ${pt.y>0?fmt$(pt.y):'N/A'}`; return [`${ctx.dataset.label}`,`Spend: ${fmt$(pt.x)}`,mLine]; }}} } },
       plugins:[{ id:'threshold-lines', afterDraw(chart){ const ctx2=chart.ctx,xAxis=chart.scales.x,yAxis=chart.scales.y;
-        const xHit=xAxis.getPixelForValue(HR_SPEND); if(xHit>=xAxis.left&&xHit<=xAxis.right){ ctx2.save(); ctx2.setLineDash([5,4]); ctx2.strokeStyle='#4a90e2'; ctx2.lineWidth=1.5; ctx2.beginPath(); ctx2.moveTo(xHit,yAxis.top); ctx2.lineTo(xHit,yAxis.bottom); ctx2.stroke(); ctx2.setLineDash([]); ctx2.fillStyle='#4a90e2'; ctx2.font='10px Archivo, sans-serif'; ctx2.fillText('Ad Hit ('+fmt$(HR_SPEND)+')',xHit+4,yAxis.top+14); ctx2.restore(); }
+        const xHit=xAxis.getPixelForValue(HR_SPEND); if(xHit>=xAxis.left&&xHit<=xAxis.right){ ctx2.save(); ctx2.setLineDash([5,4]); ctx2.strokeStyle=CHART_SECONDARY; ctx2.lineWidth=1.5; ctx2.beginPath(); ctx2.moveTo(xHit,yAxis.top); ctx2.lineTo(xHit,yAxis.bottom); ctx2.stroke(); ctx2.setLineDash([]); ctx2.fillStyle=CHART_SECONDARY; ctx2.font='10px Archivo, sans-serif'; ctx2.fillText('Ad Hit ('+fmt$(HR_SPEND)+')',xHit+4,yAxis.top+14); ctx2.restore(); }
         const yThresh=isRoas?HR_ROAS:HR_CPA; const yLine=yAxis.getPixelForValue(yThresh); if(yLine>=yAxis.top&&yLine<=yAxis.bottom){ ctx2.save(); ctx2.setLineDash([5,4]); ctx2.strokeStyle='#727272'; ctx2.lineWidth=1.5; ctx2.beginPath(); ctx2.moveTo(xAxis.left,yLine); ctx2.lineTo(xAxis.right,yLine); ctx2.stroke(); ctx2.setLineDash([]); ctx2.fillStyle='#727272'; ctx2.font='10px Archivo, sans-serif'; ctx2.fillText((isRoas?'ROAS Target (':'CPA Limit (')+fmtMetricCell(yThresh)+')',xAxis.left+4,yLine-4); ctx2.restore(); } } }] });
     const months=monthlyData.map(r=>r.launch_month).reverse();
     const adsArr=monthlyData.map(r=>Number(r.ads_launched)).reverse();
@@ -263,9 +263,9 @@ async function loadProduction(){
     if(productionChart) productionChart.destroy();
     productionChart=new Chart(document.getElementById('production-chart'),{ type:'bar', data:{ labels:months, datasets:[
       {type:'bar',label:'Ads Launched',data:adsArr,backgroundColor:'#e6e6e6',borderColor:'#b0b0b0',borderWidth:1,yAxisID:'y',order:1},
-      {type:'line',label:'Home Run Rate',data:hrRates,borderColor:'#c8ff00',backgroundColor:'transparent',borderWidth:2,pointRadius:4,yAxisID:'y2',tension:0.3,order:0},
-      {type:'line',label:'On Base Rate',data:obRates,borderColor:'#4a90e2',backgroundColor:'transparent',borderWidth:2,pointRadius:4,yAxisID:'y2',tension:0.3,order:0},
-      {type:'line',label:'Strike Out Rate',data:soRates,borderColor:'#fa023c',backgroundColor:'transparent',borderWidth:2,pointRadius:4,yAxisID:'y2',tension:0.3,borderDash:[4,3],order:0} ] },
+      {type:'line',label:'Home Run Rate',data:hrRates,borderColor:CHART_PRIMARY,backgroundColor:'transparent',borderWidth:2,pointRadius:4,yAxisID:'y2',tension:0.3,order:0},
+      {type:'line',label:'On Base Rate',data:obRates,borderColor:CHART_SECONDARY,backgroundColor:'transparent',borderWidth:2,pointRadius:4,yAxisID:'y2',tension:0.3,order:0},
+      {type:'line',label:'Strike Out Rate',data:soRates,borderColor:CHART_NEGATIVE,backgroundColor:'transparent',borderWidth:2,pointRadius:4,yAxisID:'y2',tension:0.3,borderDash:[4,3],order:0} ] },
       options:{ responsive:true, maintainAspectRatio:false, scales:{ x:{ticks:{font:{size:10}}}, y:{title:{display:true,text:'Ads Launched',font:{size:10}},ticks:{font:{size:10}}}, y2:{position:'right',title:{display:true,text:'Rate (%)',font:{size:10}},ticks:{callback:v=>v+'%',font:{size:10}},grid:{drawOnChartArea:false}} }, plugins:{ legend:{position:'top',labels:{font:{size:11}}} } } });
     let gAds=0,gHR=0,gOB=0,gSO=0,gSpend=0,gConv=0;
     const prodRows=monthlyData.map(r=>{ const ads=Number(r.ads_launched),hr=Number(r.home_runs),ob=Number(r.on_base),so=Number(r.strike_outs); gAds+=ads;gHR+=hr;gOB+=ob;gSO+=so;gSpend+=Number(r.total_spend);gConv+=Number(r.total_conversions);
@@ -298,8 +298,8 @@ async function loadPowerLaw(){
     hideEl('powerlaw-chart-loading'); showEl('powerlaw-chart-wrapper');
     if(powerLawChart) powerLawChart.destroy();
     powerLawChart=new Chart(document.getElementById('powerlaw-chart'),{ type:'bar', data:{ labels, datasets:[
-      {type:'bar',label:'% of Spend',data:pcts,backgroundColor:'#4b000f99',borderColor:'#4b000f',borderWidth:1,yAxisID:'y'},
-      {type:'line',label:'% Rolling Cumulative',data:rolling,borderColor:'#c8ff00',backgroundColor:'transparent',borderWidth:2.5,pointRadius:3,yAxisID:'y2',tension:0.2} ] },
+      {type:'bar',label:'% of Spend',data:pcts,backgroundColor:getCSS('--young-blood')+'99',borderColor:getCSS('--young-blood'),borderWidth:1,yAxisID:'y'},
+      {type:'line',label:'% Rolling Cumulative',data:rolling,borderColor:CHART_PRIMARY,backgroundColor:'transparent',borderWidth:2.5,pointRadius:3,yAxisID:'y2',tension:0.2} ] },
       options:{ responsive:true, maintainAspectRatio:false, scales:{ x:{ticks:{font:{size:10}}}, y:{title:{display:true,text:'% of Spend',font:{size:10}},ticks:{callback:v=>v+'%'}}, y2:{position:'right',min:0,max:100,title:{display:true,text:'Cumulative %',font:{size:10}},ticks:{callback:v=>v+'%',font:{size:10}},grid:{drawOnChartArea:false}} }, plugins:{ legend:{position:'top',labels:{font:{size:11}}} } } });
     renderPagedTable('powerlaw-table-body', data.map(r=>`<tr ${adNameAttr(r.ad_name)}><td class="rank-num">${r.rank_num}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adset_name}">${r.adset_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmtDate(r.last_spend_date)}</td><td>${r.preview_link?`<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.preview_link}" target="_blank">Preview</a>`:'–'}</td><td>${fmt$(r.spend)}</td><td>${fmtPct(r.spend_pct,2)}</td><td>${fmtPct(r.rolling_pct,2)}</td><td>${r.lifetime_cpa&&Number(r.lifetime_cpa)>0?fmtMetricCell(r.lifetime_cpa):'–'}</td></tr>`));
     hideEl('powerlaw-table-loading'); showEl('powerlaw-table');
@@ -342,7 +342,7 @@ async function loadCreativeEffectiveness(){
     hideEl('creative-chart-loading'); showEl('creative-chart-wrapper');
     if(creativeChart) creativeChart.destroy();
     creativeChart = new Chart(document.getElementById('creative-chart'), { type:'line',
-      data:{ labels:['25%','50%','75%','100%'], datasets:[{ label:'% of impressions reaching', data:curve, borderColor:'#c8ff00', backgroundColor:'rgba(200,255,0,0.13)', borderWidth:2.5, pointRadius:4, fill:true, tension:0.25 }] },
+      data:{ labels:['25%','50%','75%','100%'], datasets:[{ label:'% of impressions reaching', data:curve, borderColor:CHART_PRIMARY, backgroundColor:CHART_PRIMARY+'21', borderWidth:2.5, pointRadius:4, fill:true, tension:0.25 }] },
       options:{ responsive:true, maintainAspectRatio:false,
         plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:ctx=>`${ctx.label} watched: ${ctx.raw}% of impressions` } } },
         scales:{ x:{ title:{display:true,text:'Video quartile watched',font:{size:11}} }, y:{ title:{display:true,text:'% of impressions',font:{size:11}}, ticks:{callback:v=>v+'%'} } } } });

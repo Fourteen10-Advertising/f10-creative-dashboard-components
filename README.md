@@ -284,6 +284,13 @@ Set a `BRANDING` object in the client config block. Every key is optional; any y
 | `navActiveBg` | Active-nav row background (`--nav-active-bg`) | faint lime |
 | `accentSoft` | Highlighted-scorecard fill (`--accent-soft`) | faint lime |
 | `footer` | Sidebar footer HTML | `F10 \| Creative Reporting…` |
+| `chartPrimary` | Hero chart series / Home Run class | F10 lime |
+| `chartSecondary` | Secondary chart series / On Base class | F10 blue |
+| `chartNegative` | Negative chart series / Strike Out class | F10 red |
+| `chartPalette` | Categorical series array (cohorts, power law, decomposition) | 12-colour F10 set |
+| `chartAge` / `chartClass` / `chartState` | Fine-grained overrides for the age-bucket, class, and movement-state colour maps | derived from the above |
+
+Chart colours theme the canvas **visualisations**. Genuine good/bad signalling (deltas, the mix/efficiency waterfall) stays on the `--good`/`--bad` CSS vars and brand bars on `--young-blood`, so those follow the chrome theme and are deliberately not part of this palette. Stake's guideline (avoid green/red where it could *falsely* signal gains/losses) is why the categorical `chartPalette` uses their blue/teal/purple/yellow/orange spectrum and leaves green/red for real signalling.
 
 When `clientLogo` is set, the sidebar header shows **client mark → divider → F10 mark**. The F10 mark is bundled in `f10-layout.js` (fills use `currentColor`, tinted to `sidebarAccent`), so nothing extra needs to be hosted. Colour keys are applied as inline CSS custom properties on `#app` at render time via `f10ThemeVars()`; because the whole stylesheet reads these tokens, the overrides cascade automatically.
 
@@ -298,6 +305,10 @@ const BRANDING = {
   onBrand:       '#ffffff',
   navActiveBg:   'rgba(255,255,255,0.08)',
   footer:        'Stake &times; F10 | Creative Reporting<br/>Powered by BigQuery',
+  chartPrimary:   '#13356B',   // Stake Blue 1
+  chartSecondary: '#00858F',   // Stake Teal 1
+  chartNegative:  '#CF3160',   // Stake Red 2
+  chartPalette:   ['#13356B','#00858F','#A974FF','#F6D000','#FFA800','#6D7DFF','#493072','#54D1D8','#975E39','#73AAE6','#A38106','#D2A9F3'],
 };
 ```
 

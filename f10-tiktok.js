@@ -388,9 +388,9 @@
       ttCharts.production = new Chart(document.getElementById('tt-production-chart'), {
         type: 'bar', data: { labels: months, datasets: [
           { type: 'bar', label: 'Ads Launched', data: adsArr, backgroundColor: '#e6e6e6', borderColor: '#b0b0b0', borderWidth: 1, yAxisID: 'y', order: 1 },
-          { type: 'line', label: 'Home Run Rate', data: hrRates, borderColor: '#c8ff00', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 4, yAxisID: 'y2', tension: 0.3, order: 0 },
-          { type: 'line', label: 'On Base Rate', data: obRates, borderColor: '#4a90e2', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 4, yAxisID: 'y2', tension: 0.3, order: 0 },
-          { type: 'line', label: 'Strike Out Rate', data: soRates, borderColor: '#fa023c', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 4, yAxisID: 'y2', tension: 0.3, borderDash: [4, 3], order: 0 } ] },
+          { type: 'line', label: 'Home Run Rate', data: hrRates, borderColor: CHART_PRIMARY, backgroundColor: 'transparent', borderWidth: 2, pointRadius: 4, yAxisID: 'y2', tension: 0.3, order: 0 },
+          { type: 'line', label: 'On Base Rate', data: obRates, borderColor: CHART_SECONDARY, backgroundColor: 'transparent', borderWidth: 2, pointRadius: 4, yAxisID: 'y2', tension: 0.3, order: 0 },
+          { type: 'line', label: 'Strike Out Rate', data: soRates, borderColor: CHART_NEGATIVE, backgroundColor: 'transparent', borderWidth: 2, pointRadius: 4, yAxisID: 'y2', tension: 0.3, borderDash: [4, 3], order: 0 } ] },
         options: { responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { font: { size: 10 } } }, y: { title: { display: true, text: 'Ads Launched', font: { size: 10 } }, ticks: { font: { size: 10 } } }, y2: { position: 'right', title: { display: true, text: 'Rate (%)', font: { size: 10 } }, ticks: { callback: (v) => v + '%', font: { size: 10 } }, grid: { drawOnChartArea: false } } }, plugins: { legend: { position: 'top', labels: { font: { size: 11 } } } } },
       });
 
@@ -441,7 +441,7 @@
       if (ttCharts.creative) ttCharts.creative.destroy();
       ttCharts.creative = new Chart(document.getElementById('tt-creative-chart'), {
         type: 'line',
-        data: { labels: ['25%', '50%', '75%', '100%'], datasets: [{ label: '% of impressions reaching', data: curve, borderColor: '#c8ff00', backgroundColor: 'rgba(200,255,0,0.13)', borderWidth: 2.5, pointRadius: 4, fill: true, tension: 0.25 }] },
+        data: { labels: ['25%', '50%', '75%', '100%'], datasets: [{ label: '% of impressions reaching', data: curve, borderColor: CHART_PRIMARY, backgroundColor: CHART_PRIMARY+'21', borderWidth: 2.5, pointRadius: 4, fill: true, tension: 0.25 }] },
         options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx) => `${ctx.label} watched: ${ctx.raw}% of impressions` } } }, scales: { x: { title: { display: true, text: 'Video quartile watched', font: { size: 11 } } }, y: { title: { display: true, text: '% of impressions', font: { size: 11 } }, ticks: { callback: (v) => v + '%' } } } },
       });
     } catch (err) { console.error('TikTok creative error:', err); const el = document.getElementById('tt-creative-table-loading'); if (el) el.innerHTML = 'Error loading data: ' + err.message; }
