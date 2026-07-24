@@ -268,6 +268,39 @@ The Ad Production tab includes an **Adjust thresholds** panel so a user can chan
 
 The panel is **metric-aware**: the three spend floors are always shown, and the efficiency inputs follow `TARGET_METRIC` — CPA mode shows "max CPA" fields (`th-hr-cpa` etc.), ROAS mode shows "min ROAS" floors (`th-hr-roas`, `th-ob-roas`) plus a "max ROAS" Strike-Out ceiling (`th-so-roas`). `getProductionThresholds()` returns only the active metric's bands (plus the shared spend floors); `setProductionThresholds()` accepts either metric's keys.
 
+## Co-branding (optional)
+
+A dashboard can be co-branded for a client: recoloured chrome plus a **client + F10 logo lockup** in the sidebar. This is opt-in — a dashboard with no `BRANDING` config renders exactly as before. The F10 **type system and content styling are kept**; only the chrome colours and the sidebar mark change, so the dashboard still reads as an F10 product carrying the client's brand.
+
+Set a `BRANDING` object in the client config block. Every key is optional; any you omit keeps its F10 default. Colours accept any CSS colour string.
+
+| Key | Overrides | Default |
+|---|---|---|
+| `clientLogo` | Inline SVG for the client mark in the sidebar lockup. Use `fill="currentColor"` so it tints to `sidebarAccent`; a light/white mark reads best on a dark sidebar. Omit for no lockup. | — |
+| `sidebarBg` | Sidebar background (`--sidebar-bg`) | F10 maroon |
+| `brand` | Headings / buttons / links (`--young-blood`) | F10 maroon |
+| `sidebarAccent` | Client-name + active-nav text/marker (`--sidebar-accent`) | F10 lime |
+| `onBrand` | Text sitting on brand-colour buttons (`--on-brand`) | F10 lime |
+| `navActiveBg` | Active-nav row background (`--nav-active-bg`) | faint lime |
+| `accentSoft` | Highlighted-scorecard fill (`--accent-soft`) | faint lime |
+| `footer` | Sidebar footer HTML | `F10 \| Creative Reporting…` |
+
+When `clientLogo` is set, the sidebar header shows **client mark → divider → F10 mark**. The F10 mark is bundled in `f10-layout.js` (fills use `currentColor`, tinted to `sidebarAccent`), so nothing extra needs to be hosted. Colour keys are applied as inline CSS custom properties on `#app` at render time via `f10ThemeVars()`; because the whole stylesheet reads these tokens, the overrides cascade automatically.
+
+Example (Stake — black sidebar, white accents, co-brand footer):
+
+```js
+const BRANDING = {
+  clientLogo:    '<svg viewBox="0 0 48 54" xmlns="http://www.w3.org/2000/svg"><path d="…" fill="currentColor"/></svg>',
+  sidebarBg:     '#141414',
+  brand:         '#141414',
+  sidebarAccent: '#ffffff',
+  onBrand:       '#ffffff',
+  navActiveBg:   'rgba(255,255,255,0.08)',
+  footer:        'Stake &times; F10 | Creative Reporting<br/>Powered by BigQuery',
+};
+```
+
 ## Versioning
 
 Each release is tagged (e.g. `v1.3.0`). Dashboards pin to a tag in their jsDelivr URLs and bump it to pick up changes. jsDelivr caches tags immutably, so always cut a **new** tag rather than re-pointing an existing one.
