@@ -281,6 +281,7 @@ Set a `BRANDING` object in the client config block. Every key is optional; any y
 | `brand` | Headings / buttons / links (`--young-blood`) | F10 maroon |
 | `sidebarAccent` | Client-name + active-nav text/marker (`--sidebar-accent`) | F10 lime |
 | `onBrand` | Text sitting on brand-colour buttons (`--on-brand`) | F10 lime |
+| `accent` | Positive-accent chrome in the content area (`--stabilo`): highlighted-scorecard border, and the Home Run / Scaling Winner pill badges (which tint from it). | F10 lime |
 | `navActiveBg` | Active-nav row background (`--nav-active-bg`) | faint lime |
 | `accentSoft` | Highlighted-scorecard fill (`--accent-soft`) | faint lime |
 | `footer` | Sidebar footer HTML | `F10 \| Creative Reporting…` |
