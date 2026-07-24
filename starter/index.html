@@ -80,6 +80,29 @@ const GROUP_FILTERS = [
 //   MAX_PER_PAGE: 0,              // optional hard cap on ads rendered per competitor (0 = no cap)
 //   EXTRA_TABS:   true,            // optional; preview the Vision & Text / Ad Age / Meta Maturity sub-tabs ahead of their v1.15.1 release (off by default)
 // };
+
+/* Optional co-branding — recolour the chrome and add a client + F10 logo lockup to the
+   sidebar. Leave commented for a standard F10-branded dashboard (the default). Every key
+   is optional; any you omit keeps its F10 default, so the type system and content styling
+   stay F10. Colours accept any CSS colour string.
+     clientLogo     inline SVG string for the client mark (use fill="currentColor" so it
+                    tints to sidebarAccent; a light/white mark reads best on a dark sidebar)
+     sidebarBg      sidebar background            (default F10 maroon)
+     brand          headings / buttons / links    (default F10 maroon)
+     sidebarAccent  client-name + active-nav text (default F10 lime)
+     onBrand        text sitting on brand-colour buttons (default F10 lime)
+     navActiveBg    active-nav row background     (default faint lime)
+     accentSoft     highlighted-scorecard fill    (default faint lime)
+     footer         sidebar footer HTML           (default 'F10 | Creative Reporting…') */
+// const BRANDING = {
+//   clientLogo:    '<svg viewBox="0 0 48 54" xmlns="http://www.w3.org/2000/svg"><path d="…" fill="currentColor"/></svg>',
+//   sidebarBg:     '#141414',
+//   brand:         '#141414',
+//   sidebarAccent: '#ffffff',
+//   onBrand:       '#ffffff',
+//   navActiveBg:   'rgba(255,255,255,0.08)',
+//   footer:        'Client &times; F10 | Creative Reporting<br/>Powered by BigQuery',
+// };
 </script>
 <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.11.0/f10-analytics.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.11.0/f10-utils.js"></script>

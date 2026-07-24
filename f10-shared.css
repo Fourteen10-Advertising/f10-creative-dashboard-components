@@ -7,22 +7,42 @@
   --young-blood: #4b000f; --paper: #e6e6e6; --paper-dark: #d0d0d0; --ink: #000000;
   --stabilo: #c8ff00; --stabilo-red: #fa023c; --grey: #727272; --white: #ffffff;
   --sidebar-w: 210px; --good: #3a8a2a; --bad: #fa023c;
+
+  /* Co-branding tokens — a client BRANDING config (see f10-layout.js) overrides
+     these to recolour the chrome. Defaults below reproduce the F10 look exactly,
+     so a dashboard with no BRANDING renders identically to before.
+       --sidebar-bg      sidebar background
+       --sidebar-accent  sidebar client-name + active-nav text/marker
+       --nav-active-bg   active-nav row background
+       --on-brand        text/icon colour sitting ON a --young-blood surface (buttons)
+       --accent-soft     faint accent fill (highlighted scorecards) */
+  --sidebar-bg: var(--young-blood); --sidebar-accent: var(--stabilo);
+  --nav-active-bg: rgba(200,255,0,0.06); --on-brand: var(--stabilo);
+  --accent-soft: rgba(200,255,0,0.06);
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; font-family: 'Archivo', system-ui, sans-serif; background: #f0f0f0; color: var(--ink); }
 #app { display: flex; height: 100vh; overflow: hidden; }
 
 /* Sidebar */
-#sidebar { width: var(--sidebar-w); background: var(--young-blood); display: flex; flex-direction: column; flex-shrink: 0; padding: 0 0 24px 0; overflow-y:auto; }
+#sidebar { width: var(--sidebar-w); background: var(--sidebar-bg); display: flex; flex-direction: column; flex-shrink: 0; padding: 0 0 24px 0; overflow-y:auto; }
 .sidebar-header { padding: 24px 20px 20px; border-bottom: 1px solid rgba(230,230,230,0.15); }
-.sidebar-header .client-name { font-weight: 600; font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--stabilo); }
+.sidebar-header .client-name { font-weight: 600; font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--sidebar-accent); }
 .sidebar-header .report-name { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(230,230,230,0.5); margin-top: 3px; }
 #sidebar nav { flex: 1; padding: 10px 0; }
 .nav-section { font-size: 9px; font-weight:600; letter-spacing: 0.14em; text-transform: uppercase; color: rgba(230,230,230,0.35); padding: 16px 20px 5px; }
 #sidebar nav a { display: block; padding: 10px 20px; font-size: 12px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: rgba(230,230,230,0.65); text-decoration: none; cursor: pointer; transition: color 0.15s, background 0.15s; border-left: 2px solid transparent; }
 #sidebar nav a:hover { color: var(--paper); background: rgba(255,255,255,0.05); }
-#sidebar nav a.active { color: var(--stabilo); border-left-color: var(--stabilo); background: rgba(200,255,0,0.06); }
+#sidebar nav a.active { color: var(--sidebar-accent); border-left-color: var(--sidebar-accent); background: var(--nav-active-bg); }
 .sidebar-footer { padding: 12px 20px 0; font-size: 10px; color: rgba(230,230,230,0.3); letter-spacing: 0.04em; line-height: 1.5; }
+
+/* Co-brand logo lockup (rendered in .sidebar-header only when BRANDING.clientLogo is set):
+   client mark | divider | F10 mark. SVGs using fill="currentColor" tint to --sidebar-accent. */
+.sidebar-lockup { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.sidebar-lockup .client-mark, .sidebar-lockup .f10-mark { display: flex; align-items: center; color: var(--sidebar-accent); }
+.sidebar-lockup .client-mark svg { display: block; height: 32px; width: auto; max-width: 60px; }
+.sidebar-lockup .f10-mark svg { display: block; height: 26px; width: auto; max-width: 116px; }
+.sidebar-lockup .lockup-divider { width: 1px; align-self: stretch; min-height: 26px; background: color-mix(in srgb, var(--sidebar-accent) 45%, transparent); }
 
 /* Main */
 #content { flex: 1; overflow-y: auto; background: #f2f2f2; }
@@ -30,7 +50,7 @@ html, body { height: 100%; font-family: 'Archivo', system-ui, sans-serif; backgr
 .page-header h1 { font-size: 16px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--young-blood); }
 .header-right { display: flex; align-items: center; gap: 12px; }
 .last-updated { font-size: 11px; color: var(--grey); }
-.refresh-btn { font-family: inherit; font-size: 11px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; background: var(--young-blood); color: var(--stabilo); border: none; border-radius: 4px; padding: 7px 14px; cursor: pointer; }
+.refresh-btn { font-family: inherit; font-size: 11px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; background: var(--young-blood); color: var(--on-brand); border: none; border-radius: 4px; padding: 7px 14px; cursor: pointer; }
 .refresh-btn:hover { opacity: 0.85; }
 
 /* Weekly controls bar */
@@ -44,7 +64,7 @@ html, body { height: 100%; font-family: 'Archivo', system-ui, sans-serif; backgr
 .ctrl input[type=search].ctrl-search { width: 180px; }
 .seg { display: inline-flex; border: 1px solid var(--paper-dark); border-radius: 4px; overflow: hidden; }
 .seg button { font-family: inherit; font-size: 11px; padding: 6px 10px; border: none; background: var(--white); color: var(--grey); cursor: pointer; letter-spacing: 0.04em; }
-.seg button.active { background: var(--young-blood); color: var(--stabilo); }
+.seg button.active { background: var(--young-blood); color: var(--on-brand); }
 .floor-inputs { display: flex; gap: 10px; }
 .floor-inputs > div { display: none; flex-direction: column; gap: 5px; }
 .floor-inputs > div.show { display: flex; }
@@ -71,7 +91,7 @@ html, body { height: 100%; font-family: 'Archivo', system-ui, sans-serif; backgr
 .scorecard { background: var(--white); border: 2px solid var(--paper-dark); border-radius: 8px; padding: 15px; min-width:0; }
 .scorecard-label { font-size: 10px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--grey); margin-bottom: 6px; }
 .scorecard-value { font-size: 23px; font-weight: 600; line-height: 1; }
-.scorecard.highlight { border-color: var(--stabilo); background: rgba(200,255,0,0.06); }
+.scorecard.highlight { border-color: var(--stabilo); background: var(--accent-soft); }
 .scorecard.highlight .scorecard-value { color: var(--young-blood); }
 .scorecard.warn { border-color: var(--stabilo-red); background: rgba(250,2,60,0.04); }
 .scorecard.warn .scorecard-value { color: var(--stabilo-red); }
@@ -135,7 +155,7 @@ tbody tr:hover { background: rgba(75,0,15,0.03); }
 
 .table-pagination { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 10px 20px; border-top: 1px solid var(--paper-dark); background: var(--white); }
 .pg-btn { font-family: inherit; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; background: var(--white); color: var(--young-blood); border: 1.5px solid var(--young-blood); border-radius: 4px; padding: 5px 12px; cursor: pointer; transition: background 0.15s, color 0.15s; }
-.pg-btn:hover:not(:disabled) { background: var(--young-blood); color: var(--stabilo); }
+.pg-btn:hover:not(:disabled) { background: var(--young-blood); color: var(--on-brand); }
 .pg-btn:disabled { color: var(--grey); border-color: var(--paper-dark); cursor: default; }
 .pg-info { font-size: 11px; color: var(--grey); letter-spacing: 0.04em; }
 
@@ -165,10 +185,10 @@ tbody tr:hover { background: rgba(75,0,15,0.03); }
 .tc-field input[type=number] { font-family: inherit; font-size: 12px; padding: 6px 8px; border: 1px solid var(--paper-dark); border-radius: 4px; background: var(--white); color: var(--ink); }
 .tc-actions { display: flex; gap: 10px; }
 .tc-apply, .tc-reset { font-family: inherit; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; border-radius: 4px; padding: 7px 14px; cursor: pointer; }
-.tc-apply { background: var(--young-blood); color: var(--stabilo); border: none; }
+.tc-apply { background: var(--young-blood); color: var(--on-brand); border: none; }
 .tc-apply:hover { opacity: 0.85; }
 .tc-reset { background: var(--white); color: var(--young-blood); border: 1.5px solid var(--young-blood); }
-.tc-reset:hover { background: var(--young-blood); color: var(--stabilo); }
+.tc-reset:hover { background: var(--young-blood); color: var(--on-brand); }
 
 /* ── Competitor Ad Library (f10-competitors.js) ──
  * F10-branded competitor ad cards grouped by competitor, styled with the shared
