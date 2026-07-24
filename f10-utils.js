@@ -124,19 +124,45 @@ const METRICS = {
 /* Resolve the active target metric's METRICS entry (CPA by default). */
 function targetMetricDef(){ return targetMetric() === 'roas' ? METRICS.ROAS : METRICS.CPA; }
 
-/* Monthly chart palettes */
-const COHORT_COLORS = ['#c8ff00','#fa023c','#4a90e2','#f5a623','#7ed321','#9b59b6','#1abc9c','#e67e22','#2ecc71','#e74c3c','#3498db','#f39c12'];
-const AGE_COLORS    = { '0–14 Days': '#c8ff00', '15–90 Days': '#4a90e2', '90+ Days': '#4b000f' };
-const CLASS_COLOR   = { 'Home Run': '#c8ff00', 'On Base': '#4a90e2', 'Strike Out': '#fa023c', 'Unclassified': '#b0b0b0' };
+/* Chart colour palette — themeable via BRANDING (which is defined in the dashboard
+ * config block, i.e. before this script loads). Every value defaults to the F10
+ * palette, so a dashboard with no BRANDING renders identical colours to before.
+ *   BRANDING.chartPrimary    hero series / "best" class      (default F10 lime)
+ *   BRANDING.chartSecondary  secondary series / "ok" class   (default F10 blue)
+ *   BRANDING.chartNegative   negative series / "worst" class (default F10 red)
+ *   BRANDING.chartPalette    categorical series array (cohorts, power law, decomposition)
+ *   BRANDING.chartAge        override the age-bucket colour map
+ *   BRANDING.chartClass      override the Home Run / On Base / Strike Out colour map
+ *   BRANDING.chartState      override individual movement-state colours by name
+ * Note: genuine good/bad signalling (deltas, mix/efficiency waterfall) stays on the
+ * --good/--bad CSS vars via colorFor(), and brand bars on --young-blood, so those
+ * follow the chrome theme automatically and are not part of this palette. */
+const _BRAND = (typeof BRANDING !== 'undefined' && BRANDING) ? BRANDING : {};
+const CHART_PRIMARY   = _BRAND.chartPrimary   || '#c8ff00';
+const CHART_SECONDARY = _BRAND.chartSecondary || '#4a90e2';
+const CHART_NEGATIVE  = _BRAND.chartNegative  || '#fa023c';
+const CHART_NEUTRAL   = '#b0b0b0';
 
-/* Ad state metadata: badge CSS class + chart colour */
+const COHORT_COLORS = _BRAND.chartPalette ||
+  ['#c8ff00','#fa023c','#4a90e2','#f5a623','#7ed321','#9b59b6','#1abc9c','#e67e22','#2ecc71','#e74c3c','#3498db','#f39c12'];
+const AGE_COLORS    = _BRAND.chartAge ||
+  { '0–14 Days': CHART_PRIMARY, '15–90 Days': CHART_SECONDARY, '90+ Days': '#4b000f' };
+const CLASS_COLOR   = _BRAND.chartClass ||
+  { 'Home Run': CHART_PRIMARY, 'On Base': CHART_SECONDARY, 'Strike Out': CHART_NEGATIVE, 'Unclassified': CHART_NEUTRAL };
+
+/* Ad state metadata: badge CSS class + chart colour. Colours default to the F10
+ * set; BRANDING.chartState may override any subset by state name. */
+const _STATE_COLORS = Object.assign(
+  { 'Scaling Winner': '#7ed321', 'Efficient but Shrinking': CHART_SECONDARY, 'Fading': CHART_NEGATIVE,
+    'New Entrant': '#9b59b6', 'Dropped Off': CHART_NEUTRAL, 'Steady': '#f5a623' },
+  _BRAND.chartState || {});
 const STATE_META = {
-  'Scaling Winner':          { cls: 'b-scaling', color: '#7ed321' },
-  'Efficient but Shrinking': { cls: 'b-shrink',  color: '#4a90e2' },
-  'Fading':                  { cls: 'b-fading',  color: '#fa023c' },
-  'New Entrant':             { cls: 'b-new',     color: '#9b59b6' },
-  'Dropped Off':             { cls: 'b-dropped', color: '#b0b0b0' },
-  'Steady':                  { cls: 'b-steady',  color: '#f5a623' },
+  'Scaling Winner':          { cls: 'b-scaling', color: _STATE_COLORS['Scaling Winner'] },
+  'Efficient but Shrinking': { cls: 'b-shrink',  color: _STATE_COLORS['Efficient but Shrinking'] },
+  'Fading':                  { cls: 'b-fading',  color: _STATE_COLORS['Fading'] },
+  'New Entrant':             { cls: 'b-new',     color: _STATE_COLORS['New Entrant'] },
+  'Dropped Off':             { cls: 'b-dropped', color: _STATE_COLORS['Dropped Off'] },
+  'Steady':                  { cls: 'b-steady',  color: _STATE_COLORS['Steady'] },
 };
 
 /* ── Formatters ── */
@@ -238,10 +264,10 @@ function retentionSparkline(ret, w, h){
   const coords = pts.map((v,i) => [ +(i*step).toFixed(1), +(h - (v/max)*(h-6) - 3).toFixed(1) ]);
   const line = coords.map((c,i) => (i?'L':'M')+c[0]+' '+c[1]).join(' ');
   const area = 'M0 '+h+' ' + coords.map(c => 'L'+c[0]+' '+c[1]).join(' ') + ' L'+w+' '+h+' Z';
-  const dots = coords.map(c => `<circle cx="${c[0]}" cy="${c[1]}" r="2.2" fill="#c8ff00"/>`).join('');
+  const dots = coords.map(c => `<circle cx="${c[0]}" cy="${c[1]}" r="2.2" fill="${CHART_PRIMARY}"/>`).join('');
   return `<svg class="f10-spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">`+
-    `<path d="${area}" fill="rgba(200,255,0,0.13)"/>`+
-    `<path d="${line}" fill="none" stroke="#c8ff00" stroke-width="1.6"/>${dots}</svg>`;
+    `<path d="${area}" fill="${CHART_PRIMARY}21"/>`+
+    `<path d="${line}" fill="none" stroke="${CHART_PRIMARY}" stroke-width="1.6"/>${dots}</svg>`;
 }
 
 /* ── DOM helpers ── */

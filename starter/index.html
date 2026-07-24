@@ -93,15 +93,29 @@ const GROUP_FILTERS = [
      onBrand        text sitting on brand-colour buttons (default F10 lime)
      navActiveBg    active-nav row background     (default faint lime)
      accentSoft     highlighted-scorecard fill    (default faint lime)
-     footer         sidebar footer HTML           (default 'F10 | Creative Reporting…') */
+     footer         sidebar footer HTML           (default 'F10 | Creative Reporting…')
+   Chart colours (the canvas visualisations). Genuine good/bad signalling (deltas,
+   mix/efficiency waterfall) stays on green/red and is NOT themed here.
+     chartPrimary   hero series / Home Run class   (default F10 lime)
+     chartSecondary secondary series / On Base      (default F10 blue)
+     chartNegative  negative series / Strike Out    (default F10 red)
+     chartPalette   categorical series array (cohorts, power law, decomposition)
+     chartAge       { '0–14 Days','15–90 Days','90+ Days' } colour map (optional)
+     chartClass     Home Run / On Base / Strike Out / Unclassified map (optional; else
+                    derived from chartPrimary/Secondary/Negative)
+     chartState     movement-state colours by name (optional) */
 // const BRANDING = {
-//   clientLogo:    '<svg viewBox="0 0 48 54" xmlns="http://www.w3.org/2000/svg"><path d="…" fill="currentColor"/></svg>',
-//   sidebarBg:     '#141414',
-//   brand:         '#141414',
-//   sidebarAccent: '#ffffff',
-//   onBrand:       '#ffffff',
-//   navActiveBg:   'rgba(255,255,255,0.08)',
-//   footer:        'Client &times; F10 | Creative Reporting<br/>Powered by BigQuery',
+//   clientLogo:     '<svg viewBox="0 0 48 54" xmlns="http://www.w3.org/2000/svg"><path d="…" fill="currentColor"/></svg>',
+//   sidebarBg:      '#141414',
+//   brand:          '#141414',
+//   sidebarAccent:  '#ffffff',
+//   onBrand:        '#ffffff',
+//   navActiveBg:    'rgba(255,255,255,0.08)',
+//   footer:         'Client &times; F10 | Creative Reporting<br/>Powered by BigQuery',
+//   chartPrimary:   '#13356B',
+//   chartSecondary: '#00858F',
+//   chartNegative:  '#CF3160',
+//   chartPalette:   ['#13356B','#00858F','#A974FF','#F6D000','#FFA800','#6D7DFF','#493072','#54D1D8'],
 // };
 </script>
 <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.11.0/f10-analytics.js"></script>
