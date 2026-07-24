@@ -676,8 +676,12 @@ ${ttControls}
   ${ttPanels}
 
   </div>`;
+  /* Apply theme overrides on the document root (:root), not #app. CSS still
+   * cascades (root is an ancestor of everything), AND the chart code's getCSS()
+   * reads via getComputedStyle(document.documentElement) — so canvas colours like
+   * the decomposition bars (getCSS('--young-blood')) pick up the theme too. */
   const _f10Theme = f10ThemeVars(branding);
-  if (_f10Theme) document.getElementById('app').style.cssText += ';' + _f10Theme;
+  if (_f10Theme) document.documentElement.style.cssText += ';' + _f10Theme;
   initTableSorting();
 
   if (window.F10A) {

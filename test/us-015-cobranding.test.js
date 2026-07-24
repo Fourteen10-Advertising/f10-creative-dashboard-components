@@ -35,7 +35,11 @@ function makeApp() {
  * sidebar HTML plus the inline style (theme vars) applied to #app. */
 function bootWith(brandingConfig) {
   const app = makeApp();
+  // Theme vars must land on the document root (:root) so both CSS cascade and the
+  // chart code's getComputedStyle(document.documentElement) pick them up.
+  const root = { style: { cssText: '' } };
   const document = {
+    documentElement: root,
     getElementById() { return app; },
     querySelector() { return null; },
     querySelectorAll() { return []; },
@@ -51,7 +55,7 @@ function bootWith(brandingConfig) {
   vm.runInContext(UTILS, sandbox, { filename: 'f10-utils.js' });
   vm.runInContext(LAYOUT, sandbox, { filename: 'f10-layout.js' });
   sandbox.renderLayout();
-  return { html: app.innerHTML, style: app.style.cssText };
+  return { html: app.innerHTML, style: root.style.cssText };
 }
 
 const STAKE_LOGO = '<svg viewBox="0 0 48 54"><path d="M1 2Z" fill="currentColor"/></svg>';
@@ -68,7 +72,7 @@ function check(name, fn) { fn(); passed++; console.log('  ok -', name); }
     assert.ok(!/sidebar-lockup/.test(html), 'lockup must be absent');
     assert.ok(/F10 \| Creative Reporting/.test(html), 'default F10 footer present');
     assert.ok(/class="client-name">Acme</.test(html), 'client-name still renders');
-    assert.strictEqual(style, '', 'no inline theme vars on #app');
+    assert.strictEqual(style, '', 'no inline theme vars on the document root');
   });
 
   // ── Colour overrides map to CSS custom properties on #app; only supplied keys emit. ──
