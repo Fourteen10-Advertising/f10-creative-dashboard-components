@@ -140,6 +140,19 @@ exports.handler = async function (event) {
     return queryNetNew(body, credentials, cors);
   }
 
+  // ── Consolidated competitor-intelligence surface (competitor-intel-rollup US-008) ──
+  // One read that assembles, per competitor, the behaviour-over-time picture the
+  // consolidated dashboard tab renders: the precomputed Gemini narrative (US-007),
+  // the behaviour archetype (US-006), the effort allocation + behaviour movements
+  // (US-005), and the theme movements (US-006), plus the go-live staying-power
+  // winners. Every sub-read is table-not-found tolerant, so the action degrades
+  // gracefully to whatever marts exist yet (the US-005/006/007 marts are
+  // materialized later, in US-011). Supports { probe:true } so the tab appears only
+  // when the client has consolidated intelligence rows.
+  if (body.action === 'competitor-intel') {
+    return queryCompetitorIntel(body, credentials, cors);
+  }
+
   const { query } = body;
   if (!query || typeof query !== 'string') {
     return {
@@ -851,17 +864,33 @@ async function queryThemes(body, credentials, cors) {
       );
       return json(200, { exists: !!(rows[0] && rows[0].has_data) });
     }
+    // competitor_theme_summary is keyed on page_id only (it carries no page_name).
+    // The consolidated surface needs the human-readable page_name in the header, so
+    // resolve it here from the client-scoped ad_snapshots (which carries both
+    // page_id and page_name) rather than shipping a bare page_id to the browser.
+    // This is the recurring cross-repo drift fix (competitor-intel-rollup US-008):
+    // the frontend receives page_name, not just page_id. Absent-safe: a page with no
+    // snapshot name falls through as NULL and the frontend still shows the id.
+    const SNAPSHOTS = `\`${ADLIB_PROJECT}.${ADLIB_DATASET}.ad_snapshots\``;
     const [rows] = await runQuery(`
-      SELECT page_id, run_date, themes, dominant_narrative, format_mix,
-             common_phrases, analysis_confidence, vision_rows_summarised,
-             summary_model, generated_at
-      FROM ${TABLE}
-      WHERE f10_client = @client AND status = 'ok'
-      QUALIFY ROW_NUMBER() OVER (PARTITION BY page_id ORDER BY run_date DESC) = 1
-      ORDER BY page_id
+      WITH names AS (
+        SELECT page_id, ANY_VALUE(page_name) AS page_name
+        FROM ${SNAPSHOTS}
+        WHERE f10_client = @client AND page_name IS NOT NULL
+        GROUP BY page_id
+      )
+      SELECT t.page_id, n.page_name, t.run_date, t.themes, t.dominant_narrative,
+             t.format_mix, t.common_phrases, t.analysis_confidence,
+             t.vision_rows_summarised, t.summary_model, t.generated_at
+      FROM ${TABLE} t
+      LEFT JOIN names n USING (page_id)
+      WHERE t.f10_client = @client AND t.status = 'ok'
+      QUALIFY ROW_NUMBER() OVER (PARTITION BY t.page_id ORDER BY t.run_date DESC) = 1
+      ORDER BY n.page_name, t.page_id
     `);
     const competitors = rows.map((r) => ({
       page_id: r.page_id,
+      page_name: r.page_name,
       run_date: r.run_date,
       themes: parseJsonColumn(r.themes, []),
       dominant_narrative: r.dominant_narrative,
@@ -1126,6 +1155,214 @@ async function queryNetNew(body, credentials, cors) {
   } catch (err) {
     if (isTableNotFound(err)) return json(200, body.probe ? { exists: false } : { ads: [], byPage: [] });
     console.error('Net-new query error:', err);
+    return json(500, { error: err.message });
+  }
+}
+
+/* competitor-intel: the consolidated competitor-intelligence surface (US-008).
+ * Assembles, per competitor, the behaviour-over-time read the single consolidated
+ * dashboard tab renders, from the deterministic marts + the precomputed narrative:
+ *   competitor_narrative            (US-007 Gemini narrative + whitespace read)
+ *   competitor_behaviour_archetype  (US-006 discrete archetype label + rationale)
+ *   competitor_behaviour_movement   (US-005 volume / turnover / diversity movements)
+ *   competitor_effort_allocation    (US-005 what they are betting on, as movements)
+ *   competitor_theme_movement       (US-006 emerged / faded / intensified / abandoned)
+ * plus the go-live staying-power winners (ad_registry + ad_snapshots, aged from
+ * meta_start_time fallback first_seen_date: go-live, never the observation window).
+ *
+ * Numbers come only from the marts; the narrative model names and explains but never
+ * invents a number (its provenance is enforced upstream in US-007). Each sub-read is
+ * wrapped so a not-yet-materialized mart yields [] instead of a 500. The US-005/006/007
+ * marts land later (US-011), so today this returns only what exists. A { probe:true }
+ * call reports whether the client has any consolidated intelligence rows yet.
+ *   { action:'competitor-intel', client:'mosh' }             -> { competitors:[...], winners:[...] }
+ *   { action:'competitor-intel', client:'mosh', probe:true }  -> { exists: true|false }
+ */
+async function queryCompetitorIntel(body, credentials, cors) {
+  const cx = martContext(body, credentials, cors, 'competitor-intel');
+  if (cx.badRequest) return cx.badRequest;
+  const { json, client, runQuery } = cx;
+  const T = (name) => `\`${ADLIB_PROJECT}.${ADLIB_DATASET}.${name}\``;
+
+  // Run a client-scoped read, but treat a not-yet-materialized mart as empty so the
+  // consolidated action degrades gracefully mart-by-mart (hq-never-swallow-errors:
+  // only a genuine table-not-found is swallowed; every other error propagates).
+  const safeRows = async (queryText, params, types) => {
+    try {
+      const [rows] = await runQuery(queryText, params, types);
+      return rows;
+    } catch (err) {
+      if (isTableNotFound(err)) return [];
+      throw err;
+    }
+  };
+
+  try {
+    if (body.probe) {
+      // The tab exists when the client has EITHER a behaviour movement mart row OR a
+      // precomputed narrative row. Both reads are absent-safe, so a client whose
+      // marts have not been built yet cleanly reports exists:false (tab hidden).
+      const [behav, narr] = await Promise.all([
+        safeRows(`SELECT 1 FROM ${T('competitor_behaviour_movement')} WHERE f10_client = @client LIMIT 1`),
+        safeRows(`SELECT 1 FROM ${T('competitor_narrative')} WHERE f10_client = @client LIMIT 1`),
+      ]);
+      return json(200, { exists: behav.length > 0 || narr.length > 0 });
+    }
+
+    const [narrRows, archRows, behavRows, effortRows, themeRows, winnerRows] = await Promise.all([
+      // Latest narrative per competitor (prose withheld / null on a non-ok row upstream).
+      safeRows(`
+        SELECT page_id, page_name, run_date, dominant_bet, notable_movements,
+               staying_power, whitespace_read, went_dark, confidence, coverage_caveat,
+               numbers_flagged, narrative_model, status
+        FROM ${T('competitor_narrative')}
+        WHERE f10_client = @client
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY page_id ORDER BY run_date DESC) = 1
+      `),
+      // Latest archetype per competitor (discrete label + defensible rationale).
+      safeRows(`
+        SELECT page_id, page_name, as_of_month, archetype, archetype_rationale,
+               creative_volume, format_diversity, angle_diversity, turnover_rate,
+               new_ads_rate, avg_age_live_days, median_age_live_days
+        FROM ${T('competitor_behaviour_archetype')}
+        WHERE f10_client = @client
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY page_id ORDER BY as_of_month DESC) = 1
+      `),
+      // Latest behaviour-movement row per competitor (each metric a movement).
+      safeRows(`
+        SELECT page_id, page_name, period_month, is_first_period,
+               creative_volume, creative_volume_delta, creative_volume_trend,
+               new_ads, new_ads_rate, new_ads_rate_delta, new_ads_rate_trend,
+               turnover_rate, turnover_rate_delta, turnover_rate_trend,
+               format_diversity, format_diversity_delta, format_diversity_trend,
+               angle_diversity, angle_diversity_delta, angle_diversity_trend,
+               avg_age_live_days, avg_age_live_days_delta, avg_age_live_days_trend,
+               median_age_live_days, median_age_live_days_delta
+        FROM ${T('competitor_behaviour_movement')}
+        WHERE f10_client = @client
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY page_id ORDER BY period_month DESC) = 1
+      `),
+      // Effort allocation for each competitor's latest period (all dimension buckets).
+      safeRows(`
+        WITH latest AS (
+          SELECT page_id, MAX(period_month) AS period_month
+          FROM ${T('competitor_effort_allocation')}
+          WHERE f10_client = @client
+          GROUP BY page_id
+        )
+        SELECT e.page_id, e.page_name, e.period_month, e.dimension, e.dimension_value,
+               e.dimension_is_multilabel, e.live_ads, e.share, e.prior_share,
+               e.delta_share, e.trend
+        FROM ${T('competitor_effort_allocation')} e
+        JOIN latest l ON l.page_id = e.page_id AND l.period_month = e.period_month
+        WHERE e.f10_client = @client
+        ORDER BY e.page_id, e.dimension, e.share DESC
+      `),
+      // Theme movements for each competitor's latest run_date (emerged/faded/...).
+      safeRows(`
+        WITH latest AS (
+          SELECT page_id, MAX(run_date) AS run_date
+          FROM ${T('competitor_theme_movement')}
+          WHERE f10_client = @client
+          GROUP BY page_id
+        )
+        SELECT m.page_id, m.theme_name, m.theme_key, m.run_date, m.movement,
+               m.theme_share, m.prior_share, m.delta_share, m.phrase_count,
+               m.live_ads_this_period, m.longevity_avg_age_live_days
+        FROM ${T('competitor_theme_movement')} m
+        JOIN latest l ON l.page_id = m.page_id AND l.run_date = m.run_date
+        WHERE m.f10_client = @client
+        ORDER BY m.page_id, m.theme_share DESC
+      `),
+      // Go-live staying-power winners: the longest-running LIVE competitor ads, aged
+      // from meta_start_time (fallback first_seen_date) per hard policy: go-live, not
+      // the observation window. ad_registry + ad_snapshots exist independently of the
+      // US-005/006/007 marts, so this section is populated even before they land.
+      safeRows(`
+        WITH live AS (
+          SELECT ad_archive_id, page_id,
+                 COALESCE(meta_start_time, first_seen_date) AS go_live_date
+          FROM ${T('ad_registry')}
+          WHERE f10_client = @client AND still_active
+        ),
+        latest_snap AS (
+          SELECT * EXCEPT(rn) FROM (
+            SELECT ad_archive_id, page_name, display_format, snapshot_url,
+                   ROW_NUMBER() OVER (PARTITION BY ad_archive_id ORDER BY run_date DESC) rn
+            FROM ${T('ad_snapshots')}
+            WHERE f10_client = @client
+          )
+          WHERE rn = 1
+        )
+        SELECT l.ad_archive_id, l.page_id, s.page_name, s.display_format, s.snapshot_url,
+               DATE_DIFF(CURRENT_DATE(), l.go_live_date, DAY) AS live_age_days
+        FROM live l
+        LEFT JOIN latest_snap s USING (ad_archive_id)
+        ORDER BY live_age_days DESC, l.ad_archive_id
+        LIMIT 10
+      `),
+    ]);
+
+    // Merge everything per competitor page_id. page_name is resolved from whichever
+    // mart carries it (narrative / archetype / behaviour / effort all do), so the
+    // header always shows a name, never a bare page_id: the page_name drift guard.
+    const byPage = {};
+    const ensure = (pageId, pageName) => {
+      const key = String(pageId);
+      if (!byPage[key]) {
+        byPage[key] = {
+          page_id: pageId, page_name: null,
+          narrative: null, archetype: null, behaviour: null,
+          effort: [], theme_movements: [],
+        };
+      }
+      if (!byPage[key].page_name && pageName != null && pageName !== '') {
+        byPage[key].page_name = pageName;
+      }
+      return byPage[key];
+    };
+
+    for (const r of narrRows) {
+      const c = ensure(r.page_id, r.page_name);
+      c.narrative = {
+        run_date: r.run_date,
+        dominant_bet: r.dominant_bet,
+        notable_movements: r.notable_movements,
+        staying_power: r.staying_power,
+        whitespace_read: r.whitespace_read,
+        went_dark: r.went_dark,
+        confidence: r.confidence,
+        coverage_caveat: r.coverage_caveat,
+        status: r.status,
+      };
+    }
+    for (const r of archRows) {
+      const c = ensure(r.page_id, r.page_name);
+      c.archetype = {
+        archetype: r.archetype,
+        archetype_rationale: r.archetype_rationale,
+        as_of_month: r.as_of_month,
+      };
+    }
+    for (const r of behavRows) {
+      const c = ensure(r.page_id, r.page_name);
+      c.behaviour = r;
+    }
+    for (const r of effortRows) {
+      ensure(r.page_id, r.page_name).effort.push(r);
+    }
+    for (const r of themeRows) {
+      // theme_movement carries no page_name (per the pinned mart contract); it merges
+      // onto a page created by one of the name-bearing marts above.
+      ensure(r.page_id, null).theme_movements.push(r);
+    }
+
+    const competitors = Object.values(byPage).sort((a, b) =>
+      String(a.page_name || a.page_id).localeCompare(String(b.page_name || b.page_id)));
+
+    return json(200, { competitors, winners: winnerRows });
+  } catch (err) {
+    console.error('Competitor-intel query error:', err);
     return json(500, { error: err.message });
   }
 }

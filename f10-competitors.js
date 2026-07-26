@@ -1566,6 +1566,473 @@
   }
 
 
+  /* ── Consolidated Competitor Intelligence surface (competitor-intel-rollup US-008) ──
+   * The single behaviour-over-time surface that supersedes the old thin four-tab
+   * layout. It reads the `competitor-intel` action (the US-005/006/007 behaviour +
+   * movement + archetype marts and the precomputed narrative) plus the retained
+   * `age-timeseries` action, and renders, per competitor: the narrative (the "so
+   * what" / "now what") first, then what they are betting on now (effort allocation),
+   * how their behaviour is moving (volume / turnover / diversity movements + a
+   * discrete archetype), and which themes emerged / faded / intensified / abandoned.
+   * Below the per-competitor cards it shows the go-live staying-power winners and the
+   * RETAINED Ad Age Over Time chart (reused verbatim from the age module, not rebuilt).
+   * All numbers come from the marts; the model only names and explains. Absent-safe:
+   * the US-005/006/007 marts materialize later (US-011), so every section degrades to
+   * a clean empty state until then. Uses the F10 design tokens inline, matching the
+   * other competitor tabs, so no shared-CSS edit is needed. */
+
+  let compiLoaded = false;
+  let compiData = null;       // cached { competitors:[...], winners:[...] }
+  let compiAgeData = null;    // cached { client:[...], competitors:[...] } for the retained age chart
+  let compiAgeMetric = 'avg'; // 'avg' | 'median' for the embedded age chart
+
+  /* Discrete behaviour archetype → display colour. The label itself is data-owned
+   * (competitor_behaviour_archetype.archetype); this map only styles it, never
+   * recomputes it (hq-classifier-own-labels-single-source). */
+  const COMPI_ARCH_COLORS = {
+    'conviction': 'var(--young-blood)',
+    'steady / evergreen': '#3a8a2a',
+    'diversified testing': '#4a90e2',
+    'active mixed': '#9b59b6',
+    'still hunting / spray': 'var(--stabilo-red)',
+    'building': 'var(--grey)',
+  };
+  /* Theme-movement label → display colour + glyph. Labels are data-owned
+   * (competitor_theme_movement.movement); this only styles them. */
+  const COMPI_MOVE_STYLE = {
+    emerged:     { color: '#3a8a2a', label: 'Emerged' },
+    intensified: { color: 'var(--young-blood)', label: 'Intensified' },
+    faded:       { color: '#f5a623', label: 'Faded' },
+    abandoned:   { color: 'var(--stabilo-red)', label: 'Abandoned' },
+    stable:      { color: 'var(--grey)', label: 'Stable' },
+  };
+  /* Human labels for the effort-allocation dimensions (the mart stores machine keys). */
+  const COMPI_DIM_LABELS = {
+    format_canonical: 'Format', hook_type: 'Hook type', awareness_stage: 'Awareness stage',
+    emotional_appeal: 'Emotional appeal', cta_type: 'CTA type', platform: 'Platform',
+  };
+  const COMPI_DIM_ORDER = ['format_canonical', 'awareness_stage', 'emotional_appeal', 'hook_type', 'cta_type', 'platform'];
+
+  async function fetchCompetitorIntel(client) {
+    const r = await fetch(BQ_FUNCTION, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'competitor-intel', client: client }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  }
+
+  function compiNum(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
+  /* A fractional share (0..1) → whole-percent string; null-safe. */
+  function compiPct(frac) { const n = compiNum(frac); return n == null ? 'n/a' : Math.round(n * 100) + '%'; }
+  /* A fractional delta → signed "points" string (e.g. +6 pts); '' when null/zero-ish. */
+  function compiSignedPts(frac) {
+    const n = compiNum(frac); if (n == null) return '';
+    const pts = Math.round(n * 100);
+    if (pts === 0) return '';
+    return (pts > 0 ? '+' : '') + pts + ' pts';
+  }
+  /* A raw numeric delta → signed string (e.g. +3, -2); '' when null/zero. */
+  function compiSigned(v, dp) {
+    const n = compiNum(v); if (n == null) return '';
+    const r = dp ? Math.round(n * Math.pow(10, dp)) / Math.pow(10, dp) : Math.round(n);
+    if (r === 0) return '';
+    return (r > 0 ? '+' : '') + r;
+  }
+
+  /* Trend chip: a small direction glyph + optional formatted delta. Neutral colours
+   * (a rising turnover is not inherently "good"), so this shows direction, not verdict:
+   * up = ink, down = grey, flat = grey, new = a Stabilo "new" pill (first period). */
+  function compiTrendChip(trend, deltaText) {
+    const t = String(trend || '').toLowerCase();
+    if (t === 'new') {
+      return '<span style="font-size:8.5px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;'
+        + 'color:var(--ink);background:var(--stabilo);border-radius:100px;padding:1px 7px;">new</span>';
+    }
+    const GLYPH = { up: '↑', down: '↓', flat: '→' };
+    const g = GLYPH[t] || '';
+    if (!g) return '';
+    const color = t === 'up' ? 'var(--ink)' : 'var(--grey)';
+    const dt = deltaText ? ' ' + esc(deltaText) : '';
+    return '<span style="font-size:10.5px;font-weight:700;color:' + color + ';white-space:nowrap;">' + g + dt + '</span>';
+  }
+
+  /* Behaviour archetype badge: the discrete data-owned label with a defensible
+   * rationale tooltip. Never recomputed here. */
+  function compiArchetypeBadge(arch) {
+    const a = arch && typeof arch === 'object' ? arch : {};
+    const label = String(a.archetype || '').trim();
+    if (!label) return '';
+    const bg = COMPI_ARCH_COLORS[label.toLowerCase()] || 'var(--paper-dark)';
+    const rationale = a.archetype_rationale ? ' title="' + esc(String(a.archetype_rationale)) + '"' : '';
+    return '<span class="compi-arch"' + rationale + ' style="display:inline-block;padding:3px 11px;border-radius:100px;'
+      + 'font-size:10px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;background:' + bg + ';color:var(--white);">'
+      + esc(label) + '</span>';
+  }
+
+  /* The precomputed narrative block: dominant bet FIRST (the headline read), then the
+   * movements / staying-power / whitespace paragraphs, then the coverage caveat. A
+   * competitor that went dark is a first-class state, not an error. Prose that failed
+   * the upstream provenance gate is withheld (null), so a missing paragraph is simply
+   * not rendered rather than shown as a hollow claim. */
+  function compiNarrativeHtml(n) {
+    if (!n || typeof n !== 'object') {
+      return '<p class="no-data" style="text-align:left;padding:0;">No narrative has been generated for this competitor yet.</p>';
+    }
+    if (n.went_dark) {
+      return '<div class="compi-dark" style="background:var(--paper);border-left:3px solid var(--stabilo-red);'
+        + 'padding:12px 14px;border-radius:6px;font-size:13px;color:var(--ink);">This competitor has '
+        + '<strong>gone dark</strong>: no live ads this period. '
+        + (n.dominant_bet ? esc(String(n.dominant_bet)) : 'Watch for a relaunch.') + '</div>';
+    }
+    const para = (label, text) => {
+      const t = text == null ? '' : String(text).trim();
+      if (!t) return '';
+      return '<div style="margin-top:12px;"><div style="font-size:9px;font-weight:700;letter-spacing:0.1em;'
+        + 'text-transform:uppercase;color:var(--grey);margin-bottom:3px;">' + esc(label) + '</div>'
+        + '<div style="font-size:12.5px;line-height:1.6;color:var(--ink);">' + esc(t) + '</div></div>';
+    };
+    const bet = n.dominant_bet == null ? '' : String(n.dominant_bet).trim();
+    const head = bet
+      ? '<p class="compi-narrative" style="font-size:13.5px;line-height:1.6;color:var(--ink);'
+        + 'border-left:3px solid var(--young-blood);padding-left:12px;margin:0;">' + esc(bet) + '</p>'
+      : '<p class="no-data" style="text-align:left;padding:0;">No dominant bet captured for this competitor yet.</p>';
+    const caveat = n.coverage_caveat
+      ? '<div style="font-size:10px;color:var(--grey);margin-top:12px;letter-spacing:0.02em;">' + esc(String(n.coverage_caveat)) + '</div>'
+      : '';
+    return head
+      + para('What changed', n.notable_movements)
+      + para('Staying power', n.staying_power)
+      + para('Whitespace vs you', n.whitespace_read)
+      + caveat;
+  }
+
+  /* Effort allocation: "what they're betting on now". For each dimension present, the
+   * top buckets this period as a share bar + movement (share, delta pts, trend). Reads
+   * the long-format competitor_effort_allocation rows for the competitor's latest period. */
+  function compiEffortHtml(effort) {
+    const rows = Array.isArray(effort) ? effort : [];
+    if (!rows.length) return '';
+    const byDim = {};
+    rows.forEach((r) => {
+      const d = String(r && r.dimension || '');
+      if (!d) return;
+      (byDim[d] = byDim[d] || []).push(r);
+    });
+    const dims = Object.keys(byDim).sort((a, b) => {
+      const ia = COMPI_DIM_ORDER.indexOf(a), ib = COMPI_DIM_ORDER.indexOf(b);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+    });
+    const blocks = dims.map((d) => {
+      const label = COMPI_DIM_LABELS[d] || d;
+      const top = byDim[d].slice().sort((a, b) => (compiNum(b.share) || 0) - (compiNum(a.share) || 0)).slice(0, 3);
+      const bars = top.map((r) => {
+        const pct = Math.max(0, Math.min(100, Math.round((compiNum(r.share) || 0) * 100)));
+        const val = compiPct(r.share);
+        const trend = compiTrendChip(r.trend, compiSignedPts(r.delta_share));
+        return '<div style="margin-bottom:8px;">'
+          + '<div style="display:flex;align-items:baseline;gap:8px;font-size:11.5px;color:var(--ink);margin-bottom:3px;">'
+          + '<span style="flex:1 1 auto;">' + esc(String(r.dimension_value)) + '</span>'
+          + '<span style="font-weight:700;">' + val + '</span>' + trend + '</div>'
+          + '<div style="height:6px;border-radius:4px;background:var(--paper-dark);overflow:hidden;">'
+          + '<span style="display:block;height:100%;width:' + pct + '%;background:var(--young-blood);border-radius:4px;"></span></div>'
+          + '</div>';
+      }).join('');
+      return '<div class="compi-dim" style="flex:1 1 200px;min-width:180px;">'
+        + '<div style="font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--grey);margin-bottom:8px;">'
+        + esc(label) + '</div>' + bars + '</div>';
+    }).join('');
+    return '<div style="margin-top:18px;">'
+      + '<h4 style="font-size:11px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink);margin:0 0 10px;">What they’re betting on now</h4>'
+      + '<div style="display:flex;gap:24px;flex-wrap:wrap;">' + blocks + '</div></div>';
+  }
+
+  /* Behaviour movements: the how-are-they-moving stat tiles. Each is a movement:
+   * current value + delta vs the prior period + trend. Go-live longevity (avg live age)
+   * is included as the staying-power scalar. */
+  function compiBehaviourHtml(b) {
+    if (!b || typeof b !== 'object') return '';
+    const tile = (label, valueHtml, trend, deltaText) =>
+      '<div style="flex:1 1 120px;min-width:110px;background:var(--paper);border-radius:6px;padding:10px 12px;">'
+      + '<div style="font-size:9px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:var(--grey);margin-bottom:4px;">' + esc(label) + '</div>'
+      + '<div style="display:flex;align-items:baseline;gap:7px;">'
+      + '<span style="font-size:19px;font-weight:800;color:var(--ink);">' + valueHtml + '</span>'
+      + compiTrendChip(trend, deltaText) + '</div></div>';
+    const vol = compiNum(b.creative_volume);
+    const age = compiNum(b.avg_age_live_days);
+    const tiles = [
+      tile('Live creative', vol == null ? 'n/a' : String(vol), b.creative_volume_trend, compiSigned(b.creative_volume_delta)),
+      tile('New-ad rate', compiPct(b.new_ads_rate), b.new_ads_rate_trend, compiSignedPts(b.new_ads_rate_delta)),
+      tile('Turnover', compiPct(b.turnover_rate), b.turnover_rate_trend, compiSignedPts(b.turnover_rate_delta)),
+      tile('Format mix', compiNum(b.format_diversity) == null ? 'n/a' : String(compiNum(b.format_diversity)), b.format_diversity_trend, compiSigned(b.format_diversity_delta)),
+      tile('Angle mix', compiNum(b.angle_diversity) == null ? 'n/a' : String(compiNum(b.angle_diversity)), b.angle_diversity_trend, compiSigned(b.angle_diversity_delta)),
+      tile('Avg live age', age == null ? 'n/a' : Math.round(age) + 'd', b.avg_age_live_days_trend, compiSigned(b.avg_age_live_days_delta)),
+    ].join('');
+    return '<div style="margin-top:18px;">'
+      + '<h4 style="font-size:11px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink);margin:0 0 10px;">How they’re moving</h4>'
+      + '<div style="display:flex;gap:10px;flex-wrap:wrap;">' + tiles + '</div></div>';
+  }
+
+  /* Theme movements: the emerged / faded / intensified / abandoned diff for the
+   * competitor's latest run_date, most-notable first, each with its share + go-live
+   * longevity evidence. */
+  function compiThemeMovesHtml(moves) {
+    const list = Array.isArray(moves) ? moves : [];
+    if (!list.length) return '';
+    const RANK = { intensified: 0, emerged: 1, faded: 2, abandoned: 3, stable: 4 };
+    const sorted = list.slice().sort((a, b) => {
+      const ra = RANK[String(a.movement).toLowerCase()], rb = RANK[String(b.movement).toLowerCase()];
+      return (ra == null ? 9 : ra) - (rb == null ? 9 : rb);
+    }).slice(0, 8);
+    const chips = sorted.map((m) => {
+      const key = String(m.movement || '').toLowerCase();
+      const st = COMPI_MOVE_STYLE[key] || { color: 'var(--grey)', label: key || 'theme' };
+      const age = compiNum(m.longevity_avg_age_live_days);
+      const meta = [compiPct(m.theme_share) !== 'n/a' ? compiPct(m.theme_share) + ' share' : '', age == null ? '' : Math.round(age) + 'd live']
+        .filter(Boolean).join(' · ');
+      return '<div style="display:flex;align-items:center;gap:9px;background:var(--white);border:1px solid var(--paper-dark);'
+        + 'border-radius:6px;padding:8px 11px;">'
+        + '<span style="font-size:8.5px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:var(--white);'
+        + 'background:' + st.color + ';border-radius:100px;padding:2px 9px;white-space:nowrap;">' + esc(st.label) + '</span>'
+        + '<span style="flex:1 1 auto;font-size:12px;font-weight:600;color:var(--ink);">' + esc(String(m.theme_name || m.theme_key || 'Theme')) + '</span>'
+        + (meta ? '<span style="font-size:10px;color:var(--grey);white-space:nowrap;">' + esc(meta) + '</span>' : '')
+        + '</div>';
+    }).join('');
+    return '<div style="margin-top:18px;">'
+      + '<h4 style="font-size:11px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink);margin:0 0 10px;">Theme movements</h4>'
+      + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px;">' + chips + '</div></div>';
+  }
+
+  /* One competitor's full consolidated card: header (name + archetype + confidence +
+   * freshness), then narrative, effort, behaviour, and theme movements in insight-ladder
+   * order (the "so what" leads, the evidence follows). */
+  function compiCompetitorCardHtml(c) {
+    const cc = c && typeof c === 'object' ? c : {};
+    const name = esc(String(cc.page_name || cc.page_id || 'Unknown competitor'));
+    const n = cc.narrative;
+    const runDate = n && n.run_date;
+    return '<section class="comp-section compi-card" style="background:var(--white);border:2px solid var(--paper-dark);'
+      + 'border-radius:8px;padding:18px 20px;">'
+      + '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px;">'
+      + '<h2 class="comp-head" style="margin-bottom:0;">' + name + '</h2>'
+      + compiArchetypeBadge(cc.archetype)
+      + (n && n.confidence ? compThemesConfHtml(n.confidence) : '')
+      + (runDate ? compThemesFreshHtml(runDate) : '')
+      + '</div>'
+      + compiNarrativeHtml(n)
+      + compiEffortHtml(cc.effort)
+      + compiBehaviourHtml(cc.behaviour)
+      + compiThemeMovesHtml(cc.theme_movements)
+      + '</section>';
+  }
+
+  /* Go-live staying-power winners: the longest-running LIVE competitor ads across the
+   * set (aged from go-live, never the observation window). The clearest read on what is
+   * working for competitors in a market with no public spend data. Only the public Ad
+   * Library snapshot_url is linked (http(s) only). Absent-safe. */
+  function compiWinnersHtml(winners) {
+    const list = Array.isArray(winners) ? winners : [];
+    if (!list.length) return '<div class="no-data">No live competitor ads to rank by go-live staying power yet.</div>';
+    const rows = list.map((a, i) => {
+      const url = String((a && a.snapshot_url) || '');
+      const safe = /^https?:\/\//.test(url) ? url : '';
+      const age = compiNum(a && a.live_age_days);
+      return '<tr>'
+        + '<td style="padding:6px 10px;font-weight:700;color:var(--grey);">#' + (i + 1) + '</td>'
+        + '<td style="padding:6px 10px;font-weight:600;">' + esc(String((a && (a.page_name || a.page_id)) || '')) + '</td>'
+        + '<td style="padding:6px 10px;color:var(--grey);">' + esc(String((a && a.display_format) || '')) + '</td>'
+        + '<td style="padding:6px 10px;font-weight:800;text-align:right;color:var(--young-blood);">' + (age == null ? 'n/a' : Math.round(age) + 'd') + '</td>'
+        + '<td style="padding:6px 10px;text-align:right;">' + (safe ? '<a href="' + esc(safe) + '" target="_blank" rel="noopener" style="color:var(--young-blood);font-weight:600;">View</a>' : '') + '</td>'
+        + '</tr>';
+    }).join('');
+    return '<div style="background:var(--white);border:2px solid var(--paper-dark);border-radius:8px;overflow:hidden;">'
+      + '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
+      + '<thead><tr style="background:var(--paper);text-align:left;">'
+      + '<th style="padding:8px 10px;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--grey);">#</th>'
+      + '<th style="padding:8px 10px;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--grey);">Competitor</th>'
+      + '<th style="padding:8px 10px;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--grey);">Format</th>'
+      + '<th style="padding:8px 10px;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--grey);text-align:right;">Go-live age</th>'
+      + '<th style="padding:8px 10px;text-align:right;"></th>'
+      + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+  }
+
+  /* Retained Ad Age Over Time section: reuses the age module's pure chart builder
+   * (compaChartHtml) verbatim so the working view is preserved, with an intel-scoped
+   * avg/median toggle wired only inside this panel (so it never collides with the
+   * standalone age tab's global controls). */
+  function compiAgeSectionHtml() {
+    const d = compiAgeData && typeof compiAgeData === 'object' ? compiAgeData : {};
+    const chart = (typeof compaChartHtml === 'function')
+      ? compaChartHtml(d.client || [], d.competitors || [], compiAgeMetric) : '';
+    if (!chart) return '';
+    const seg = (key, label) =>
+      '<button type="button" class="compi-age-metric-btn' + (compiAgeMetric === key ? ' active' : '')
+      + '" data-metric="' + key + '">' + label + '</button>';
+    const toggle = '<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">'
+      + '<span style="font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--grey);">Age metric</span>'
+      + '<div class="seg">' + seg('avg', 'Average') + seg('median', 'Median') + '</div></div>';
+    return '<div class="compi-section" style="margin-top:30px;">'
+      + '<h3 style="font-size:13px;font-weight:800;letter-spacing:0.04em;text-transform:uppercase;color:var(--ink);margin:0 0 4px;">Ad age over time</h3>'
+      + '<p class="window-note" style="margin:0 0 12px;">Average and median live ad age by month, your line on the same axis. A line drifting up means a competitor is leaning on older, proven creative; staying low means they refresh often.</p>'
+      + toggle + chart + '</div>';
+  }
+
+  /* Re-render only the embedded age section (metric toggle / legend focus) without
+   * reloading the whole tab. Scoped to #panel-competitor-intel. */
+  function compiRenderAgeSection() {
+    const host = document.getElementById('compi-age-host');
+    if (!host) return;
+    host.innerHTML = compiAgeSectionHtml();
+    compiWireAgeControls();
+  }
+
+  function compiWireAgeControls() {
+    const panel = document.getElementById('panel-competitor-intel');
+    if (!panel) return;
+    panel.querySelectorAll('.compi-age-metric-btn').forEach((btn) =>
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        const m = btn.getAttribute && btn.getAttribute('data-metric');
+        if ((m === 'avg' || m === 'median') && m !== compiAgeMetric) { compiAgeMetric = m; compiRenderAgeSection(); }
+      })
+    );
+    // Legend focus: dim the other lines, scoped to this panel so it never touches the
+    // (gated-off) standalone age tab.
+    panel.querySelectorAll('.compa-legend-item').forEach((item) =>
+      item.addEventListener('click', (e) => {
+        e.preventDefault();
+        const id = item.getAttribute && item.getAttribute('data-series');
+        const focus = item.getAttribute('data-focused') === '1' ? null : id;
+        panel.querySelectorAll('.compa-line').forEach((ln) => {
+          if (ln.style) ln.style.opacity = (focus && ln.getAttribute('data-series') !== focus) ? '0.15' : '1';
+        });
+        panel.querySelectorAll('.compa-legend-item').forEach((it) => {
+          if (it.style) it.style.opacity = (focus && it.getAttribute('data-series') !== focus) ? '0.35' : '1';
+          it.setAttribute('data-focused', (focus && it.getAttribute('data-series') === focus) ? '1' : '0');
+        });
+      })
+    );
+  }
+
+  function compiRender(data, ageData) {
+    const d = data && typeof data === 'object' ? data : {};
+    if (ageData && typeof ageData === 'object') compiAgeData = ageData;
+    const competitors = Array.isArray(d.competitors) ? d.competitors : [];
+    const winners = Array.isArray(d.winners) ? d.winners : [];
+
+    const body = document.getElementById('compi-body');
+    const metaLine = document.getElementById('compi-meta');
+    const note = document.getElementById('compi-note');
+    const hasAge = !!(compiAgeData && (Array.isArray(compiAgeData.competitors) && compiAgeData.competitors.length
+      || Array.isArray(compiAgeData.client) && compiAgeData.client.length));
+
+    if (!competitors.length && !winners.length && !hasAge) {
+      if (body) body.innerHTML = '<div class="no-data">No consolidated competitor intelligence is available for this client yet.</div>';
+      if (metaLine) metaLine.textContent = '';
+      if (note) note.textContent = '';
+      hideEl('compi-loading'); showEl('compi-body');
+      return;
+    }
+
+    if (metaLine) {
+      metaLine.textContent = competitors.length + ' competitor' + (competitors.length === 1 ? '' : 's')
+        + ' analysed · behaviour over time + narrative · source: Meta Ad Library (AU)';
+    }
+    if (note) {
+      note.textContent = 'Read the narrative first: what each competitor is betting on and what changed. '
+        + 'The staying-power winners show what is working; the age chart shows how fresh the set is running.';
+    }
+
+    const cards = competitors.length
+      ? '<div style="display:flex;flex-direction:column;gap:20px;">' + competitors.map(compiCompetitorCardHtml).join('') + '</div>'
+      : '';
+    const winnersSection = '<div class="compi-section" style="margin-top:30px;">'
+      + '<h3 style="font-size:13px;font-weight:800;letter-spacing:0.04em;text-transform:uppercase;color:var(--ink);margin:0 0 4px;">Go-live staying-power winners</h3>'
+      + '<p class="window-note" style="margin:0 0 12px;">The longest-running live competitor ads, aged from go-live (not our observation window). The clearest signal of what is working for them.</p>'
+      + compiWinnersHtml(winners) + '</div>';
+
+    if (body) {
+      body.innerHTML = cards + winnersSection + '<div id="compi-age-host"></div>';
+      compiRenderAgeSection();
+    }
+
+    const lu = document.getElementById('last-updated');
+    if (lu) lu.textContent = 'Updated ' + new Date().toLocaleTimeString('en-AU');
+    hideEl('compi-loading'); showEl('compi-body');
+  }
+
+  async function compiLoad() {
+    showEl('compi-loading'); hideEl('compi-body');
+    try {
+      // The intel action is the primary surface; the retained age chart is a secondary
+      // section that degrades to empty on its own failure (logged, never hidden).
+      const [intelRes, ageRes] = await Promise.all([
+        fetchCompetitorIntel(compClient),
+        (typeof fetchAge === 'function' ? fetchAge(compClient) : Promise.resolve(null))
+          .catch((e) => { console.error('Competitor-intel age load error:', e); return null; }),
+      ]);
+      compiData = {
+        competitors: (intelRes && Array.isArray(intelRes.competitors)) ? intelRes.competitors : [],
+        winners: (intelRes && Array.isArray(intelRes.winners)) ? intelRes.winners : [],
+      };
+      compiAgeData = ageRes && typeof ageRes === 'object'
+        ? { client: Array.isArray(ageRes.client) ? ageRes.client : [], competitors: Array.isArray(ageRes.competitors) ? ageRes.competitors : [] }
+        : null;
+      compiRender(compiData, compiAgeData);
+    } catch (err) {
+      // Surface loudly (hq-never-swallow-errors): log + show in the tab, like the other tabs.
+      console.error('Competitor intelligence load error:', err);
+      const el = document.getElementById('compi-loading');
+      if (el) el.innerHTML = 'Error loading competitor intelligence: ' + esc(err && err.message ? err.message : String(err));
+    }
+  }
+
+  /* Activate the consolidated Competitor Intelligence tab: deactivate Meta, TikTok, and
+   * every competitor sub-tab, then show this panel. Loads data lazily on first open. */
+  function compiSelectTab() {
+    document.querySelectorAll('.tab-panel').forEach((p) => p.classList.remove('active'));
+    document.querySelectorAll('.nav-link').forEach((l) => l.classList.remove('active'));
+    document.querySelectorAll('.tt-nav-link').forEach((l) => l.classList.remove('active'));
+    document.querySelectorAll('.comp-nav-link').forEach((l) => l.classList.remove('active'));
+    document.querySelectorAll('.comp-themes-nav-link').forEach((l) => l.classList.remove('active'));
+    document.querySelectorAll('.comp-age-nav-link').forEach((l) => l.classList.remove('active'));
+    document.querySelectorAll('.comp-maturity-nav-link').forEach((l) => l.classList.remove('active'));
+    const mc = document.getElementById('controls-bar'); if (mc) mc.style.display = 'none';
+    const tc = document.getElementById('tt-controls-bar'); if (tc) tc.style.display = 'none';
+    document.querySelectorAll('.comp-intel-nav-link').forEach((l) => l.classList.add('active'));
+    const panel = document.getElementById('panel-competitor-intel'); if (panel) panel.classList.add('active');
+    const title = document.getElementById('page-title'); if (title) title.textContent = 'Competitor Intelligence';
+    if (window.F10A) F10A.track('competitor.tab.intel', { client: compClient });
+    if (!compiLoaded) { compiLoaded = true; compiLoad(); }
+  }
+
+  function compiWireControls() {
+    document.querySelectorAll('.comp-intel-nav-link').forEach((link) =>
+      link.addEventListener('click', (e) => { e.preventDefault(); compiSelectTab(); })
+    );
+    // Drop this tab's active highlight when any other nav link is clicked (its panel is
+    // already hidden by the other handlers via .tab-panel / .comp-tab-panel clearing).
+    document.querySelectorAll('.nav-link, .tt-nav-link, .comp-nav-link, .comp-themes-nav-link, .comp-age-nav-link, .comp-maturity-nav-link').forEach((link) =>
+      link.addEventListener('click', () =>
+        document.querySelectorAll('.comp-intel-nav-link').forEach((l) => l.classList.remove('active')))
+    );
+  }
+
+  /* Register the consolidated Competitor Intelligence tab. Same runtime nav+panel
+   * injection pattern as the other competitor tabs; fired only when the competitor-intel
+   * probe passes so a client with no consolidated intelligence rows leaves zero DOM
+   * trace. The nav link sits directly under Competitor Ads in the Competitors section. */
+  function compiRegisterTab() {
+    const nav = compEnsureNavSection();
+    const content = document.getElementById('content');
+    if (!nav || !content || typeof competitorIntelPanelMarkup !== 'function') return;
+    nav.insertAdjacentHTML('beforeend',
+      '<a href="#" class="comp-intel-nav-link" data-comp-tab="comp-intel">Competitor Intelligence</a>');
+    content.insertAdjacentHTML('beforeend', competitorIntelPanelMarkup());
+    compiWireControls();
+  }
+
+
   /* ── Boot ── */
 
   /* Probe passed → register the tab: append the nav section to the sidebar nav
@@ -1623,6 +2090,12 @@
     // their own data exists, so a client with ads but no theme rollup gets tab 1
     // and not tab 2 — and vice versa. Each fails closed on its own.
     await compProbeAndRegister('competitor', compRegisterTab, 'Competitor visibility probe');
+    // The consolidated Competitor Intelligence surface (competitor-intel-rollup US-008):
+    // the single behaviour-over-time surface. It appears on its own data probe (the
+    // US-005/006/007 marts + narrative), independent of the legacy COMP_EXTRA_TABS gate,
+    // and is what supersedes the old thin four-tab layout. Until those marts are
+    // materialized (US-011) the probe returns exists:false and the tab stays hidden.
+    await compProbeAndRegister('competitor-intel', compiRegisterTab, 'Competitor intelligence visibility probe');
     // Secondary sub-tabs are behind the launch gate (COMP_EXTRA_TABS) as well as
     // their own data probe — held off in v1.15.0, released in v1.15.1.
     if (COMP_EXTRA_TABS) {
@@ -1754,5 +2227,30 @@
     getData: function () { return compmData; },
     setClient: function (c) { compClient = c; },
     isLoaded: function () { return compmLoaded; },
+  };
+
+  /* Test surface (competitor-intel-rollup US-008): expose the consolidated
+   * Competitor Intelligence internals so the acceptance test can exercise the
+   * per-competitor card, effort/behaviour/theme rendering, winners, narrative,
+   * and registration without a full DOM/probe boot. Production paths do not read
+   * these; they only add to window. */
+  window.f10CompetitorIntel = {
+    competitorCardHtml: compiCompetitorCardHtml,
+    narrativeHtml: compiNarrativeHtml,
+    effortHtml: compiEffortHtml,
+    behaviourHtml: compiBehaviourHtml,
+    themeMovesHtml: compiThemeMovesHtml,
+    archetypeBadge: compiArchetypeBadge,
+    trendChip: compiTrendChip,
+    winnersHtml: compiWinnersHtml,
+    render: compiRender,
+    load: compiLoad,
+    fetchIntel: fetchCompetitorIntel,
+    registerTab: compiRegisterTab,
+    selectTab: compiSelectTab,
+    getData: function () { return compiData; },
+    setClient: function (c) { compClient = c; },
+    setAgeMetric: function (m) { if (m === 'avg' || m === 'median') { compiAgeMetric = m; } },
+    isLoaded: function () { return compiLoaded; },
   };
 })();

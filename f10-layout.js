@@ -299,6 +299,30 @@ function competitorMaturityPanelMarkup(){
 `;
 }
 
+/* Consolidated Competitor Intelligence markup (competitor-intel-rollup US-008). The
+ * single behaviour-over-time surface that supersedes the old thin four-tab layout:
+ * per competitor it reads what they are betting on now (effort allocation), how their
+ * behaviour is moving (volume / turnover / diversity movements + a discrete archetype),
+ * which themes emerged / faded / intensified / abandoned, their go-live staying-power
+ * winners, and the precomputed Gemini narrative (dominant bet, movements, staying power,
+ * whitespace vs the client). The retained Ad Age Over Time chart is embedded as the
+ * final section (it worked well, so it is reused, not rebuilt). Injected by
+ * f10-competitors.js only when the competitor-intel visibility probe finds consolidated
+ * intelligence rows for this client (probe-driven, absent-safe), same runtime nav+panel
+ * pattern as the other competitor panels. */
+function competitorIntelPanelMarkup(){
+  return `
+    <!-- COMPETITORS: CONSOLIDATED INTELLIGENCE -->
+    <div class="tab-panel comp-tab-panel" id="panel-competitor-intel">
+      <div class="insight-box"><strong>Competitor Intelligence:</strong> one read on every tracked competitor. What they are <strong>betting on right now</strong>, how their behaviour is <strong>moving</strong> (are they scaling, churning, or holding conviction), which creative themes are <strong>emerging or fading</strong>, and their <strong>go-live staying-power winners</strong> (the longest-running live ads, the clearest signal of what is working for them in a market with no public spend data). The narrative up top is the &ldquo;so what&rdquo; and the &ldquo;now what&rdquo;: what to test or defend, not a list of tags.</div>
+      <div class="window-note" id="compi-meta"></div>
+      <div class="window-note" id="compi-note"></div>
+      <div id="compi-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+      <div id="compi-body" style="display:none;"></div>
+    </div>
+`;
+}
+
 /* ── "How to read this tab" notes ──
  * Plain-English, client-facing guidance shown at the top of every tab, plus a
  * one-line definition of what a "conversion" is for this account. Rendered only
