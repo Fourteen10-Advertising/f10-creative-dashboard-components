@@ -1083,11 +1083,11 @@
     const yTicks = [0, yMax / 2, yMax];
     const grid = yTicks.map((v) =>
       `<line x1="${padL}" y1="${yFor(v).toFixed(1)}" x2="${W - padR}" y2="${yFor(v).toFixed(1)}" stroke="var(--paper-dark)" stroke-width="1"/>`
-      + `<text x="${padL - 6}" y="${(yFor(v) + 3).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--grey)">${Math.round(v)}</text>`
+      + `<text x="${padL - 6}" y="${(yFor(v) + 3).toFixed(1)}" text-anchor="end" font-size="8.5" fill="var(--grey)">${Math.round(v)}</text>`
     ).join('');
     const everyX = Math.max(1, Math.ceil(axis.length / 8));
     const xlabels = axis.map((k, i) => (i % everyX === 0 || i === axis.length - 1)
-      ? `<text x="${xFor(k).toFixed(1)}" y="${H - 12}" text-anchor="middle" font-size="9" fill="var(--grey)">${esc(compaMonthLabel(k))}</text>` : '').join('');
+      ? `<text x="${xFor(k).toFixed(1)}" y="${H - 12}" text-anchor="middle" font-size="8.5" fill="var(--grey)">${esc(compaMonthLabel(k))}</text>` : '').join('');
 
     const paths = series.map((s) => {
       let d = '', started = false;
@@ -1096,10 +1096,21 @@
         d += (started ? 'L' : 'M') + xFor(p.key).toFixed(1) + ' ' + yFor(p.value).toFixed(1) + ' ';
         started = true;
       });
+      // Dots carry the data a tooltip needs (label + age + month) AND an SVG <title>
+      // as the accessible, zero-JS floor: hovering shows series.label, the age in days,
+      // and the month even if the enhanced HTML tooltip never wires up.
       const dots = s.points.filter((p) => p.value != null)
-        .map((p) => `<circle cx="${xFor(p.key).toFixed(1)}" cy="${yFor(p.value).toFixed(1)}" r="${s.isClient ? 3 : 2.4}" fill="${s.color}"/>`).join('');
+        .map((p) => {
+          const ml = compaMonthLabel(p.key);
+          const vr = Math.round(p.value);
+          const titleText = esc(s.label + ' · ' + vr + 'd live age' + (ml ? ' · ' + ml : ''));
+          return `<circle class="compa-dot" cx="${xFor(p.key).toFixed(1)}" cy="${yFor(p.value).toFixed(1)}" `
+            + `r="${s.isClient ? 2.4 : 1.6}" fill="${s.color}" `
+            + `data-label="${esc(s.label)}" data-value="${vr}" data-month="${esc(ml)}">`
+            + `<title>${titleText}</title></circle>`;
+        }).join('');
       return `<path class="compa-line" data-series="${s.id}" d="${d.trim()}" fill="none" stroke="${s.color}" `
-        + `stroke-width="${s.isClient ? 3 : 1.8}" stroke-linejoin="round" stroke-linecap="round"/>${dots}`;
+        + `stroke-width="${s.isClient ? 2.2 : 1.2}" stroke-linejoin="round" stroke-linecap="round"/>${dots}`;
     }).join('');
 
     const svg = `<svg class="compa-chart" width="100%" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Live ad age over time by competitor and client">`
@@ -1113,8 +1124,66 @@
         + `<span${s.isClient ? ' style="font-weight:600;"' : ''}>${esc(s.label)}</span></button>`).join('')
       + '</div>';
 
-    return '<div class="compa-chart-wrap" style="background:var(--white);border:2px solid var(--paper-dark);border-radius:8px;padding:16px 18px;">'
+    // Cap the rendered size so the SVG never upscales past its native viewBox. An
+    // uncapped width:100% blew the stroke-widths, dots and axis labels up well past
+    // sibling-chart scale. position:relative anchors the hover tooltip.
+    return '<div class="compa-chart-wrap" style="position:relative;max-width:760px;background:var(--white);'
+      + 'border:2px solid var(--paper-dark);border-radius:8px;padding:16px 18px;">'
       + svg + legend + '</div>';
+  }
+
+  /* Enhance every rendered age chart with a styled, pointer-following hover tooltip
+   * (series label + age in days + month). The SVG <title> on each dot is the
+   * accessible, zero-JS floor; this adds a dashboard-styled tooltip on top. Absent-safe
+   * and idempotent: no-ops where the DOM/createElement is missing (e.g. the test realm)
+   * and skips wraps already wired. Works for every series, the client line included. */
+  function compaWireTooltips() {
+    if (typeof document === 'undefined' || !document.querySelectorAll || !document.createElement) return;
+    const wraps = document.querySelectorAll('.compa-chart-wrap');
+    Array.prototype.forEach.call(wraps, (wrap) => {
+      if (!wrap || (wrap.getAttribute && wrap.getAttribute('data-tips') === '1')) return;
+      if (wrap.setAttribute) wrap.setAttribute('data-tips', '1');
+      let tip = wrap.querySelector ? wrap.querySelector('.compa-tooltip') : null;
+      if (!tip) {
+        tip = document.createElement('div');
+        tip.className = 'compa-tooltip';
+        tip.setAttribute('role', 'status');
+        tip.style.cssText = 'position:absolute;z-index:30;pointer-events:none;opacity:0;transition:opacity .08s ease;'
+          + 'background:var(--ink);color:var(--white);font-family:inherit;font-size:11px;line-height:1.35;'
+          + 'padding:6px 9px;border-radius:6px;box-shadow:0 3px 12px rgba(0,0,0,0.22);white-space:nowrap;'
+          + 'transform:translate(-50%,-118%);';
+        if (wrap.appendChild) wrap.appendChild(tip);
+      }
+      const dots = wrap.querySelectorAll ? wrap.querySelectorAll('.compa-dot') : [];
+      Array.prototype.forEach.call(dots, (dot) => {
+        const label = dot.getAttribute('data-label') || '';
+        const value = dot.getAttribute('data-value') || '';
+        const month = dot.getAttribute('data-month') || '';
+        const place = (e) => {
+          const rect = wrap.getBoundingClientRect ? wrap.getBoundingClientRect() : null;
+          if (rect && e && e.clientX != null) {
+            tip.style.left = (e.clientX - rect.left) + 'px';
+            tip.style.top = (e.clientY - rect.top) + 'px';
+          }
+        };
+        const show = (e) => {
+          tip.innerHTML = '<div style="font-weight:700;">' + esc(label) + '</div>'
+            + '<div style="opacity:0.82;font-weight:500;">' + esc(String(value)) + 'd live age'
+            + (month ? ' · ' + esc(month) : '') + '</div>';
+          place(e);
+          tip.style.opacity = '1';
+        };
+        const hide = () => { tip.style.opacity = '0'; };
+        if (dot.addEventListener) {
+          dot.addEventListener('mouseenter', show);
+          dot.addEventListener('mousemove', place);
+          dot.addEventListener('mouseleave', hide);
+          // Keyboard/AT parity where dots are focusable.
+          dot.addEventListener('focus', show);
+          dot.addEventListener('blur', hide);
+        }
+      });
+    });
   }
 
   /* Avg / Median toggle — the F10 segmented control (.seg). Both metrics are ALWAYS
@@ -1202,6 +1271,7 @@
       })
     );
     compaApplyFocus();
+    compaWireTooltips();
   }
 
   /* Apply the current legend focus: when a series is focused, fade every other line
@@ -1803,6 +1873,58 @@
       + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px;">' + chips + '</div></div>';
   }
 
+  /* A resolved human page_name: not null/empty, and not merely the raw page_id echoed
+   * back as a name. The noise cards render a bare numeric page_id precisely because no
+   * page_name resolved for them. */
+  function compiHasResolvedName(c) {
+    const name = c && c.page_name;
+    if (name == null) return false;
+    const s = String(name).trim();
+    if (!s) return false;
+    return c.page_id == null || s !== String(c.page_id).trim();
+  }
+  /* Any live behaviour metric present (a nameless page with real movement is still signal). */
+  function compiHasBehaviourSignal(b) {
+    if (!b || typeof b !== 'object') return false;
+    return ['creative_volume', 'avg_age_live_days', 'turnover_rate', 'new_ads_rate', 'format_diversity', 'angle_diversity']
+      .some((k) => compiNum(b[k]) != null);
+  }
+  /* Any drawable age point (the age-timeseries shape) → the page was active over time. */
+  function compiHasSeriesSignal(series) {
+    if (!Array.isArray(series)) return false;
+    return series.some((p) => p && (Number.isFinite(Number(p.avg_age_live_days)) || Number.isFinite(Number(p.median_age_live_days))));
+  }
+  /* Narrative signal that is MORE than the generic "gone dark" line. A went-dark
+   * narrative on its own is not a reason to surface a nameless page. */
+  function compiHasNarrativeSignal(n) {
+    if (!n || typeof n !== 'object') return false;
+    if (n.went_dark) return false;
+    return ['dominant_bet', 'notable_movements', 'staying_power', 'whitespace_read']
+      .some((k) => n[k] != null && String(n[k]).trim() !== '');
+  }
+
+  /* isPresentableCompetitor: the noise gate for the consolidated surface (both the
+   * cards and the age-chart series/legend filter through this ONE tunable predicate).
+   *
+   * Present a competitor when it has EITHER a resolved human page_name, OR (even
+   * nameless) some real signal to show: live-ad behaviour, effort allocation, theme
+   * movements, a drawable age series, or a narrative beyond the generic "gone dark".
+   *
+   * Drop ONLY the pure noise: a page with no resolved name that also went dark / has
+   * nothing to say. It renders today as a bare page_id card with only the generic
+   * went-dark narrative. A NAMED went-dark competitor is KEPT: a competitor that was
+   * active and went dark is a first-class signal (US-007), not noise. Tighten or widen
+   * the threshold by editing the signal checks above. */
+  function isPresentableCompetitor(c) {
+    if (!c || typeof c !== 'object') return false;
+    if (compiHasResolvedName(c)) return true;
+    return (Array.isArray(c.effort) && c.effort.length > 0)
+      || compiHasBehaviourSignal(c.behaviour)
+      || (Array.isArray(c.theme_movements) && c.theme_movements.length > 0)
+      || compiHasSeriesSignal(c.series)
+      || compiHasNarrativeSignal(c.narrative);
+  }
+
   /* One competitor's full consolidated card: header (name + archetype + confidence +
    * freshness), then narrative, effort, behaviour, and theme movements in insight-ladder
    * order (the "so what" leads, the evidence follows). */
@@ -1862,8 +1984,11 @@
    * standalone age tab's global controls). */
   function compiAgeSectionHtml() {
     const d = compiAgeData && typeof compiAgeData === 'object' ? compiAgeData : {};
+    // Filter the chart series through the same noise gate as the cards: drop nameless,
+    // no-signal (went-dark) pages so they never clutter the lines or the legend.
+    const ageComps = (Array.isArray(d.competitors) ? d.competitors : []).filter(isPresentableCompetitor);
     const chart = (typeof compaChartHtml === 'function')
-      ? compaChartHtml(d.client || [], d.competitors || [], compiAgeMetric) : '';
+      ? compaChartHtml(d.client || [], ageComps, compiAgeMetric) : '';
     if (!chart) return '';
     const seg = (key, label) =>
       '<button type="button" class="compi-age-metric-btn' + (compiAgeMetric === key ? ' active' : '')
@@ -1912,12 +2037,16 @@
         });
       })
     );
+    compaWireTooltips();
   }
 
   function compiRender(data, ageData) {
     const d = data && typeof data === 'object' ? data : {};
     if (ageData && typeof ageData === 'object') compiAgeData = ageData;
-    const competitors = Array.isArray(d.competitors) ? d.competitors : [];
+    // Drop noise competitors (nameless + went-dark / no signal) before rendering cards,
+    // the meta count, and the empty-state check. Named competitors and any nameless page
+    // that still carries a signal are kept. See isPresentableCompetitor.
+    const competitors = (Array.isArray(d.competitors) ? d.competitors : []).filter(isPresentableCompetitor);
     const winners = Array.isArray(d.winners) ? d.winners : [];
 
     const body = document.getElementById('compi-body');
@@ -2236,6 +2365,7 @@
    * these; they only add to window. */
   window.f10CompetitorIntel = {
     competitorCardHtml: compiCompetitorCardHtml,
+    isPresentableCompetitor: isPresentableCompetitor,
     narrativeHtml: compiNarrativeHtml,
     effortHtml: compiEffortHtml,
     behaviourHtml: compiBehaviourHtml,

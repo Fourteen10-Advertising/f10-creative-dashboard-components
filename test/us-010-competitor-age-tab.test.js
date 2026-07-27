@@ -158,10 +158,10 @@ async function check(name, fn) { await fn(); passed++; console.log('  ok -', nam
     const clientPath = chart.match(/<path class="compa-line" data-series="client"[^>]*>/);
     assert.ok(clientPath, 'client path present');
     assert.ok(/stroke="var\(--young-blood\)"/.test(clientPath[0]), 'client line uses the young-blood brand accent');
-    assert.ok(/stroke-width="3"/.test(clientPath[0]), 'client line is thicker than competitor lines');
+    assert.ok(/stroke-width="2.2"/.test(clientPath[0]), 'client line is thicker than competitor lines');
     // A competitor path is thinner and a different colour.
     const compPath = chart.match(/<path class="compa-line" data-series="page-P1"[^>]*>/);
-    assert.ok(compPath && /stroke-width="1.8"/.test(compPath[0]), 'competitor line is thinner');
+    assert.ok(compPath && /stroke-width="1.2"/.test(compPath[0]), 'competitor line is thinner');
     assert.ok(!/var\(--young-blood\)/.test(compPath[0]), 'competitor line does not reuse the client colour');
     // Legend marks the client chip distinctly.
     assert.ok(/\(you\)/.test(chart), 'client legend chip marked "(you)"');
