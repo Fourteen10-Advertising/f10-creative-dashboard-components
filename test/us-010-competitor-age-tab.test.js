@@ -158,13 +158,32 @@ async function check(name, fn) { await fn(); passed++; console.log('  ok -', nam
     const clientPath = chart.match(/<path class="compa-line" data-series="client"[^>]*>/);
     assert.ok(clientPath, 'client path present');
     assert.ok(/stroke="var\(--young-blood\)"/.test(clientPath[0]), 'client line uses the young-blood brand accent');
-    assert.ok(/stroke-width="2.2"/.test(clientPath[0]), 'client line is thicker than competitor lines');
+    assert.ok(/stroke-width="2"/.test(clientPath[0]), 'client line is thicker than competitor lines (dashboard scale)');
     // A competitor path is thinner and a different colour.
     const compPath = chart.match(/<path class="compa-line" data-series="page-P1"[^>]*>/);
-    assert.ok(compPath && /stroke-width="1.2"/.test(compPath[0]), 'competitor line is thinner');
+    assert.ok(compPath && /stroke-width="1.25"/.test(compPath[0]), 'competitor line is thinner (dashboard scale)');
     assert.ok(!/var\(--young-blood\)/.test(compPath[0]), 'competitor line does not reuse the client colour');
     // Legend marks the client chip distinctly.
     assert.ok(/\(you\)/.test(chart), 'client legend chip marked "(you)"');
+  });
+
+  // ── The chart renders FULL WIDTH at dashboard scale: a dashboard-sized viewBox so
+  //    the scale factor is ~1 at full render width, no max-width cap, and dashboard-
+  //    scale axis labels / dots (the intentional post-restyle values). ──
+  await check('the chart is full width at dashboard scale (viewBox, no cap, 11px axis labels)', async () => {
+    const ctx = makeCtx(async () => jsonResponse({}));
+    const s = sampleAge();
+    const chart = ctx.CA.chartHtml(s.client, s.competitors, 'avg');
+    // Dashboard-sized viewBox (W=1180 H=330), rendered at width:100%.
+    assert.ok(/viewBox="0 0 1180 330"/.test(chart), 'viewBox sized to the dashboard content width');
+    assert.ok(/class="compa-chart" width="100%"/.test(chart), 'SVG renders at full width');
+    // Full-width wrapper, no 760px cap.
+    assert.ok(/class="compa-chart-wrap"[^>]*width:100%/.test(chart), 'wrapper is full width');
+    assert.ok(!/max-width:760px/.test(chart), 'the 760px width cap is removed');
+    // Axis labels at dashboard scale (~11px), not the old upscaled 8.5px.
+    assert.ok(/font-size="11"/.test(chart) && !/font-size="8.5"/.test(chart), 'axis labels are dashboard-scale 11px');
+    // Dot radii at dashboard scale: client ~2.5, competitor ~2.
+    assert.ok(/r="2.5"/.test(chart) && /r="2"/.test(chart), 'dot radii at dashboard scale');
   });
 
   // ── All series share ONE time axis: the union of every month present, sorted,

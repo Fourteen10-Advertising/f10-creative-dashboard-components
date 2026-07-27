@@ -1071,7 +1071,7 @@
     });
     if (!axis.length || !series.length) return '';
 
-    const W = 760, H = 300, padL = 46, padR = 16, padT = 14, padB = 34;
+    const W = 1180, H = 330, padL = 54, padR = 20, padT = 16, padB = 40;
     const plotW = W - padL - padR, plotH = H - padT - padB;
     const xi = {}; axis.forEach((k, i) => { xi[k] = i; });
     const xFor = (k) => padL + (axis.length === 1 ? plotW / 2 : (xi[k] / (axis.length - 1)) * plotW);
@@ -1083,11 +1083,11 @@
     const yTicks = [0, yMax / 2, yMax];
     const grid = yTicks.map((v) =>
       `<line x1="${padL}" y1="${yFor(v).toFixed(1)}" x2="${W - padR}" y2="${yFor(v).toFixed(1)}" stroke="var(--paper-dark)" stroke-width="1"/>`
-      + `<text x="${padL - 6}" y="${(yFor(v) + 3).toFixed(1)}" text-anchor="end" font-size="8.5" fill="var(--grey)">${Math.round(v)}</text>`
+      + `<text x="${padL - 8}" y="${(yFor(v) + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="var(--grey)">${Math.round(v)}</text>`
     ).join('');
     const everyX = Math.max(1, Math.ceil(axis.length / 8));
     const xlabels = axis.map((k, i) => (i % everyX === 0 || i === axis.length - 1)
-      ? `<text x="${xFor(k).toFixed(1)}" y="${H - 12}" text-anchor="middle" font-size="8.5" fill="var(--grey)">${esc(compaMonthLabel(k))}</text>` : '').join('');
+      ? `<text x="${xFor(k).toFixed(1)}" y="${H - 14}" text-anchor="middle" font-size="11" fill="var(--grey)">${esc(compaMonthLabel(k))}</text>` : '').join('');
 
     const paths = series.map((s) => {
       let d = '', started = false;
@@ -1105,12 +1105,12 @@
           const vr = Math.round(p.value);
           const titleText = esc(s.label + ' · ' + vr + 'd live age' + (ml ? ' · ' + ml : ''));
           return `<circle class="compa-dot" cx="${xFor(p.key).toFixed(1)}" cy="${yFor(p.value).toFixed(1)}" `
-            + `r="${s.isClient ? 2.4 : 1.6}" fill="${s.color}" `
+            + `r="${s.isClient ? 2.5 : 2}" fill="${s.color}" `
             + `data-label="${esc(s.label)}" data-value="${vr}" data-month="${esc(ml)}">`
             + `<title>${titleText}</title></circle>`;
         }).join('');
       return `<path class="compa-line" data-series="${s.id}" d="${d.trim()}" fill="none" stroke="${s.color}" `
-        + `stroke-width="${s.isClient ? 2.2 : 1.2}" stroke-linejoin="round" stroke-linecap="round"/>${dots}`;
+        + `stroke-width="${s.isClient ? 2 : 1.25}" stroke-linejoin="round" stroke-linecap="round"/>${dots}`;
     }).join('');
 
     const svg = `<svg class="compa-chart" width="100%" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Live ad age over time by competitor and client">`
@@ -1124,10 +1124,11 @@
         + `<span${s.isClient ? ' style="font-weight:600;"' : ''}>${esc(s.label)}</span></button>`).join('')
       + '</div>';
 
-    // Cap the rendered size so the SVG never upscales past its native viewBox. An
-    // uncapped width:100% blew the stroke-widths, dots and axis labels up well past
-    // sibling-chart scale. position:relative anchors the hover tooltip.
-    return '<div class="compa-chart-wrap" style="position:relative;max-width:760px;background:var(--white);'
+    // Full-width like every other dashboard component. The viewBox (1180x330) is sized
+    // to the dashboard content width so at full render width the scale factor is ~1 and
+    // the stroke-widths, dots and axis labels render at dashboard scale (not upscaled).
+    // position:relative anchors the hover tooltip.
+    return '<div class="compa-chart-wrap" style="position:relative;width:100%;background:var(--white);'
       + 'border:2px solid var(--paper-dark);border-radius:8px;padding:16px 18px;">'
       + svg + legend + '</div>';
   }
@@ -1843,19 +1844,42 @@
       + '<div style="display:flex;gap:10px;flex-wrap:wrap;">' + tiles + '</div></div>';
   }
 
-  /* Theme movements: the emerged / faded / intensified / abandoned diff for the
-   * competitor's latest run_date, most-notable first, each with its share + go-live
-   * longevity evidence. */
+  /* Honest movement label. faded / abandoned imply a STRATEGIC decline, so only render
+   * them when the data actually shows one: the theme is STILL present this period at a
+   * LOWER share than a real prior share (theme_share > 0 AND prior_share > theme_share).
+   * When a theme is simply ABSENT this period (theme_share 0 / n/a) or there is no real
+   * prior share to compare against (history too thin), that is not a fade we observed -
+   * across a short capture a theme dropping out of one scrape is noise, not a retreat -
+   * so suppress the chip rather than imply a strategic retreat. emerged / intensified /
+   * stable are backed by real current data and pass through unchanged. Returns the
+   * movement key to render, or null to suppress the chip. */
+  function compiHonestMovement(m) {
+    const key = String((m && m.movement) || '').toLowerCase();
+    if (key !== 'faded' && key !== 'abandoned') return key || null;
+    const cur = compiNum(m && m.theme_share);
+    const prior = compiNum(m && m.prior_share);
+    // Genuine decline: a real current (present) share below a real, higher prior share.
+    if (cur != null && cur > 0 && prior != null && prior > cur) return 'faded';
+    return null; // absent this period / thin history → not an observed strategic fade
+  }
+
+  /* Theme movements: the emerged / faded / intensified diff for the competitor's latest
+   * run_date, most-notable first, each with its share + go-live longevity evidence.
+   * Absence-only "faded"/"abandoned" rows (a theme merely not seen this period) are
+   * dropped by compiHonestMovement so the card never implies a fade we did not observe. */
   function compiThemeMovesHtml(moves) {
-    const list = Array.isArray(moves) ? moves : [];
+    const list = (Array.isArray(moves) ? moves : [])
+      .map((m) => ({ m: m, key: compiHonestMovement(m) }))
+      .filter((x) => x.key);
     if (!list.length) return '';
     const RANK = { intensified: 0, emerged: 1, faded: 2, abandoned: 3, stable: 4 };
     const sorted = list.slice().sort((a, b) => {
-      const ra = RANK[String(a.movement).toLowerCase()], rb = RANK[String(b.movement).toLowerCase()];
+      const ra = RANK[a.key], rb = RANK[b.key];
       return (ra == null ? 9 : ra) - (rb == null ? 9 : rb);
     }).slice(0, 8);
-    const chips = sorted.map((m) => {
-      const key = String(m.movement || '').toLowerCase();
+    const chips = sorted.map((entry) => {
+      const m = entry.m;
+      const key = entry.key;
       const st = COMPI_MOVE_STYLE[key] || { color: 'var(--grey)', label: key || 'theme' };
       const age = compiNum(m.longevity_avg_age_live_days);
       const meta = [compiPct(m.theme_share) !== 'n/a' ? compiPct(m.theme_share) + ' share' : '', age == null ? '' : Math.round(age) + 'd live']
@@ -1883,46 +1907,58 @@
     if (!s) return false;
     return c.page_id == null || s !== String(c.page_id).trim();
   }
-  /* Any live behaviour metric present (a nameless page with real movement is still signal). */
-  function compiHasBehaviourSignal(b) {
-    if (!b || typeof b !== 'object') return false;
-    return ['creative_volume', 'avg_age_live_days', 'turnover_rate', 'new_ads_rate', 'format_diversity', 'angle_diversity']
-      .some((k) => compiNum(b[k]) != null);
-  }
-  /* Any drawable age point (the age-timeseries shape) → the page was active over time. */
-  function compiHasSeriesSignal(series) {
-    if (!Array.isArray(series)) return false;
-    return series.some((p) => p && (Number.isFinite(Number(p.avg_age_live_days)) || Number.isFinite(Number(p.median_age_live_days))));
-  }
-  /* Narrative signal that is MORE than the generic "gone dark" line. A went-dark
-   * narrative on its own is not a reason to surface a nameless page. */
-  function compiHasNarrativeSignal(n) {
-    if (!n || typeof n !== 'object') return false;
-    if (n.went_dark) return false;
-    return ['dominant_bet', 'notable_movements', 'staying_power', 'whitespace_read']
-      .some((k) => n[k] != null && String(n[k]).trim() !== '');
+  /* Current live creative volume for a competitor: how many ads are live THIS period.
+   * Reads the behaviour mart's latest creative_volume; falls back to the most-recent
+   * age-series point's ads_live (the age-chart payload carries series, not behaviour).
+   * Returns a number (0 when nothing is live now), never null. This is the single
+   * "is there genuine CURRENT activity" signal the noise gate turns on - a zero-valued
+   * behaviour row, a went-dark narrative, or historical-only age points all read as 0. */
+  function compiCurrentLiveVolume(c) {
+    if (!c || typeof c !== 'object') return 0;
+    const b = c.behaviour;
+    if (b && typeof b === 'object') {
+      const v = compiNum(b.creative_volume);
+      if (v != null && v > 0) return v;
+    }
+    const series = Array.isArray(c.series) ? c.series : [];
+    let bestKey = null, bestLive = 0;
+    series.forEach((p) => {
+      const key = compaMonthKey(p && p.period_month);
+      if (!key || (bestKey != null && key <= bestKey)) return;
+      const live = Number(p && p.ads_live);
+      bestKey = key;
+      bestLive = Number.isFinite(live) ? live : 0;
+    });
+    return bestKey != null ? bestLive : 0;
   }
 
   /* isPresentableCompetitor: the noise gate for the consolidated surface (both the
    * cards and the age-chart series/legend filter through this ONE tunable predicate).
    *
-   * Present a competitor when it has EITHER a resolved human page_name, OR (even
-   * nameless) some real signal to show: live-ad behaviour, effort allocation, theme
-   * movements, a drawable age series, or a narrative beyond the generic "gone dark".
+   * Present a competitor when it has EITHER a resolved human page_name, OR - even
+   * nameless - genuine CURRENT activity: live creative this period (behaviour
+   * creative_volume > 0, or live ads > 0 in the latest age-series point).
    *
-   * Drop ONLY the pure noise: a page with no resolved name that also went dark / has
-   * nothing to say. It renders today as a bare page_id card with only the generic
-   * went-dark narrative. A NAMED went-dark competitor is KEPT: a competitor that was
-   * active and went dark is a first-class signal (US-007), not noise. Tighten or widen
-   * the threshold by editing the signal checks above. */
+   * Drop the pure noise: a bare page_id with no live creative now. A zero-valued
+   * behaviour row, a went-dark narrative, faded/abandoned-only theme movements, and
+   * historical-only age points are NOT enough to surface a nameless page (that is
+   * exactly the noise the user sees). A NAMED went-dark competitor is still KEPT: a
+   * competitor that WAS active and went dark is a first-class signal (US-007), not
+   * noise - it keeps its resolved name. Tighten/widen via compiCurrentLiveVolume. */
   function isPresentableCompetitor(c) {
     if (!c || typeof c !== 'object') return false;
     if (compiHasResolvedName(c)) return true;
-    return (Array.isArray(c.effort) && c.effort.length > 0)
-      || compiHasBehaviourSignal(c.behaviour)
-      || (Array.isArray(c.theme_movements) && c.theme_movements.length > 0)
-      || compiHasSeriesSignal(c.series)
-      || compiHasNarrativeSignal(c.narrative);
+    return compiCurrentLiveVolume(c) > 0;
+  }
+
+  /* Rank presentable competitors by CURRENT activity (live volume) descending, so the
+   * most-active competitor leads and nothing empty or low-signal floats to the top.
+   * Ties fall back to a stable name/id sort. */
+  function compiActivityDesc(a, b) {
+    const va = compiCurrentLiveVolume(a), vb = compiCurrentLiveVolume(b);
+    if (vb !== va) return vb - va;
+    return String((a && (a.page_name || a.page_id)) || '')
+      .localeCompare(String((b && (b.page_name || b.page_id)) || ''));
   }
 
   /* One competitor's full consolidated card: header (name + archetype + confidence +
@@ -1986,7 +2022,8 @@
     const d = compiAgeData && typeof compiAgeData === 'object' ? compiAgeData : {};
     // Filter the chart series through the same noise gate as the cards: drop nameless,
     // no-signal (went-dark) pages so they never clutter the lines or the legend.
-    const ageComps = (Array.isArray(d.competitors) ? d.competitors : []).filter(isPresentableCompetitor);
+    const ageComps = (Array.isArray(d.competitors) ? d.competitors : [])
+      .filter(isPresentableCompetitor).sort(compiActivityDesc);
     const chart = (typeof compaChartHtml === 'function')
       ? compaChartHtml(d.client || [], ageComps, compiAgeMetric) : '';
     if (!chart) return '';
@@ -2046,7 +2083,8 @@
     // Drop noise competitors (nameless + went-dark / no signal) before rendering cards,
     // the meta count, and the empty-state check. Named competitors and any nameless page
     // that still carries a signal are kept. See isPresentableCompetitor.
-    const competitors = (Array.isArray(d.competitors) ? d.competitors : []).filter(isPresentableCompetitor);
+    const competitors = (Array.isArray(d.competitors) ? d.competitors : [])
+      .filter(isPresentableCompetitor).sort(compiActivityDesc);
     const winners = Array.isArray(d.winners) ? d.winners : [];
 
     const body = document.getElementById('compi-body');
