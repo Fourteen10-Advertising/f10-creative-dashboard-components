@@ -163,14 +163,19 @@ async function check(name, fn) { await fn(); passed++; console.log('  ok -', nam
     assert.ok(/how they’re moving/i.test(html), 'behaviour section titled');
   });
 
-  await check('theme movements render emerged/faded/intensified/abandoned labels', async () => {
+  await check('theme movements render honest emerged/intensified/genuine-faded labels only', async () => {
     const { sandbox } = bootSandbox(true);
     const html = sandbox.window.f10CompetitorIntel.themeMovesHtml([
-      { theme_name: 'Price comparison', movement: 'intensified', theme_share: 0.4, longevity_avg_age_live_days: 60 },
-      { theme_name: 'Seasonal', movement: 'abandoned', theme_share: 0.0 },
+      { theme_name: 'Price comparison', movement: 'intensified', theme_share: 0.4, prior_share: 0.2, longevity_avg_age_live_days: 60 },
+      // Genuine decline: still present this period at a LOWER share than a real prior.
+      { theme_name: 'Bundles', movement: 'faded', theme_share: 0.15, prior_share: 0.4 },
+      // Absence-only: theme not seen this period (share 0) - NOT an observed strategic
+      // fade, so honest rendering SUPPRESSES it rather than imply a retreat we did not see.
+      { theme_name: 'Seasonal', movement: 'abandoned', theme_share: 0.0, prior_share: 0.3 },
     ]);
-    assert.ok(html.indexOf('Price comparison') !== -1 && /intensified/i.test(html), 'intensified theme');
-    assert.ok(/abandoned/i.test(html), 'abandoned theme');
+    assert.ok(html.indexOf('Price comparison') !== -1 && /intensified/i.test(html), 'intensified theme rendered');
+    assert.ok(html.indexOf('Bundles') !== -1 && /faded/i.test(html), 'genuine (present + declining) fade rendered');
+    assert.ok(!/abandoned/i.test(html) && html.indexOf('Seasonal') === -1, 'absence-only abandoned theme suppressed');
   });
 
   await check('archetype badge renders the data-owned label verbatim', async () => {

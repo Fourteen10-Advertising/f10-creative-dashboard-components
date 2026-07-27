@@ -1,16 +1,19 @@
 /**
  * competitor-intel-noise-gate — isPresentableCompetitor.
  *
- * Pins the noise gate for the consolidated Competitor Intelligence surface:
- *   - A NAMED competitor with prior activity is presentable (shows a card + a
- *     chart series), including a named competitor that went dark (US-007: a
- *     competitor that WAS active and went dark is a first-class signal).
- *   - A NAMELESS, went-dark / no-signal competitor is NOT presentable (dropped
- *     from both the cards and the age-chart series/legend) — it is the raw
- *     page_id "went dark" noise card with nothing to say.
- *   - A nameless page that still carries a signal (behaviour / effort / theme
- *     movements / drawable age series) IS kept.
- *   - The filter also runs inside compiRender: a nameless went-dark competitor
+ * Pins the TIGHTENED noise gate for the consolidated Competitor Intelligence
+ * surface. A nameless page is presentable ONLY on genuine CURRENT activity -
+ * live creative this period - not on stale/leftover rows:
+ *   - A NAMED competitor is presentable (shows a card + a chart series),
+ *     including a named competitor that went dark (US-007: a competitor that WAS
+ *     active and went dark is a first-class signal - it keeps its resolved name).
+ *   - A NAMELESS page is kept ONLY with live creative NOW: behaviour
+ *     creative_volume > 0, or live ads > 0 in the latest age-series point.
+ *   - A NAMELESS page is DROPPED when its only "signal" is stale: a zero-valued
+ *     behaviour row, a went-dark narrative, faded/abandoned-only theme movements,
+ *     or historical-only age points (no live ads this period). That is exactly
+ *     the raw page_id noise the user sees.
+ *   - The filter also runs inside compiRender: a nameless zero-live competitor
  *     never renders a card, and an all-noise set degrades to the empty state.
  *
  * Dependency-free: loads the real f10-utils.js + f10-competitors.js into a vm
@@ -108,19 +111,51 @@ async function check(name, fn) { await fn(); passed++; console.log('  ok -', nam
     }), false, 'echoed page_id is not a name');
   });
 
-  // ── Nameless but with a drawable age series IS kept (it was active over time). ──
-  await check('a nameless competitor with a drawable age series is kept', async () => {
+  // ── Nameless WITH live creative this period (behaviour) IS kept. ──
+  await check('a nameless competitor with live creative this period is kept', async () => {
     assert.strictEqual(isPresentable({
-      page_id: '999',
-      series: [{ period_month: '2026-06-01', avg_age_live_days: 40 }],
-    }), true, 'nameless + series shows');
+      page_id: '999', behaviour: { creative_volume: 12 },
+    }), true, 'nameless + live volume shows');
   });
 
-  // ── Nameless but with theme movements / effort is kept. ──
-  await check('a nameless competitor with theme movements is kept', async () => {
+  // ── Nameless with a CURRENT age-series point (live ads > 0 now) IS kept. ──
+  await check('a nameless competitor with live ads in the latest age point is kept', async () => {
     assert.strictEqual(isPresentable({
-      page_id: '999', theme_movements: [{ theme_name: 'Price comparison', movement: 'intensified' }],
-    }), true, 'nameless + theme movement shows');
+      page_id: '999',
+      series: [
+        { period_month: '2026-06-01', ads_live: 5, avg_age_live_days: 40 },
+        { period_month: '2026-07-01', ads_live: 7, avg_age_live_days: 44 },
+      ],
+    }), true, 'nameless + current live ads shows');
+  });
+
+  // ── Nameless with HISTORICAL-ONLY age points (no live ads now) is HIDDEN. ──
+  await check('a nameless competitor with historical-only age points is hidden', async () => {
+    assert.strictEqual(isPresentable({
+      page_id: '999',
+      series: [{ period_month: '2026-06-01', ads_live: 0, avg_age_live_days: 40 }],
+    }), false, 'nameless + no current live ads is dropped');
+  });
+
+  // ── Nameless with ONLY theme movements (no live creative) is HIDDEN. ──
+  await check('a nameless competitor with only theme movements is hidden', async () => {
+    assert.strictEqual(isPresentable({
+      page_id: '999', theme_movements: [{ theme_name: 'Price comparison', movement: 'faded' }],
+    }), false, 'nameless + theme-movements-only is dropped');
+  });
+
+  // ── The exact FastCover noise shape: a nameless, went-dark page with a zero-valued
+  //    behaviour row AND leftover faded theme movements is NOW hidden (real data). ──
+  await check('a nameless zero-live went-dark page with leftover behaviour/theme rows is hidden', async () => {
+    assert.strictEqual(isPresentable({
+      page_id: '101529575528208',
+      behaviour: { creative_volume: 0, avg_age_live_days: 0, turnover_rate: 0 },
+      theme_movements: [
+        { theme_name: 'Travel cover', movement: 'faded', theme_share: 0, prior_share: 0.3 },
+        { theme_name: 'Price', movement: 'abandoned', theme_share: 0, prior_share: 0.2 },
+      ],
+      narrative: { went_dark: true, dominant_bet: 'Watch for a relaunch.' },
+    }), false, 'nameless zero-live leftover-rows page is dropped');
   });
 
   // ── Non-object / empty input is not presentable (absent-safe). ──

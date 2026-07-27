@@ -388,3 +388,21 @@ Documentation moves with code in this repo:
 - **Local (fast catch):** after cloning, run once — `git config core.hooksPath
   .githooks` (or `sh .githooks/setup.sh`) — to enable the pre-commit hook that
   checks the same thing before you commit.
+
+## Competitor Intelligence: noise filter, honest theme movements, full-width chart
+
+Three refinements to the consolidated Competitor Intelligence tab:
+
+- Noise filter: a competitor with no resolved page name is shown only when it has
+  real current activity (live creative this period). Nameless pages that have gone
+  dark, with only leftover behaviour or theme rows, are hidden rather than rendered
+  as bare page-id cards, and competitors are ordered by current activity so nothing
+  empty floats to the top.
+- Honest theme movements: a theme is labelled faded or abandoned only when it has a
+  real prior share and a real, lower current share (prior greater than current
+  greater than zero). A theme simply absent from the current capture, or a
+  competitor with too little history to compare, is no longer labelled as a decline
+  it was never observed to make.
+- Ad-age chart: rendered full width at the dashboard scale (wider viewBox, thin
+  lines, standard axis label size) instead of a small capped box, with hover
+  tooltips showing the competitor name and value.
