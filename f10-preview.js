@@ -65,7 +65,9 @@
     });
     card.addEventListener('mouseleave', function () {
       overCard = false;
-      hide();
+      // Grace period, not an immediate hide: if a card swap briefly flickers the
+      // pointer off the box, the following mouseenter cancels this before it fires.
+      scheduleHide(120);
     });
     card.addEventListener('click', onCardClick);
     document.body.appendChild(card);
