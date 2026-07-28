@@ -298,22 +298,32 @@ async function resolveMedia(body, credentials, cors) {
         SELECT ad_id, ARRAY_AGG(asset_id ORDER BY recency_ms DESC, asset_id)[OFFSET(0)] AS pref_asset_id
         FROM feed_recency GROUP BY ad_id
       )
-      SELECT l.ad_id, m.asset_type, m.gcs_uri, m.fetch_status
-      FROM \`mcc-poc-477801.all_clients.meta_creative_links\` l
-      LEFT JOIN \`mcc-poc-477801.all_clients.creative_manifest\` m
-        ON m.asset_id = COALESCE(l.video_id, l.image_hash) AND m.platform = 'meta'
-      LEFT JOIN asset_pref h ON h.ad_id = l.ad_id
-      LEFT JOIN asset_delivery d ON d.ad_id = l.ad_id
-      WHERE l.ad_id IN UNNEST(@adIds)
-      QUALIFY ROW_NUMBER() OVER (
-        PARTITION BY l.ad_id
-        ORDER BY
-          IF(COALESCE(l.video_id, l.image_hash) = d.top_delivered_asset_id, 0, 1),
-          IF(COALESCE(l.video_id, l.image_hash) = h.pref_asset_id, 0, 1),
-          IF(m.gcs_uri IS NOT NULL, 0, 1),
-          l.created_time DESC,
-          COALESCE(l.video_id, l.image_hash)
-      ) = 1`;
+      -- Return EVERY stored asset per ad (carousel cards), not just the top one,
+      -- deduped to one row per (ad, asset). Card 0 stays the same representative
+      -- asset the single-preview always picked (top-delivered -> preferred ->
+      -- stored -> newest), so single-asset ads are unchanged; ads with more than
+      -- one card drive the swipeable carousel in f10-preview.js.
+      SELECT ad_id, asset_type, gcs_uri, fetch_status
+      FROM (
+        SELECT l.ad_id, m.asset_type, m.gcs_uri, m.fetch_status,
+               COALESCE(l.video_id, l.image_hash) AS asset_key,
+               IF(COALESCE(l.video_id, l.image_hash) = d.top_delivered_asset_id, 0, 1) AS r_top,
+               IF(COALESCE(l.video_id, l.image_hash) = h.pref_asset_id, 0, 1) AS r_pref,
+               IF(m.gcs_uri IS NOT NULL, 0, 1) AS r_uri,
+               l.created_time AS created_time
+        FROM \`mcc-poc-477801.all_clients.meta_creative_links\` l
+        LEFT JOIN \`mcc-poc-477801.all_clients.creative_manifest\` m
+          ON m.asset_id = COALESCE(l.video_id, l.image_hash) AND m.platform = 'meta'
+        LEFT JOIN asset_pref h ON h.ad_id = l.ad_id
+        LEFT JOIN asset_delivery d ON d.ad_id = l.ad_id
+        WHERE l.ad_id IN UNNEST(@adIds)
+        -- one row per (ad, asset): prefer the stored/fetched copy of each card
+        QUALIFY ROW_NUMBER() OVER (
+          PARTITION BY l.ad_id, COALESCE(l.video_id, l.image_hash)
+          ORDER BY IF(m.gcs_uri IS NOT NULL, 0, 1), l.created_time DESC
+        ) = 1
+      )
+      ORDER BY ad_id, r_top, r_pref, r_uri, created_time DESC, asset_key`;
 
     const [rows] = await bq.query({
       query: sql,
@@ -327,28 +337,40 @@ async function resolveMedia(body, credentials, cors) {
 
     const storage = new Storage({ projectId: 'mcc-poc-477801', credentials });
     const expires = Date.now() + 15 * 60 * 1000; // 15 minutes
-    const out = {};
 
+    // Group rows per ad in the query's card order (card 0 = representative pick).
+    // Each ad becomes a list of signable cards; carousels keep every fetched frame,
+    // single-asset ads yield a one-card list. The response stays backward
+    // compatible — `type`/`url` mirror card 0 — and adds `cards` for the carousel.
+    const byAd = new Map();
+    for (const r of rows) {
+      const list = byAd.get(r.ad_id) || [];
+      list.push(r);
+      byAd.set(r.ad_id, list);
+    }
+
+    const out = {};
     await Promise.all(
-      rows.map(async (r) => {
-        const adId = r.ad_id;
-        const type = r.asset_type || null;
-        if (r.fetch_status !== 'fetched' || !r.gcs_uri) {
-          out[adId] = { type, url: null };
-          return;
-        }
-        try {
-          const url = await signGcsUri(storage, r.gcs_uri, expires);
-          if (!url) {
-            out[adId] = { type, url: null };
-            return;
-          }
-          const ext = (r.gcs_uri.split('.').pop() || '').toLowerCase();
-          out[adId] = { type: type || (ext === 'mp4' || ext === 'mov' ? 'video' : 'image'), url };
-        } catch (e) {
-          console.error('Signed URL error for', r.gcs_uri, e.message);
-          out[adId] = { type, url: null };
-        }
+      Array.from(byAd.entries()).map(async ([adId, list]) => {
+        const fallbackType = (list[0] && list[0].asset_type) || null;
+        const cards = []; // index-aligned to `list` so query order survives signing
+        await Promise.all(
+          list.map(async (r, i) => {
+            if (r.fetch_status !== 'fetched' || !r.gcs_uri) return;
+            try {
+              const url = await signGcsUri(storage, r.gcs_uri, expires);
+              if (!url) return;
+              const ext = (r.gcs_uri.split('.').pop() || '').toLowerCase();
+              const type = r.asset_type || (ext === 'mp4' || ext === 'mov' ? 'video' : 'image');
+              cards[i] = { type, url };
+            } catch (e) {
+              console.error('Signed URL error for', r.gcs_uri, e.message);
+            }
+          })
+        );
+        const ordered = cards.filter(Boolean); // drop unfetched/unsigned gaps, keep order
+        const primary = ordered[0] || { type: fallbackType, url: null };
+        out[adId] = { type: primary.type, url: primary.url, cards: ordered };
       })
     );
 

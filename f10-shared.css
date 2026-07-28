@@ -129,6 +129,20 @@ tbody tr:hover { background: rgba(75,0,15,0.03); }
 .f10-preview-spinner { width: 26px; height: 26px; margin: 26px; border: 3px solid var(--paper-dark); border-top-color: var(--young-blood); border-radius: 50%; animation: f10-preview-spin 0.7s linear infinite; }
 @keyframes f10-preview-spin { to { transform: rotate(360deg); } }
 
+/* Swipeable carousel: a multi-card ad pins the card and turns on pointer events
+ * so the arrows/dots are clickable (single-card previews stay mouse-transparent). */
+.f10-preview-card.is-carousel { pointer-events: auto; }
+.f10-carousel { position: relative; }
+.f10-carousel-frame { display: flex; align-items: center; justify-content: center; min-height: 60px; }
+.f10-carousel-nav { position: absolute; top: 50%; transform: translateY(-50%); z-index: 2; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; font-size: 20px; line-height: 1; font-family: inherit; color: var(--young-blood); background: color-mix(in srgb, var(--white) 82%, transparent); border: 1px solid var(--young-blood); border-radius: 50%; cursor: pointer; padding: 0; transition: background 0.15s, color 0.15s; }
+.f10-carousel-nav:hover { background: var(--young-blood); color: var(--on-brand); }
+.f10-carousel-prev { left: 4px; }
+.f10-carousel-next { right: 4px; }
+.f10-carousel-dots { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 6px; }
+.f10-carousel-dot { width: 7px; height: 7px; padding: 0; border-radius: 50%; border: 1px solid var(--young-blood); background: transparent; cursor: pointer; }
+.f10-carousel-dot.is-active { background: var(--young-blood); }
+.f10-carousel-count { margin-left: 6px; font-size: 9.5px; letter-spacing: 0.06em; color: var(--grey); }
+
 /* Creative-metrics panel inside the hover preview */
 .f10-preview-metrics { margin-top: 6px; padding: 8px 10px 4px; border-top: 1px solid var(--paper-dark); min-width: 200px; }
 .f10-pm-row { display: flex; justify-content: space-between; gap: 16px; line-height: 1.75; }
