@@ -99,8 +99,11 @@ unchanged.
 When `cards` has more than one entry the hover box becomes a **swipeable carousel**:
 it pins in place (so it stops following the cursor), turns on pointer events, and
 shows prev/next arrows plus one dot per card and an N-of-M counter — the client can
-step through every frame without leaving the dashboard. Single-card ads keep the
-original cursor-following, click-through card. Regression coverage lives in
+step through every frame without leaving the dashboard. The carousel frame is a
+fixed-size box (`object-fit: contain`) so a not-yet-loaded next card can't collapse
+the pinned box out from under the cursor mid-swipe (which would otherwise fire a
+`mouseleave` and close the preview). Single-card ads keep the original
+cursor-following, click-through card. Regression coverage lives in
 `test/carousel-preview.test.js` (backend card ordering + fallback, and the
 `f10PreviewCards` / `f10CarouselHtml` builders).
 
