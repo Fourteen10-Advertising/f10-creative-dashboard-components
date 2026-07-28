@@ -13,7 +13,7 @@ A dashboard is now just a config block plus script tags: the markup, styling, an
 | `f10-weekly.js` | Weekly engine: fetchWindows, renderSummary/Board/Map, tab system, group filters, wireControls, initWeekly |
 | `f10-monthly.js` | Monthly engine: loadPowerLaw/Production/Decay/Age + the `loadMonthlyTab()` dispatcher. All SQL is shared and config-driven |
 | `f10-layout.js` | `renderLayout()` — builds the sidebar, controls bar, and all seven tab panels into `<div id="app"></div>`. Production benchmark copy is derived from the threshold constants |
-| `f10-preview.js` | Inline creative hover previews for `.preview-link` targets; exposes `f10MediaMarkup({type,url}, opts)` — the shared `<img>`/`<video>` builder reused by the competitor tab |
+| `f10-preview.js` | Inline creative hover previews for `.preview-link` targets; renders a swipeable carousel when an ad has multiple cards. Exposes `f10MediaMarkup({type,url}, opts)` — the shared `<img>`/`<video>` builder reused by the competitor tab — plus `f10PreviewCards(media)` and `f10CarouselHtml(cards, idx)` |
 | `f10-competitors.js` | Competitor Ad Library tab (probe-driven: appears automatically when the client has competitor rows in `all_clients_adlib`): groups a client's tracked competitor Meta ads by competitor in the F10 card layout, with Status / Timeframe / Competitor filters, per-competitor pagination (20/page), and a metadata + on-demand creatives split that fetches only the visible page's signed media. Reuses `f10MediaMarkup` from `f10-preview.js` |
 
 ## How to use in a dashboard
@@ -84,13 +84,25 @@ when a file is missing. The function signs a short-lived URL per asset, so the
 dashboard's service account needs `roles/storage.objectViewer` on
 `gs://f10-creative-assets`.
 
-When an ad has more than one asset (dynamic creative, or a rebrand mid-flight),
-the `media` action picks one representative asset the same way the creative audit
-does (`audit.py` / `sql/creative_band_mining.sql`): the asset delivering the most
+When an ad has more than one asset (a carousel, dynamic creative, or a rebrand
+mid-flight), the `media` action returns **every** stored asset for the ad as an
+ordered `cards` array — `{ [ad_id]: { type, url, cards: [{type,url}, …] } }`. Card 0
+is the representative asset picked the same way the creative audit does
+(`audit.py` / `sql/creative_band_mining.sql`): the asset delivering the most
 impressions (dominant in the per-asset `image_asset_insights` / `video_asset_insights`
 feeds) wins first, then the most recently created asset, then one already stored in
 the bucket, then newest by created time. Ads with no per-asset delivery data fall
-back to recency, so previews degrade gracefully as that feed's history accrues.
+back to recency, so previews degrade gracefully as that feed's history accrues. The
+top-level `type`/`url` mirror card 0, so any older caller reading a single asset is
+unchanged.
+
+When `cards` has more than one entry the hover box becomes a **swipeable carousel**:
+it pins in place (so it stops following the cursor), turns on pointer events, and
+shows prev/next arrows plus one dot per card and an N-of-M counter — the client can
+step through every frame without leaving the dashboard. Single-card ads keep the
+original cursor-following, click-through card. Regression coverage lives in
+`test/carousel-preview.test.js` (backend card ordering + fallback, and the
+`f10PreviewCards` / `f10CarouselHtml` builders).
 
 `renderLayout()` generates all markup (including the `#ctrl-groups` / `#weekly-controls` containers), so dashboards no longer hand-maintain the HTML or the monthly loaders.
 

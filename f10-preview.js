@@ -11,22 +11,63 @@
  * video that hasn't been fetched yet) the card shows a small "Opens on Facebook"
  * hint and the existing click-through link still works.
  *
+ * Carousels: the media response carries a `cards` array of every stored frame
+ * (card 0 is the same representative asset the single preview always used). When
+ * an ad has more than one card the hover box becomes a swipeable carousel — it
+ * pins in place, turns on pointer events, and shows prev/next arrows plus a dot
+ * per card. Single-card ads keep the original cursor-following, click-through
+ * card untouched.
+ *
  * Wiring: any `<a class="preview-link" data-ad-id="...">` becomes a hover target.
  * The handler is delegated off #app once (initPreview), so it survives the
  * innerHTML re-renders that tab switches, pagination, and sorting perform.
  */
 (function () {
-  var cache = new Map(); // ad_id -> {type, url} (resolved) | Promise (in-flight)
+  var cache = new Map(); // ad_id -> {type, url, cards} (resolved) | Promise (in-flight)
   var card = null;
   var currentAdId = null; // ad whose preview is showing / loading
   var lastX = 0,
     lastY = 0;
+  // Carousel state. A multi-card ad pins the card in place and turns on pointer
+  // events so the arrows/dots are clickable; single-card previews keep the old
+  // cursor-following, click-through-transparent behaviour.
+  var carousel = null; // { cards: [{type,url}], idx } while a carousel is showing
+  var pinned = false; // true = stop following the cursor (carousel is interactive)
+  var overCard = false; // pointer is currently over the (interactive) card
+  var hideTimer = null; // deferred hide, so the gap between link and card is forgiving
+
+  function clearHideTimer() {
+    if (hideTimer) {
+      clearTimeout(hideTimer);
+      hideTimer = null;
+    }
+  }
+
+  function scheduleHide(delay) {
+    clearHideTimer();
+    hideTimer = setTimeout(function () {
+      hideTimer = null;
+      if (!overCard) hide();
+    }, delay);
+  }
 
   function ensureCard() {
     if (card) return card;
     card = document.createElement('div');
     card.className = 'f10-preview-card';
     card.style.display = 'none';
+    // Keep an interactive carousel open while the pointer is over it, and drive
+    // the arrows/dots. These only ever fire when the card has pointer-events
+    // (the is-carousel class); single previews stay transparent to the mouse.
+    card.addEventListener('mouseenter', function () {
+      overCard = true;
+      clearHideTimer();
+    });
+    card.addEventListener('mouseleave', function () {
+      overCard = false;
+      hide();
+    });
+    card.addEventListener('click', onCardClick);
     document.body.appendChild(card);
     return card;
   }
@@ -107,8 +148,86 @@
   }
   window.f10MediaMarkup = mediaMarkup;
 
+  // Normalise a resolved media object into its list of cards. Old responses
+  // ({type,url}) and single-asset ads collapse to a one-card list; carousels
+  // carry the full `cards` array. Cards without a url are dropped.
+  function cardsOf(m) {
+    m = m || {};
+    var list = Array.isArray(m.cards) && m.cards.length ? m.cards : (m.url ? [m] : []);
+    return list.filter(function (c) { return c && c.url; });
+  }
+  window.f10PreviewCards = cardsOf;
+
+  // Build the swipeable-carousel markup for a multi-card ad: one visible frame,
+  // prev/next arrows, and a dot per card with a live counter. Exposed for tests.
+  function carouselHtml(cards, idx) {
+    var frame = '<div class="f10-carousel-frame">' +
+      mediaMarkup(cards[idx], { muted: true, loop: true, autoplay: true }) + '</div>';
+    var dots = '';
+    for (var i = 0; i < cards.length; i++) {
+      dots += '<button type="button" class="f10-carousel-dot' +
+        (i === idx ? ' is-active' : '') + '" data-i="' + i + '" aria-label="Card ' +
+        (i + 1) + '"></button>';
+    }
+    return '<div class="f10-carousel">' +
+      '<button type="button" class="f10-carousel-nav f10-carousel-prev" aria-label="Previous card">&#8249;</button>' +
+      frame +
+      '<button type="button" class="f10-carousel-nav f10-carousel-next" aria-label="Next card">&#8250;</button>' +
+      '<div class="f10-carousel-dots">' + dots +
+      '<span class="f10-carousel-count">' + (idx + 1) + '/' + cards.length + '</span></div>' +
+      '</div>';
+  }
+  window.f10CarouselHtml = carouselHtml;
+
+  // Swap just the visible frame + dot/counter state when the user navigates,
+  // so only the active card's video plays.
+  function renderFrame() {
+    if (!carousel || !card) return;
+    var frame = card.querySelector('.f10-carousel-frame');
+    if (frame) {
+      frame.innerHTML = mediaMarkup(carousel.cards[carousel.idx],
+        { muted: true, loop: true, autoplay: true });
+    }
+    var dots = card.querySelectorAll('.f10-carousel-dot');
+    for (var i = 0; i < dots.length; i++) {
+      dots[i].classList.toggle('is-active', i === carousel.idx);
+    }
+    var count = card.querySelector('.f10-carousel-count');
+    if (count) count.textContent = (carousel.idx + 1) + '/' + carousel.cards.length;
+  }
+
+  function onCardClick(e) {
+    if (!carousel) return;
+    var t = e.target;
+    var n = cardsOf({ cards: carousel.cards }).length; // = carousel.cards.length
+    if (t.closest('.f10-carousel-next')) {
+      carousel.idx = (carousel.idx + 1) % n;
+    } else if (t.closest('.f10-carousel-prev')) {
+      carousel.idx = (carousel.idx - 1 + n) % n;
+    } else {
+      var dot = t.closest('.f10-carousel-dot');
+      if (!dot) return;
+      carousel.idx = parseInt(dot.getAttribute('data-i'), 10) || 0;
+    }
+    renderFrame();
+  }
+
   function showMedia(m, adId) {
-    var media = mediaMarkup(m, { muted: true, loop: true, autoplay: true });
+    var cards = cardsOf(m);
+    if (cards.length > 1) {
+      // Interactive carousel: pin it next to the cursor and let the mouse in.
+      carousel = { cards: cards, idx: 0 };
+      pinned = true;
+      var c = ensureCard();
+      c.classList.add('is-carousel');
+      show(carouselHtml(cards, 0) + metricsHtml(adId));
+      return;
+    }
+    // Single card (or legacy shape): follow the cursor, transparent to the mouse.
+    carousel = null;
+    pinned = false;
+    if (card) card.classList.remove('is-carousel');
+    var media = mediaMarkup(cards[0] || m, { muted: true, loop: true, autoplay: true });
     show(media + metricsHtml(adId));
     // The media box may resize once it loads; reposition so it stays on-screen.
     var el = card.querySelector('img, video');
@@ -122,8 +241,13 @@
   }
 
   function hide() {
+    clearHideTimer();
     currentAdId = null;
+    carousel = null;
+    pinned = false;
+    overCard = false;
     if (card) {
+      card.classList.remove('is-carousel');
       card.style.display = 'none';
       card.innerHTML = ''; // stop any playing video
     }
@@ -164,13 +288,19 @@
     var adId = el.getAttribute('data-ad-id');
     if (!adId) return;
     var platform = el.getAttribute('data-platform') || 'meta';
+    // Reset any pinned carousel from the previous link before loading this one.
+    clearHideTimer();
+    carousel = null;
+    pinned = false;
+    overCard = false;
+    if (card) card.classList.remove('is-carousel');
     lastX = e.clientX;
     lastY = e.clientY;
     currentAdId = adId;
     showLoading();
     resolve(adId, platform).then(function (m) {
       if (currentAdId !== adId) return; // pointer already moved on
-      if (m && m.url) showMedia(m, adId);
+      if (m && (m.url || (m.cards && m.cards.length))) showMedia(m, adId);
       else showFallback(adId, platform);
     });
   }
@@ -180,12 +310,19 @@
     if (!el) return;
     var to = e.relatedTarget;
     if (to && el.contains(to)) return; // still within the link
-    hide();
+    if (to && card && card.contains(to)) return; // moving onto the interactive card
+    // For a pinned carousel, defer the hide so the small gap between the link and
+    // the card doesn't dismiss it before the pointer arrives; the card's
+    // mouseenter cancels the timer. Single previews hide immediately as before.
+    if (pinned) scheduleHide(160);
+    else hide();
   }
 
   function onMove(e) {
     lastX = e.clientX;
     lastY = e.clientY;
+    // A pinned carousel stays put so its arrows/dots are clickable.
+    if (pinned || overCard) return;
     if (currentAdId && card && card.style.display !== 'none') position();
   }
 
