@@ -311,7 +311,8 @@ async function loadPowerLaw(){
  * Attention metrics beyond CPA: hold rate (15s ÷ impr), completion (100% ÷ impr),
  * the 25→100% retention curve, plus CTR and outbound CTR. Per-ad rates feed the
  * table and the hover preview; the chart shows the impression-weighted average
- * curve across all video ads in the last 90 days. */
+ * curve across all video ads in the last 90 days. Static-image ads (no
+ * video plays) are excluded, since every attention metric is zero for them. */
 async function loadCreativeEffectiveness(){
   const sql = `
     SELECT * FROM (
@@ -323,7 +324,7 @@ async function loadCreativeEffectiveness(){
       FROM \`${PROJECT}.${DATASET}.${TABLE}\`
       WHERE date_start >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)${scopeWhere()}
       GROUP BY 1
-    ) WHERE impressions > 0 ORDER BY spend DESC`;
+    ) WHERE impressions > 0 AND video_plays > 0 ORDER BY spend DESC`;
   try {
     const data = await runQuery(sql);
     let tImpr=0,t15=0,t25=0,t50=0,t75=0,t100=0;
