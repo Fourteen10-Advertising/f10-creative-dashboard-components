@@ -416,7 +416,7 @@
         FROM ${ttTable()}
         WHERE date_start >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
         GROUP BY 1
-      ) WHERE impressions > 0 ORDER BY spend DESC`;
+      ) WHERE impressions > 0 AND video_play_actions > 0 ORDER BY spend DESC`;
     try {
       const data = await runQuery(sql);
       let tImpr = 0, t2 = 0, t6 = 0, t25 = 0, t50 = 0, t75 = 0, t100 = 0;
