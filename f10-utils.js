@@ -248,10 +248,19 @@ function creativeRates(a, profile){
 
 /* Per-ad creative metrics registry. Table renderers populate this keyed by
  * ad_id so the hover preview can show metrics next to the creative. An optional
- * profile selects the platform column mapping (defaults to Meta). */
+ * profile selects the platform column mapping (defaults to Meta). An optional
+ * score payload (built by creativeScoreHover, US-003) rides along so the hover
+ * can show the Creative Score breakdown from the SAME numbers the table used,
+ * with no second computation. Callers with no score (e.g. the movement board)
+ * omit it and the entry stays metrics-only, exactly as before. */
 const F10_AD_METRICS = {};
 if (typeof window !== 'undefined') window.F10_AD_METRICS = F10_AD_METRICS; /* expose: const is not auto-attached to window */
-function registerAdMetrics(adId, agg, profile){ if(adId != null) F10_AD_METRICS[adId] = creativeRates(agg, profile); }
+function registerAdMetrics(adId, agg, profile, score){
+  if(adId == null) return;
+  const m = creativeRates(agg, profile);
+  if(score != null) m.score = score;
+  F10_AD_METRICS[adId] = m;
+}
 
 /* Inline SVG sparkline for a 25/50/75/100 video-retention curve. Values are %
  * of impressions; scaled to the local max so the shape reads even when absolute
@@ -870,3 +879,33 @@ function creativeScoreBadge(score){
   return `<span class="badge ${creativeScoreBand(v).cls}">${v}</span>`;
 }
 if (typeof window !== 'undefined') window.creativeScoreBadge = creativeScoreBadge;
+
+/* Package the per-ad Creative Score for the hover breakdown (US-003). The
+ * headline VALUE is the score BigQuery already produced (creative_score),
+ * rounded and rendered verbatim, so the hover headline always equals the table
+ * badge for the same ad -- never a second, divergent computation. The four
+ * component sub-scores (efficiency, creative quality, durability, and the
+ * confidence multiplier applied) come from creativeScoreParts, the JS mirror of
+ * the same SQL math, computed ONCE here at registration from the inputs the
+ * query used, so the breakdown reconciles to the headline. `vals` is the same
+ * shape creativeScoreParts takes: { spend, metric, hook, hold, ctr, completion,
+ * hasVideo, activeDays }. hasVideo:false and a missing activeDays are surfaced
+ * so the hover can state the neutral 0.5 contribution rather than hide it. */
+function creativeScoreHover(sqlScore, vals){
+  vals = vals || {};
+  const parts = creativeScoreParts(vals);
+  const raw = bqStr(sqlScore);
+  const n = (raw == null || raw === '') ? NaN : Number(raw);
+  const value = Number.isFinite(n) ? Math.round(n) : null;
+  return {
+    value:      value,
+    band:       value == null ? null : creativeScoreBand(value),
+    efficiency: parts.efficiency,
+    quality:    parts.quality,
+    durability: parts.durability,
+    confidence: parts.confidence,
+    hasVideo:   (vals.hasVideo === undefined) ? true : !!vals.hasVideo,
+    activeKnown: vals.activeDays != null,
+  };
+}
+if (typeof window !== 'undefined') window.creativeScoreHover = creativeScoreHover;
