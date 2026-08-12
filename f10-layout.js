@@ -187,7 +187,7 @@ function ttPanelsMarkup(ttTh){
         <div class="table-scroll">
           <div id="tt-scatter-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="tt-scatter-table" style="display:none;">
-            <thead><tr><th>Ad</th><th>Campaign</th><th>Ad Group</th><th>Launch Date</th><th>Lifetime Spend</th><th>Lifetime ${targetMetricDef().label}</th><th>Conversions</th><th class="num">Hook %</th><th class="num">Hold %</th><th class="num">Compl. %</th><th>Preview</th><th>Classification</th></tr></thead>
+            <thead><tr><th>Ad</th><th>Campaign</th><th>Ad Group</th><th>Launch Date</th><th>Lifetime Spend</th><th>Lifetime ${targetMetricDef().label}</th><th>Conversions</th><th class="num">Hook %</th><th class="num">Hold %</th><th class="num">Compl. %</th><th>Preview</th><th>Classification</th><th>Creative Score</th></tr></thead>
             <tbody id="tt-scatter-table-body"></tbody>
           </table>
         </div>
@@ -209,7 +209,7 @@ function ttPanelsMarkup(ttTh){
         <div class="table-scroll">
           <div id="tt-creative-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="tt-creative-table" style="display:none;">
-            <thead><tr><th>Ad</th><th>Campaign</th><th class="num">Spend</th><th class="num">Impr.</th><th class="num">Hook %</th><th class="num">Hold %</th><th class="num">Compl. %</th><th class="num">25%</th><th class="num">50%</th><th class="num">75%</th><th class="num">100%</th><th class="num">CTR</th><th>Preview</th></tr></thead>
+            <thead><tr><th>Ad</th><th>Campaign</th><th class="num">Spend</th><th class="num">Impr.</th><th class="num">Hook %</th><th class="num">Hold %</th><th class="num">Compl. %</th><th class="num">25%</th><th class="num">50%</th><th class="num">75%</th><th class="num">100%</th><th class="num">CTR</th><th>Preview</th><th>Creative Score</th></tr></thead>
             <tbody id="tt-creative-table-body"></tbody>
           </table>
         </div>
@@ -631,7 +631,7 @@ ${ttControls}
         <div class="table-scroll">
           <div id="scatter-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="scatter-table" style="display:none;">
-            <thead><tr><th>Ad</th><th>Campaign</th><th>Adset</th><th>Launch Date</th><th>Lifetime Spend</th><th>Lifetime ${targetMetricDef().label}</th><th>Conversions</th><th class="num">Hold %</th><th class="num">Compl. %</th><th class="num">Out CTR</th><th>Preview</th><th>Classification</th></tr></thead>
+            <thead><tr><th>Ad</th><th>Campaign</th><th>Adset</th><th>Launch Date</th><th>Lifetime Spend</th><th>Lifetime ${targetMetricDef().label}</th><th>Conversions</th><th class="num">Hold %</th><th class="num">Compl. %</th><th class="num">Out CTR</th><th>Preview</th><th>Classification</th><th>Creative Score</th></tr></thead>
             <tbody id="scatter-table-body"></tbody>
           </table>
         </div>
@@ -694,7 +694,7 @@ ${ttControls}
         <div class="table-scroll">
           <div id="creative-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="creative-table" style="display:none;">
-            <thead><tr><th>Ad</th><th>Campaign</th><th class="num">Spend</th><th class="num">Impr.</th><th class="num">Hold %</th><th class="num">Compl. %</th><th class="num">25%</th><th class="num">50%</th><th class="num">75%</th><th class="num">100%</th><th class="num">CTR</th><th class="num">Out CTR</th><th>Preview</th></tr></thead>
+            <thead><tr><th>Ad</th><th>Campaign</th><th class="num">Spend</th><th class="num">Impr.</th><th class="num">Hold %</th><th class="num">Compl. %</th><th class="num">25%</th><th class="num">50%</th><th class="num">75%</th><th class="num">100%</th><th class="num">CTR</th><th class="num">Out CTR</th><th>Preview</th><th>Creative Score</th></tr></thead>
             <tbody id="creative-table-body"></tbody>
           </table>
         </div>

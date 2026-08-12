@@ -852,3 +852,21 @@ function creativeScoreParts(vals){
     band: creativeScoreBand(score),
   };
 }
+
+/* Render a produced 0 to 100 Creative Score as a colour badge for a per-ad
+ * table cell (US-002). The score is computed ONCE in SQL by creativeScoreSQL and
+ * passed in here verbatim -- this NEVER recomputes it. The badge text is the
+ * BARE integer (no label suffix) so the universal table sort reads the cell as a
+ * number and sorts high to low on first click; the colour band comes from
+ * creativeScoreBand so the badge reuses the framework palette (strong/mid/weak).
+ * A missing/non-numeric score renders an empty cell, which the sort treats as
+ * blank and sinks to the bottom. Accepts raw BigQuery values (plain number,
+ * string, or {value} wrapper) via bqStr. */
+function creativeScoreBadge(score){
+  const raw = bqStr(score);
+  const n = (raw == null || raw === '') ? NaN : Number(raw);
+  if(!Number.isFinite(n)) return '';
+  const v = Math.round(n);
+  return `<span class="badge ${creativeScoreBand(v).cls}">${v}</span>`;
+}
+if (typeof window !== 'undefined') window.creativeScoreBadge = creativeScoreBadge;

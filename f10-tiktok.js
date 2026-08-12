@@ -71,6 +71,27 @@
       WHEN ${spendCol} >= ${TT_TH.SO_SPEND} AND ${metricCol} > ${TT_TH.SO_CPA} THEN 'Strike Out' ELSE 'Unclassified' END`;
   }
 
+  /* Creative Score inputs for the TikTok mart (US-002). The shared creativeScoreSQL
+   * emitter (f10-utils.js) is metric-aware and platform-agnostic; TikTok supplies
+   * its own rate column expressions via the tiktok PROFILE gates. Unlike Meta,
+   * TikTok HAS a real 2s thumbstop hook, so hookExpr is present. Rates are a
+   * percent of impressions (0..100) to match creativeRates(); hasVideo gates on
+   * video_play_actions; activeDays reads the per-ad active_days column. The score
+   * anchors to the GLOBAL HR/OB/SO bands (which the helper embeds); TT_TH defaults
+   * match those, and per-band TikTok tuning is US-004. The Production and Creative
+   * Effectiveness tabs pass THESE SAME opts, so a given ad+window scores the same
+   * on both. */
+  function ttScoreOpts(){
+    return {
+      hookExpr:       'SAFE_DIVIDE(video_watched_2s, NULLIF(impressions, 0)) * 100',
+      holdExpr:       'SAFE_DIVIDE(video_watched_6s, NULLIF(impressions, 0)) * 100',
+      ctrExpr:        'SAFE_DIVIDE(clicks, NULLIF(impressions, 0)) * 100',
+      completionExpr: 'SAFE_DIVIDE(video_views_p100, NULLIF(impressions, 0)) * 100',
+      hasVideoExpr:   'video_play_actions > 0',
+      activeDaysExpr: 'active_days',
+    };
+  }
+
   const TT_TABS = ['tt-summary', 'tt-board', 'tt-production', 'tt-creative'];
   const ttTitles = {
     'tt-summary':    'TikTok · Weekly Summary',
@@ -308,6 +329,7 @@
       WITH per_ad AS (
         SELECT ad_id, ANY_VALUE(ad_name) AS ad_name, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(adgroup_name) AS adgroup_name,
           MIN(min_date) AS launch_date, ANY_VALUE(creative_link) AS creative_link,
+          DATE_DIFF(COALESCE(MAX(date_start), CURRENT_DATE()), MIN(min_date), DAY) AS active_days,
           ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend,
           ROUND(SUM(${ttConv()}), 0) AS total_conversions,
           ROUND(${perAdMetricSQL}, 2) AS ${mCol},
@@ -316,7 +338,9 @@
           SUM(video_views_p100) AS video_views_p100, SUM(video_play_actions) AS video_play_actions
         FROM ${ttTable()} GROUP BY 1
       )
-      SELECT *, ${ttClassificationCaseSQL('lifetime_spend', mCol)} AS classification FROM per_ad ORDER BY lifetime_spend DESC`;
+      SELECT *, ${ttClassificationCaseSQL('lifetime_spend', mCol)} AS classification,
+        ${creativeScoreSQL('lifetime_spend', mCol, ttScoreOpts())} AS creative_score
+      FROM per_ad ORDER BY lifetime_spend DESC`;
     /* Month-level avg is SUM(revenue)/SUM(spend) in ROAS mode, SUM(spend)/
      * SUM(conversions) in CPA mode; the alias stays `avg_cpa` so downstream stays
      * put. period_revenue is selected ONLY in ROAS mode. */
@@ -398,7 +422,7 @@
         const cls = r.classification; const badgeClass = cls === 'Home Run' ? 'badge-hr' : cls === 'On Base' ? 'badge-ob' : cls === 'Strike Out' ? 'badge-so' : 'badge-un';
         const ce = { impressions: Number(r.impressions) || 0, clicks: Number(r.clicks) || 0, video_watched_2s: Number(r.video_watched_2s) || 0, video_watched_6s: Number(r.video_watched_6s) || 0, video_views_p100: Number(r.video_views_p100) || 0, video_play_actions: Number(r.video_play_actions) || 0 };
         registerAdMetrics(r.ad_id, ce, PROFILE); const cr = creativeRates(ce, PROFILE);
-        return `<tr><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adgroup_name}">${r.adgroup_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmt$(r.lifetime_spend)}</td><td>${Number(r[mCol]) > 0 ? fmtMetricCell(r[mCol]) : '–'}</td><td>${fmtNum(r.total_conversions)}</td><td class="num">${cr.hook != null ? fmtPct(cr.hook, 2) : '–'}</td><td class="num">${cr.hold != null ? fmtPct(cr.hold, 2) : '–'}</td><td class="num">${cr.completion != null ? fmtPct(cr.completion, 2) : '–'}</td><td>${r.creative_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="tiktok" href="${r.creative_link}" target="_blank">Preview</a>` : '–'}</td><td><span class="badge ${badgeClass}">${cls}</span></td></tr>`;
+        return `<tr><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adgroup_name}">${r.adgroup_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmt$(r.lifetime_spend)}</td><td>${Number(r[mCol]) > 0 ? fmtMetricCell(r[mCol]) : '–'}</td><td>${fmtNum(r.total_conversions)}</td><td class="num">${cr.hook != null ? fmtPct(cr.hook, 2) : '–'}</td><td class="num">${cr.hold != null ? fmtPct(cr.hold, 2) : '–'}</td><td class="num">${cr.completion != null ? fmtPct(cr.completion, 2) : '–'}</td><td>${r.creative_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="tiktok" href="${r.creative_link}" target="_blank">Preview</a>` : '–'}</td><td><span class="badge ${badgeClass}">${cls}</span></td><td>${creativeScoreBadge(r.creative_score)}</td></tr>`;
       }));
       hideEl('tt-scatter-table-loading'); showEl('tt-scatter-table');
     } catch (err) { console.error('TikTok production error:', err); }
@@ -407,12 +431,21 @@
   /* ── Creative Effectiveness (the star: hook/hold/completion/retention) ── */
 
   async function ttLoadCreative() {
+    /* Additive Creative Score (US-002): mirror the Production tab -- add the score's
+       efficiency inputs (lifetime spend + the metric column via ttLifetimeMetricSQL)
+       and active_days, then compute creative_score in the outer SELECT with the SAME
+       ttScoreOpts. Original columns and the impressions>0 filter are untouched, so a
+       given ad shows the same score as the TikTok Production tab. */
     const sql = `
-      SELECT * FROM (
+      SELECT *, ${creativeScoreSQL('lifetime_spend', ttLifetimeMetricCol(), ttScoreOpts())} AS creative_score FROM (
         SELECT ad_id, ANY_VALUE(ad_name) AS ad_name, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(creative_link) AS creative_link,
           ROUND(SUM(spend), 2) AS spend, SUM(impressions) AS impressions, SUM(clicks) AS clicks,
           SUM(video_play_actions) AS video_play_actions, SUM(video_watched_2s) AS video_watched_2s, SUM(video_watched_6s) AS video_watched_6s,
-          SUM(video_views_p25) AS video_views_p25, SUM(video_views_p50) AS video_views_p50, SUM(video_views_p75) AS video_views_p75, SUM(video_views_p100) AS video_views_p100
+          SUM(video_views_p25) AS video_views_p25, SUM(video_views_p50) AS video_views_p50, SUM(video_views_p75) AS video_views_p75, SUM(video_views_p100) AS video_views_p100,
+          ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend,
+          ROUND(SUM(${ttConv()}), 0) AS total_conversions,
+          ROUND(${ttLifetimeMetricSQL('ANY_VALUE(lifetime_spend)', `SUM(${ttConv()})`)}, 2) AS ${ttLifetimeMetricCol()},
+          DATE_DIFF(COALESCE(MAX(date_start), CURRENT_DATE()), MIN(min_date), DAY) AS active_days
         FROM ${ttTable()}
         WHERE date_start >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
         GROUP BY 1
@@ -427,7 +460,7 @@
         tImpr += ce.impressions; t2 += ce.video_watched_2s; t6 += ce.video_watched_6s; t25 += ce.video_views_p25; t50 += ce.video_views_p50; t75 += ce.video_views_p75; t100 += ce.video_views_p100;
         const pct = (v) => v != null ? fmtPct(v, 2) : '–';
         const pv = r.creative_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="tiktok" href="${r.creative_link}" target="_blank">Preview</a>` : '–';
-        return `<tr><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name || ''}">${r.ad_name || '–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name || ''}">${r.campaign_name || '–'}</td><td class="num">${fmt$(r.spend)}</td><td class="num">${fmtNum(ce.impressions)}</td><td class="num">${pct(cr.hook)}</td><td class="num">${pct(cr.hold)}</td><td class="num">${pct(cr.completion)}</td><td class="num">${pct(cr.retention.p25)}</td><td class="num">${pct(cr.retention.p50)}</td><td class="num">${pct(cr.retention.p75)}</td><td class="num">${pct(cr.retention.p100)}</td><td class="num">${pct(cr.ctr)}</td><td>${pv}</td></tr>`;
+        return `<tr><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name || ''}">${r.ad_name || '–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name || ''}">${r.campaign_name || '–'}</td><td class="num">${fmt$(r.spend)}</td><td class="num">${fmtNum(ce.impressions)}</td><td class="num">${pct(cr.hook)}</td><td class="num">${pct(cr.hold)}</td><td class="num">${pct(cr.completion)}</td><td class="num">${pct(cr.retention.p25)}</td><td class="num">${pct(cr.retention.p50)}</td><td class="num">${pct(cr.retention.p75)}</td><td class="num">${pct(cr.retention.p100)}</td><td class="num">${pct(cr.ctr)}</td><td>${pv}</td><td>${creativeScoreBadge(r.creative_score)}</td></tr>`;
       });
       renderPagedTable('tt-creative-table-body', rows);
       hideEl('tt-creative-table-loading'); showEl('tt-creative-table');
