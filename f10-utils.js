@@ -666,3 +666,189 @@ function initTableSorting(){
     th.classList.add(ascending ? 'sorted-asc' : 'sorted-desc');
   });
 }
+
+/* == Creative Score (target-anchored, metric-aware, confidence-weighted) =====
+ * ONE 0 to 100 score per creative, blended from four components:
+ *   efficiency   the account headline metric (CPA in CPA mode, ROAS in ROAS
+ *                mode) mapped to 0..1 against the LIVE HR/OB/SO threshold bands.
+ *   quality      creative-effectiveness rates (hook/hold/CTR/completion) mapped
+ *                to 0..1 against tunable reference ceilings. A static image (no
+ *                video gates) contributes a neutral 0.5, never 0, so it is not
+ *                penalised for having no video attention to measure.
+ *   durability   active days vs a maturity target, mapped to 0..1.
+ *   confidence   log spend vs HR_SPEND, applied as a MULTIPLIER that pulls the
+ *                headline toward the neutral midpoint (50) when volume is thin,
+ *                rather than as a large additive term. A brand-new low-spend ad
+ *                is therefore drawn toward neutral, not to the top.
+ *
+ * Single source, same discipline as classificationCaseSQL: the math is emitted
+ * ONCE as SQL (creativeScoreSQL / creativeScoreComponentsSQL); the query layer
+ * runs it and the display reads the produced value, never recomputing it. The
+ * JS companion creativeScoreParts() mirrors the same math for badge/hover
+ * packaging and for tuning; the test suite evaluates the emitted SQL and asserts
+ * it equals creativeScoreParts so the two can never drift.
+ *
+ * Metric polarity is taken from targetMetric(): CPA rewards a LOW metric and
+ * anchors to HR_CPA/OB_CPA/SO_CPA; ROAS flips to reward a HIGH metric and anchors
+ * to HR_ROAS/OB_ROAS/SO_ROAS. The efficiency input is a column NAME passed by the
+ * caller. In ROAS mode that column is the pre-gated roas expression (the same one
+ * lifetimeMetricSQL builds from revenueExpr()); this helper never names raw
+ * conversion_value, honouring policy f10-blended-roas-revenue-gating.
+ *
+ * Weights, the maturity target, the quality ceilings, the confidence-multiplier
+ * floor and the band cutoffs are TUNABLE constants (validated in US-004). A
+ * dashboard may override any subset BEFORE the scripts load, same guarded-global
+ * idiom as THRESHOLDS / TARGET_METRIC:
+ *   const CREATIVE_SCORE_CONFIG = { wEfficiency: 0.5, maturityDays: 45 };
+ * Logic and constants are kept separate so tuning never touches the formula. */
+function creativeScoreConfig(){
+  const c = (typeof CREATIVE_SCORE_CONFIG !== 'undefined' && CREATIVE_SCORE_CONFIG) ? CREATIVE_SCORE_CONFIG : {};
+  const num = (v, d) => Number.isFinite(Number(v)) ? Number(v) : d;
+  const ceil = c.qualityCeil || {};
+  return {
+    wEfficiency: num(c.wEfficiency, 0.5),
+    wQuality:    num(c.wQuality, 0.3),
+    wDurability: num(c.wDurability, 0.2),
+    maturityDays: num(c.maturityDays, 30),
+    confidenceFloor: Math.min(1, Math.max(0, num(c.confidenceFloor, 0))),
+    neutral: num(c.neutral, 50),
+    bandStrong: num(c.bandStrong, 70),
+    bandMid:    num(c.bandMid, 40),
+    qualityCeil: {
+      hook:       num(ceil.hook, 30),
+      hold:       num(ceil.hold, 20),
+      ctr:        num(ceil.ctr, 2),
+      completion: num(ceil.completion, 15),
+    },
+  };
+}
+
+/* Emit the four component SQL expressions plus the blended score expression, all
+ * as strings. spendCol and metricCol are column NAMES (metricCol is the headline
+ * CPA or gated ROAS column). opts carries the rate/gate column expressions so the
+ * mart shape is never hardcoded:
+ *   hookExpr, holdExpr, ctrExpr, completionExpr  creative rates as a percent of
+ *       impressions (0..100). Omit any the platform lacks (e.g. Meta has no hook
+ *       gate) and it is dropped from the quality average.
+ *   hasVideoExpr   boolean SQL that is true when the ad has video (e.g.
+ *       'video_plays > 0'). When false the quality component is a flat 0.5.
+ *   activeDaysExpr numeric SQL for the ad active/lifetime days (durability input).
+ * All arithmetic is pure (LEAST/GREATEST/LN/IF/IFNULL/ROUND only, no CASE) so the
+ * expression is a faithful, testable mirror of creativeScoreParts. */
+function creativeScoreComponentsSQL(spendCol, metricCol, opts){
+  opts = opts || {};
+  const cfg = creativeScoreConfig();
+  const clamp01 = (e) => `GREATEST(0, LEAST(1, ${e}))`;
+  const width = (a, b) => (a - b) || 1; /* band width, guarded against zero */
+
+  let efficiency;
+  if (targetMetric() === 'roas'){
+    const upper = clamp01(`(${metricCol} - ${OB_ROAS}) / ${width(HR_ROAS, OB_ROAS)}`);
+    const lower = clamp01(`(${metricCol} - ${SO_ROAS}) / ${width(OB_ROAS, SO_ROAS)}`);
+    efficiency = `IFNULL(0.5 * ${upper} + 0.5 * ${lower}, 0)`;
+  } else {
+    const upper = clamp01(`(${OB_CPA} - ${metricCol}) / ${width(OB_CPA, HR_CPA)}`);
+    const lower = clamp01(`(${SO_CPA} - ${metricCol}) / ${width(SO_CPA, OB_CPA)}`);
+    efficiency = `IFNULL(0.5 * ${upper} + 0.5 * ${lower}, 0)`;
+  }
+
+  const qParts = [];
+  const pushQ = (expr, ceil) => { if (expr) qParts.push(clamp01(`(${expr}) / ${ceil || 1}`)); };
+  pushQ(opts.hookExpr, cfg.qualityCeil.hook);
+  pushQ(opts.holdExpr, cfg.qualityCeil.hold);
+  pushQ(opts.ctrExpr, cfg.qualityCeil.ctr);
+  pushQ(opts.completionExpr, cfg.qualityCeil.completion);
+  const videoQuality = qParts.length ? `(${qParts.join(' + ')}) / ${qParts.length}` : '0.5';
+  const quality = opts.hasVideoExpr ? `IF(${opts.hasVideoExpr}, ${videoQuality}, 0.5)` : videoQuality;
+
+  const durability = opts.activeDaysExpr
+    ? clamp01(`IFNULL(${opts.activeDaysExpr}, 0) / ${cfg.maturityDays || 1}`)
+    : '0.5';
+
+  const lnHrSpend = Math.log(1 + Math.max(0, HR_SPEND)) || 1;
+  const confidence = `LEAST(1, GREATEST(${cfg.confidenceFloor}, LN(1 + ${spendCol}) / ${lnHrSpend}))`;
+
+  const sumW = (cfg.wEfficiency + cfg.wQuality + cfg.wDurability) || 1;
+  const raw = `100 * (${cfg.wEfficiency} * (${efficiency}) + ${cfg.wQuality} * (${quality}) + ${cfg.wDurability} * (${durability})) / ${sumW}`;
+  const score = `LEAST(100, GREATEST(0, ROUND(${cfg.neutral} + ((${raw}) - ${cfg.neutral}) * (${confidence}))))`;
+
+  return { efficiency: efficiency, quality: quality, durability: durability, confidence: confidence, score: score };
+}
+
+/* The single headline SQL expression: a 0 to 100 Creative Score. Mirror of
+ * classificationCaseSQL(spendCol, metricCol) in shape (branch on targetMetric(),
+ * take column names, emit one string) so a dashboard computes the score once in
+ * the query and renders it verbatim. See creativeScoreComponentsSQL for opts. */
+function creativeScoreSQL(spendCol, metricCol, opts){
+  return creativeScoreComponentsSQL(spendCol, metricCol, opts).score;
+}
+
+/* Map a produced 0 to 100 score to a colour band, reusing the framework chart
+ * palette (Strong = primary, Mid = secondary, Weak = negative) so the badge and
+ * hover share one colour system. Cutoffs are tunable via CREATIVE_SCORE_CONFIG. */
+function creativeScoreBand(score){
+  const cfg = creativeScoreConfig();
+  const s = Number(score);
+  if (Number.isFinite(s) && s >= cfg.bandStrong) return { label: 'Strong', cls: 'score-strong', color: CHART_PRIMARY };
+  if (Number.isFinite(s) && s >= cfg.bandMid)    return { label: 'Mid',    cls: 'score-mid',    color: CHART_SECONDARY };
+  return { label: 'Weak', cls: 'score-weak', color: CHART_NEGATIVE };
+}
+
+/* JS companion / mirror of the score math. Given NUMERIC values it returns the
+ * four component sub-scores (0..1 each, confidence as a 0..1 multiplier), the
+ * final 0 to 100 score and its band, so the badge and hover read the same numbers
+ * the SQL produced without a second, divergent computation. Represent a SQL NULL
+ * (e.g. CPA of a zero-conversion ad) by passing metric: null; it grades 0.
+ *   vals: { spend, metric, hook, hold, ctr, completion, hasVideo, activeDays }
+ * A rate left undefined is dropped from the quality average (matching an omitted
+ * *Expr in the SQL). hasVideo:false forces the quality component to a neutral 0.5. */
+function creativeScoreParts(vals){
+  vals = vals || {};
+  const cfg = creativeScoreConfig();
+  const clamp01 = (x) => Math.max(0, Math.min(1, x));
+  const ifnull = (x, d) => (x == null || Number.isNaN(x)) ? d : x;
+  const width = (a, b) => (a - b) || 1;
+  const metric = (vals.metric == null) ? NaN : Number(vals.metric);
+
+  let efficiency;
+  if (targetMetric() === 'roas'){
+    const upper = clamp01((metric - OB_ROAS) / width(HR_ROAS, OB_ROAS));
+    const lower = clamp01((metric - SO_ROAS) / width(OB_ROAS, SO_ROAS));
+    efficiency = ifnull(0.5 * upper + 0.5 * lower, 0);
+  } else {
+    const upper = clamp01((OB_CPA - metric) / width(OB_CPA, HR_CPA));
+    const lower = clamp01((SO_CPA - metric) / width(SO_CPA, OB_CPA));
+    efficiency = ifnull(0.5 * upper + 0.5 * lower, 0);
+  }
+
+  const qParts = [];
+  const pushQ = (v, ceil) => { if (v != null) qParts.push(clamp01(Number(v) / (ceil || 1))); };
+  pushQ(vals.hook, cfg.qualityCeil.hook);
+  pushQ(vals.hold, cfg.qualityCeil.hold);
+  pushQ(vals.ctr, cfg.qualityCeil.ctr);
+  pushQ(vals.completion, cfg.qualityCeil.completion);
+  const videoQuality = qParts.length ? qParts.reduce((a, b) => a + b, 0) / qParts.length : 0.5;
+  const hasVideo = (vals.hasVideo === undefined) ? true : !!vals.hasVideo;
+  const quality = hasVideo ? videoQuality : 0.5;
+
+  const durability = (vals.activeDays == null)
+    ? 0.5
+    : clamp01(ifnull(Number(vals.activeDays), 0) / (cfg.maturityDays || 1));
+
+  const spend = Number.isFinite(Number(vals.spend)) ? Number(vals.spend) : 0;
+  const lnHrSpend = Math.log(1 + Math.max(0, HR_SPEND)) || 1;
+  const confidence = Math.min(1, Math.max(cfg.confidenceFloor, Math.log(1 + spend) / lnHrSpend));
+
+  const sumW = (cfg.wEfficiency + cfg.wQuality + cfg.wDurability) || 1;
+  const raw = 100 * (cfg.wEfficiency * efficiency + cfg.wQuality * quality + cfg.wDurability * durability) / sumW;
+  const score = Math.min(100, Math.max(0, Math.round(cfg.neutral + (raw - cfg.neutral) * confidence)));
+
+  return {
+    efficiency: efficiency,
+    quality: quality,
+    durability: durability,
+    confidence: confidence,
+    score: score,
+    band: creativeScoreBand(score),
+  };
+}
