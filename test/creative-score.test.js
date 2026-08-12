@@ -39,10 +39,15 @@ function makeCtx(targetMetric){
 }
 
 /* Column expressions the emitter reads. Names double as the variables the SQL
- * evaluator binds, so the emitted string is valid arithmetic once bound. */
+ * evaluator binds, so the emitted string is valid arithmetic once bound. The
+ * qualityCeil is the per-platform ceiling set both the SQL emitter and the JS
+ * mirror read (US-004); the parity harness passes THIS SAME opts to both
+ * creativeScoreSQL and creativeScoreParts so the two can never drift. This
+ * fixture carries a hook ceiling so all four rate gates are exercised. */
 const OPTS = {
   hookExpr: 'HOOK', holdExpr: 'HOLD', ctrExpr: 'CTR', completionExpr: 'COMPLETION',
   hasVideoExpr: 'HASVIDEO', activeDaysExpr: 'ACTIVEDAYS',
+  qualityCeil: { hook: 11, hold: 6, ctr: 1.3, completion: 2.5 },
 };
 
 /* Evaluate an emitted SQL score expression as plain arithmetic. A SQL NULL is
@@ -85,7 +90,10 @@ console.log('Creative Score (US-001)');
 /* Fixtures reused across cases. */
 const FIX_STRONG = { spend: 20000, metric: 40, hook: 30, hold: 20, ctr: 3, completion: 15, hasVideo: true, activeDays: 60 };
 const FIX_DOG    = { spend: 8000, metric: null, hook: 1, hold: 1, ctr: 0.1, completion: 1, hasVideo: true, activeDays: 20 };
-const FIX_NEW    = { spend: 200, metric: 40, hook: 20, hold: 15, ctr: 2, completion: 10, hasVideo: true, activeDays: 3 };
+/* A decent (not maxed) new ad: rates sit BELOW the tuned per-platform ceilings so
+   quality does not saturate, which is what lets the confidence multiplier be seen
+   pulling the thin-spend twin toward neutral while the mature twin sits high. */
+const FIX_NEW    = { spend: 200, metric: 40, hook: 8, hold: 4, ctr: 1, completion: 1.5, hasVideo: true, activeDays: 3 };
 const FIX_MATURE = Object.assign({}, FIX_NEW, { spend: 20000 }); /* same ad, high spend */
 const FIX_STATIC = { spend: 5000, metric: 60, hook: 5, hold: 5, ctr: 1, completion: 5, hasVideo: false, activeDays: 30 };
 
@@ -97,7 +105,9 @@ check('CPA: emitted SQL score equals creativeScoreParts for every fixture', () =
     const { vals, vars } = fromFixture(f);
     const sql = ctx.creativeScoreSQL('SPEND', 'METRIC', OPTS);
     const sqlScore = evalScoreSQL(sql, vars);
-    const partsScore = ctx.creativeScoreParts(vals).score;
+    /* Same opts (with qualityCeil) to BOTH sides, so the per-platform ceilings the
+       SQL used are the ceilings the JS mirror uses -- that is the parity contract. */
+    const partsScore = ctx.creativeScoreParts(vals, OPTS).score;
     assert.strictEqual(sqlScore, partsScore, 'SQL ' + sqlScore + ' vs parts ' + partsScore + ' for spend=' + f.spend);
   });
 });
@@ -106,26 +116,42 @@ check('CPA: emitted SQL score equals creativeScoreParts for every fixture', () =
 check('High-spend low-CPA video ad scores high (>= 80) in CPA mode', () => {
   const ctx = makeCtx(undefined);
   const { vals, vars } = fromFixture(FIX_STRONG);
-  const parts = ctx.creativeScoreParts(vals);
+  const parts = ctx.creativeScoreParts(vals, OPTS);
   assert.strictEqual(parts.efficiency, 1, 'CPA under HR_CPA should max efficiency');
   assert.ok(parts.score >= 80, 'score should be >= 80, got ' + parts.score);
   assert.strictEqual(evalScoreSQL(ctx.creativeScoreSQL('SPEND', 'METRIC', OPTS), vars), parts.score);
   assert.strictEqual(parts.band.label, 'Strong');
 });
 
-check('Real-spend zero-conversion ad scores low (<= 25)', () => {
+/* A zero-conversion ad is HARD-CAPPED at the neutral 50. With no conversions the
+ * metric is NULL, so efficiency grades 0 and the raw score is
+ *   100 * (wEfficiency*0 + wQuality*quality + wDurability*durability) / sumW,
+ * whose maximum is 100 * (wQuality + wDurability) = 100 * (0.3 + 0.2) = 50. So no
+ * matter how strong the watch rates are, a non-converting ad cannot leave the
+ * neutral band, and a mediocre one lands firmly in Weak. This is the true US-004
+ * structural invariant (validated on FastCover); it REPLACES the old arbitrary
+ * <= 25, which the tuned model legitimately exceeds for engaging non-converting
+ * creative (that creative is still capped at 50, never Mid-strong). */
+check('Zero-conversion ad is capped at neutral 50 (efficiency 0), never Mid-strong', () => {
   const ctx = makeCtx(undefined);
-  const { vals, vars } = fromFixture(FIX_DOG);
-  const parts = ctx.creativeScoreParts(vals);
-  assert.strictEqual(parts.efficiency, 0, 'null CPA (no conversions) grades efficiency 0');
-  assert.ok(parts.score <= 25, 'score should be <= 25, got ' + parts.score);
-  assert.strictEqual(evalScoreSQL(ctx.creativeScoreSQL('SPEND', 'METRIC', OPTS), vars), parts.score);
+  /* (a) strong watch rates + full maturity: efficiency 0 pins raw at the 50 cap. */
+  const strongNoConv = Object.assign({}, FIX_STRONG, { metric: null });
+  const sp = ctx.creativeScoreParts(strongNoConv, OPTS);
+  assert.strictEqual(sp.efficiency, 0, 'null metric (no conversions) grades efficiency 0');
+  assert.ok(sp.score <= 50, 'a zero-conversion ad is capped at 50, got ' + sp.score);
+  assert.strictEqual(evalScoreSQL(ctx.creativeScoreSQL('SPEND', 'METRIC', OPTS), fromFixture(strongNoConv).vars), sp.score);
+  /* (b) mediocre/zero watch rates: lands in the Weak band (score < 40). */
+  const dp = ctx.creativeScoreParts(FIX_DOG, OPTS);
+  assert.strictEqual(dp.efficiency, 0, 'null metric grades efficiency 0');
+  assert.ok(dp.score < 40, 'a weak zero-conversion ad scores < 40, got ' + dp.score);
+  assert.strictEqual(dp.band.label, 'Weak', 'and lands in the Weak band, got ' + dp.band.label);
+  assert.strictEqual(evalScoreSQL(ctx.creativeScoreSQL('SPEND', 'METRIC', OPTS), fromFixture(FIX_DOG).vars), dp.score);
 });
 
 check('Brand-new low-spend ad is pulled toward neutral, not to the top', () => {
   const ctx = makeCtx(undefined);
-  const low = ctx.creativeScoreParts(fromFixture(FIX_NEW).vals);
-  const high = ctx.creativeScoreParts(fromFixture(FIX_MATURE).vals);
+  const low = ctx.creativeScoreParts(fromFixture(FIX_NEW).vals, OPTS);
+  const high = ctx.creativeScoreParts(fromFixture(FIX_MATURE).vals, OPTS);
   /* Confidence is a multiplier on the deviation from 50, so thin volume damps it. */
   assert.ok(low.confidence < 1, 'thin spend should not reach full confidence, got ' + low.confidence);
   assert.strictEqual(high.confidence, 1, 'high spend should reach full confidence');
@@ -137,7 +163,7 @@ check('Brand-new low-spend ad is pulled toward neutral, not to the top', () => {
 check('ROAS mode inverts efficiency polarity and anchors to the ROAS bands', () => {
   const ctx = makeCtx('roas');
   assert.strictEqual(ctx.targetMetric(), 'roas');
-  const partsAt = (roas) => ctx.creativeScoreParts({ spend: 20000, metric: roas, hook: 20, hold: 15, ctr: 2, completion: 10, hasVideo: true, activeDays: 60 });
+  const partsAt = (roas) => ctx.creativeScoreParts({ spend: 20000, metric: roas, hook: 20, hold: 15, ctr: 2, completion: 10, hasVideo: true, activeDays: 60 }, OPTS);
   const high = partsAt(5);   /* above HR_ROAS */
   const ob   = partsAt(OB_ROAS);
   const low  = partsAt(0.5); /* below SO_ROAS */
@@ -148,7 +174,7 @@ check('ROAS mode inverts efficiency polarity and anchors to the ROAS bands', () 
   assert.ok(high.score > low.score, 'higher ROAS must yield a higher score');
   /* SQL parity in ROAS mode too. */
   const { vals, vars } = fromFixture({ spend: 20000, metric: 5, hook: 20, hold: 15, ctr: 2, completion: 10, hasVideo: true, activeDays: 60 });
-  assert.strictEqual(evalScoreSQL(ctx.creativeScoreSQL('SPEND', 'METRIC', OPTS), vars), ctx.creativeScoreParts(vals).score);
+  assert.strictEqual(evalScoreSQL(ctx.creativeScoreSQL('SPEND', 'METRIC', OPTS), vars), ctx.creativeScoreParts(vals, OPTS).score);
 });
 
 check('ROAS mode reads only the gated column and never names conversion_value', () => {
@@ -160,17 +186,43 @@ check('ROAS mode reads only the gated column and never names conversion_value', 
 
 check('Static image contributes a neutral 0.5 on creative quality, not 0', () => {
   const ctx = makeCtx(undefined);
-  const parts = ctx.creativeScoreParts(fromFixture(FIX_STATIC).vals);
+  const parts = ctx.creativeScoreParts(fromFixture(FIX_STATIC).vals, OPTS);
   assert.strictEqual(parts.quality, 0.5, 'no video gates should give quality 0.5');
   /* And the emitted quality sub-expression agrees when hasVideo is false. */
   const q = ctx.creativeScoreComponentsSQL('SPEND', 'METRIC', OPTS).quality;
   assert.strictEqual(evalScoreSQL(q, fromFixture(FIX_STATIC).vars), 0.5);
 });
 
+// -- Per-platform ceilings (US-004): opts.qualityCeil overrides the config -------
+check('per-platform ceilings: TikTok ceilings lift quality above Meta on the same rates, and opts overrides config', () => {
+  const ctx = makeCtx(undefined);
+  /* The validated per-platform ceilings (rates as a percent of impressions).
+     Meta carries a hook key here too so both sets compare on the same four rates. */
+  const META_CEIL = { hook: 11, hold: 6, ctr: 1.3, completion: 2.5 };
+  const TT_CEIL   = { hook: 11, hold: 1.9, ctr: 0.4, completion: 0.3 };
+  const vals = { spend: 20000, metric: 40, hook: 5, hold: 3, ctr: 0.5, completion: 1, hasVideo: true, activeDays: 60 };
+  const metaQ = ctx.creativeScoreParts(vals, { qualityCeil: META_CEIL }).quality;
+  const ttQ   = ctx.creativeScoreParts(vals, { qualityCeil: TT_CEIL }).quality;
+  /* TikTok ceilings are lower, so the SAME rate vector clears more of them: a
+     strictly higher creative-quality sub-score. This is the fix for TikTok being
+     capped and real video being under-credited against statics. */
+  assert.ok(ttQ > metaQ, 'TikTok ceilings must yield a higher quality sub-score than Meta on the same rates, got tt=' + ttQ + ' meta=' + metaQ);
+  /* opts.qualityCeil overrides creativeScoreConfig().qualityCeil: with no opts the
+     config default IS the Meta set, so the default quality equals the Meta-ceiling
+     quality and differs from the TikTok-ceiling quality. */
+  const defaultQ = ctx.creativeScoreParts(vals).quality;
+  assert.ok(Math.abs(defaultQ - metaQ) < 1e-9, 'the config default qualityCeil is the Meta set, got default=' + defaultQ + ' meta=' + metaQ);
+  assert.notStrictEqual(ttQ, defaultQ, 'opts.qualityCeil must override the config default');
+  /* The SQL emitter honours opts.qualityCeil the same way (quality parity). */
+  const OPTS_TT = { hookExpr: 'HOOK', holdExpr: 'HOLD', ctrExpr: 'CTR', completionExpr: 'COMPLETION', hasVideoExpr: 'HASVIDEO', activeDaysExpr: 'ACTIVEDAYS', qualityCeil: TT_CEIL };
+  const qSql = ctx.creativeScoreComponentsSQL('SPEND', 'METRIC', OPTS_TT).quality;
+  assert.ok(Math.abs(evalScoreSQL(qSql, fromFixture(vals).vars) - ttQ) < 1e-9, 'SQL quality must equal the JS mirror under the TikTok ceilings');
+});
+
 // -- Companion helper surface + guardrails -----------------------------------
 check('creativeScoreParts exposes the four components, the score and the band', () => {
   const ctx = makeCtx(undefined);
-  const parts = ctx.creativeScoreParts(fromFixture(FIX_STRONG).vals);
+  const parts = ctx.creativeScoreParts(fromFixture(FIX_STRONG).vals, OPTS);
   ['efficiency', 'quality', 'durability', 'confidence', 'score', 'band'].forEach((k) => {
     assert.ok(k in parts, 'missing ' + k);
   });

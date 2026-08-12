@@ -705,11 +705,19 @@ function initTableSorting(){
  * conversion_value, honouring policy f10-blended-roas-revenue-gating.
  *
  * Weights, the maturity target, the quality ceilings, the confidence-multiplier
- * floor and the band cutoffs are TUNABLE constants (validated in US-004). A
- * dashboard may override any subset BEFORE the scripts load, same guarded-global
- * idiom as THRESHOLDS / TARGET_METRIC:
+ * floor and the band cutoffs are TUNABLE constants (validated on FastCover live
+ * data in US-004). A dashboard may override any subset BEFORE the scripts load,
+ * same guarded-global idiom as THRESHOLDS / TARGET_METRIC:
  *   const CREATIVE_SCORE_CONFIG = { wEfficiency: 0.5, maturityDays: 45 };
- * Logic and constants are kept separate so tuning never touches the formula. */
+ * Logic and constants are kept separate so tuning never touches the formula.
+ *
+ * The qualityCeil here is only the SENSIBLE FALLBACK (the Meta set). Ceilings are
+ * PER-PLATFORM at runtime: callers pass opts.qualityCeil (set by metaScoreOpts /
+ * ttScoreOpts, validated on FastCover in US-004) to creativeScoreComponentsSQL
+ * and creativeScoreParts, and it overrides this default per key. That is what
+ * stops real video being under-credited against statics and stops TikTok being
+ * capped. CREATIVE_SCORE_CONFIG.qualityCeil still overrides the fallback for a
+ * dashboard that ships its own. */
 function creativeScoreConfig(){
   const c = (typeof CREATIVE_SCORE_CONFIG !== 'undefined' && CREATIVE_SCORE_CONFIG) ? CREATIVE_SCORE_CONFIG : {};
   const num = (v, d) => Number.isFinite(Number(v)) ? Number(v) : d;
@@ -724,10 +732,10 @@ function creativeScoreConfig(){
     bandStrong: num(c.bandStrong, 70),
     bandMid:    num(c.bandMid, 40),
     qualityCeil: {
-      hook:       num(ceil.hook, 30),
-      hold:       num(ceil.hold, 20),
-      ctr:        num(ceil.ctr, 2),
-      completion: num(ceil.completion, 15),
+      hook:       num(ceil.hook, 11),
+      hold:       num(ceil.hold, 6),
+      ctr:        num(ceil.ctr, 1.3),
+      completion: num(ceil.completion, 2.5),
     },
   };
 }
@@ -761,12 +769,17 @@ function creativeScoreComponentsSQL(spendCol, metricCol, opts){
     efficiency = `IFNULL(0.5 * ${upper} + 0.5 * ${lower}, 0)`;
   }
 
+  /* Quality ceilings are PER-PLATFORM: opts.qualityCeil (set by metaScoreOpts /
+   * ttScoreOpts, validated on FastCover in US-004) overrides the config default
+   * per key, so real video is not under-credited against statics and TikTok is
+   * not capped. A missing key falls back to creativeScoreConfig().qualityCeil. */
+  const ceilFor = (k) => (opts && opts.qualityCeil && opts.qualityCeil[k] != null) ? opts.qualityCeil[k] : cfg.qualityCeil[k];
   const qParts = [];
   const pushQ = (expr, ceil) => { if (expr) qParts.push(clamp01(`(${expr}) / ${ceil || 1}`)); };
-  pushQ(opts.hookExpr, cfg.qualityCeil.hook);
-  pushQ(opts.holdExpr, cfg.qualityCeil.hold);
-  pushQ(opts.ctrExpr, cfg.qualityCeil.ctr);
-  pushQ(opts.completionExpr, cfg.qualityCeil.completion);
+  pushQ(opts.hookExpr, ceilFor('hook'));
+  pushQ(opts.holdExpr, ceilFor('hold'));
+  pushQ(opts.ctrExpr, ceilFor('ctr'));
+  pushQ(opts.completionExpr, ceilFor('completion'));
   const videoQuality = qParts.length ? `(${qParts.join(' + ')}) / ${qParts.length}` : '0.5';
   const quality = opts.hasVideoExpr ? `IF(${opts.hasVideoExpr}, ${videoQuality}, 0.5)` : videoQuality;
 
@@ -810,9 +823,16 @@ function creativeScoreBand(score){
  * (e.g. CPA of a zero-conversion ad) by passing metric: null; it grades 0.
  *   vals: { spend, metric, hook, hold, ctr, completion, hasVideo, activeDays }
  * A rate left undefined is dropped from the quality average (matching an omitted
- * *Expr in the SQL). hasVideo:false forces the quality component to a neutral 0.5. */
-function creativeScoreParts(vals){
+ * *Expr in the SQL). hasVideo:false forces the quality component to a neutral 0.5.
+ *
+ * The optional second arg opts carries the SAME per-platform ceilings the SQL
+ * emitter uses: opts.qualityCeil (from metaScoreOpts / ttScoreOpts, validated on
+ * FastCover in US-004) overrides creativeScoreConfig().qualityCeil per key. Pass
+ * the platform opts here so the hover and badge read the SAME ceilings the SQL
+ * used; omit it (or a key) and it falls back to the config default. */
+function creativeScoreParts(vals, opts){
   vals = vals || {};
+  opts = opts || {};
   const cfg = creativeScoreConfig();
   const clamp01 = (x) => Math.max(0, Math.min(1, x));
   const ifnull = (x, d) => (x == null || Number.isNaN(x)) ? d : x;
@@ -830,12 +850,17 @@ function creativeScoreParts(vals){
     efficiency = ifnull(0.5 * upper + 0.5 * lower, 0);
   }
 
+  /* Same per-platform ceilings as the SQL emitter: opts.qualityCeil (from
+   * metaScoreOpts / ttScoreOpts) overrides the config default per key so the
+   * hover/badge read the SAME ceilings the SQL used. Missing key falls back to
+   * creativeScoreConfig().qualityCeil. */
+  const ceilFor = (k) => (opts && opts.qualityCeil && opts.qualityCeil[k] != null) ? opts.qualityCeil[k] : cfg.qualityCeil[k];
   const qParts = [];
   const pushQ = (v, ceil) => { if (v != null) qParts.push(clamp01(Number(v) / (ceil || 1))); };
-  pushQ(vals.hook, cfg.qualityCeil.hook);
-  pushQ(vals.hold, cfg.qualityCeil.hold);
-  pushQ(vals.ctr, cfg.qualityCeil.ctr);
-  pushQ(vals.completion, cfg.qualityCeil.completion);
+  pushQ(vals.hook, ceilFor('hook'));
+  pushQ(vals.hold, ceilFor('hold'));
+  pushQ(vals.ctr, ceilFor('ctr'));
+  pushQ(vals.completion, ceilFor('completion'));
   const videoQuality = qParts.length ? qParts.reduce((a, b) => a + b, 0) / qParts.length : 0.5;
   const hasVideo = (vals.hasVideo === undefined) ? true : !!vals.hasVideo;
   const quality = hasVideo ? videoQuality : 0.5;
@@ -890,10 +915,13 @@ if (typeof window !== 'undefined') window.creativeScoreBadge = creativeScoreBadg
  * query used, so the breakdown reconciles to the headline. `vals` is the same
  * shape creativeScoreParts takes: { spend, metric, hook, hold, ctr, completion,
  * hasVideo, activeDays }. hasVideo:false and a missing activeDays are surfaced
- * so the hover can state the neutral 0.5 contribution rather than hide it. */
-function creativeScoreHover(sqlScore, vals){
+ * so the hover can state the neutral 0.5 contribution rather than hide it. The
+ * optional third arg opts is the SAME per-platform opts (with qualityCeil) the
+ * table's SQL used; it is forwarded to creativeScoreParts so the component
+ * sub-scores read the same ceilings the badge did (hover == table). */
+function creativeScoreHover(sqlScore, vals, opts){
   vals = vals || {};
-  const parts = creativeScoreParts(vals);
+  const parts = creativeScoreParts(vals, opts);
   const raw = bqStr(sqlScore);
   const n = (raw == null || raw === '') ? NaN : Number(raw);
   const value = Number.isFinite(n) ? Math.round(n) : null;

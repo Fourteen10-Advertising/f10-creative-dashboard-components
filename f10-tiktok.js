@@ -89,6 +89,11 @@
       completionExpr: 'SAFE_DIVIDE(video_views_p100, NULLIF(impressions, 0)) * 100',
       hasVideoExpr:   'video_play_actions > 0',
       activeDaysExpr: 'active_days',
+      /* Per-platform quality ceilings (rates as a percent of impressions),
+         validated on FastCover live data in US-004. TikTok rates run lower than
+         Meta, so its ceilings are lower; this stops TikTok being capped and
+         centres a real TikTok video near 0.5. */
+      qualityCeil:    { hook: 11, hold: 1.9, ctr: 0.4, completion: 0.3 },
     };
   }
 
@@ -421,7 +426,7 @@
       renderPagedTable('tt-scatter-table-body', scatterData.map((r) => {
         const cls = r.classification; const badgeClass = cls === 'Home Run' ? 'badge-hr' : cls === 'On Base' ? 'badge-ob' : cls === 'Strike Out' ? 'badge-so' : 'badge-un';
         const ce = { impressions: Number(r.impressions) || 0, clicks: Number(r.clicks) || 0, video_watched_2s: Number(r.video_watched_2s) || 0, video_watched_6s: Number(r.video_watched_6s) || 0, video_views_p100: Number(r.video_views_p100) || 0, video_play_actions: Number(r.video_play_actions) || 0 };
-        const cr = creativeRates(ce, PROFILE); registerAdMetrics(r.ad_id, ce, PROFILE, creativeScoreHover(r.creative_score, { spend: r.lifetime_spend, metric: r[mCol], hook: cr.hook, hold: cr.hold, ctr: cr.ctr, completion: cr.completion, hasVideo: cr.hasVideo, activeDays: r.active_days }));
+        const cr = creativeRates(ce, PROFILE); registerAdMetrics(r.ad_id, ce, PROFILE, creativeScoreHover(r.creative_score, { spend: r.lifetime_spend, metric: r[mCol], hook: cr.hook, hold: cr.hold, ctr: cr.ctr, completion: cr.completion, hasVideo: cr.hasVideo, activeDays: r.active_days }, ttScoreOpts()));
         return `<tr><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adgroup_name}">${r.adgroup_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmt$(r.lifetime_spend)}</td><td>${Number(r[mCol]) > 0 ? fmtMetricCell(r[mCol]) : '–'}</td><td>${fmtNum(r.total_conversions)}</td><td class="num">${cr.hook != null ? fmtPct(cr.hook, 2) : '–'}</td><td class="num">${cr.hold != null ? fmtPct(cr.hold, 2) : '–'}</td><td class="num">${cr.completion != null ? fmtPct(cr.completion, 2) : '–'}</td><td>${r.creative_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="tiktok" href="${r.creative_link}" target="_blank">Preview</a>` : '–'}</td><td><span class="badge ${badgeClass}">${cls}</span></td><td>${creativeScoreBadge(r.creative_score)}</td></tr>`;
       }));
       hideEl('tt-scatter-table-loading'); showEl('tt-scatter-table');
@@ -456,7 +461,7 @@
       const rows = data.map((r) => {
         const ce = { impressions: Number(r.impressions) || 0, clicks: Number(r.clicks) || 0, video_play_actions: Number(r.video_play_actions) || 0, video_watched_2s: Number(r.video_watched_2s) || 0, video_watched_6s: Number(r.video_watched_6s) || 0, video_views_p25: Number(r.video_views_p25) || 0, video_views_p50: Number(r.video_views_p50) || 0, video_views_p75: Number(r.video_views_p75) || 0, video_views_p100: Number(r.video_views_p100) || 0 };
         const cr = creativeRates(ce, PROFILE);
-        registerAdMetrics(r.ad_id, ce, PROFILE, creativeScoreHover(r.creative_score, { spend: r.lifetime_spend, metric: r[ttLifetimeMetricCol()], hook: cr.hook, hold: cr.hold, ctr: cr.ctr, completion: cr.completion, hasVideo: cr.hasVideo, activeDays: r.active_days }));
+        registerAdMetrics(r.ad_id, ce, PROFILE, creativeScoreHover(r.creative_score, { spend: r.lifetime_spend, metric: r[ttLifetimeMetricCol()], hook: cr.hook, hold: cr.hold, ctr: cr.ctr, completion: cr.completion, hasVideo: cr.hasVideo, activeDays: r.active_days }, ttScoreOpts()));
         tImpr += ce.impressions; t2 += ce.video_watched_2s; t6 += ce.video_watched_6s; t25 += ce.video_views_p25; t50 += ce.video_views_p50; t75 += ce.video_views_p75; t100 += ce.video_views_p100;
         const pct = (v) => v != null ? fmtPct(v, 2) : '–';
         const pv = r.creative_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="tiktok" href="${r.creative_link}" target="_blank">Preview</a>` : '–';

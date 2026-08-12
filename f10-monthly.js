@@ -177,6 +177,10 @@ function metaScoreOpts(){
     completionExpr: 'SAFE_DIVIDE(video_p100, NULLIF(impressions, 0)) * 100',
     hasVideoExpr:   'video_plays > 0',
     activeDaysExpr: 'active_days',
+    /* Per-platform quality ceilings (rates as a percent of impressions),
+       validated on FastCover live data in US-004. Meta has no hook gate, so the
+       Meta set is hold/ctr/completion; centring a real Meta video near 0.5. */
+    qualityCeil:    { hold: 6, ctr: 1.3, completion: 2.5 },
   };
 }
 
@@ -292,7 +296,7 @@ async function loadProduction(){
       return `<tr><td>${r.launch_month}</td><td>${fmt$(r.total_spend)}</td><td>${ads}</td><td>${hr}</td><td>${fmtPct(hr/ads*100)}</td><td>${ob}</td><td>${fmtPct(ob/ads*100)}</td><td>${r.avg_cpa&&Number(r.avg_cpa)>0?fmtMetricCell(r.avg_cpa):'–'}</td><td>${fmtNum(r.total_conversions)}</td><td>${so}</td><td>${fmtPct(so/ads*100)}</td></tr>`; });
     renderPagedTable('production-table-body', prodRows, 20, `<tr style="font-weight:600; background:var(--paper);"><td>Grand Total</td><td>${fmt$(gSpend)}</td><td>${gAds}</td><td>${gHR}</td><td>${fmtPct(gHR/gAds*100)}</td><td>${gOB}</td><td>${fmtPct(gOB/gAds*100)}</td><td>–</td><td>${fmtNum(gConv)}</td><td>${gSO}</td><td>${fmtPct(gSO/gAds*100)}</td></tr>`);
     hideEl('production-table-loading'); showEl('production-table');
-    renderPagedTable('scatter-table-body', scatterData.map(r=>{ const cls=r.classification; const badgeClass=cls==='Home Run'?'badge-hr':cls==='On Base'?'badge-ob':cls==='Strike Out'?'badge-so':'badge-un'; const ce={ impressions:Number(r.impressions)||0, clicks:Number(r.clicks)||0, video_15s:Number(r.video_15s)||0, video_p25:Number(r.video_p25)||0, video_p50:Number(r.video_p50)||0, video_p75:Number(r.video_p75)||0, video_p100:Number(r.video_p100)||0, video_plays:Number(r.video_plays)||0, outbound_clicks:Number(r.outbound_clicks)||0 }; const cr=creativeRates(ce); registerAdMetrics(r.ad_id, ce, undefined, creativeScoreHover(r.creative_score, { spend:r.lifetime_spend, metric:r[mCol], hook:cr.hook, hold:cr.hold, ctr:cr.ctr, completion:cr.completion, hasVideo:cr.hasVideo, activeDays:r.active_days }));
+    renderPagedTable('scatter-table-body', scatterData.map(r=>{ const cls=r.classification; const badgeClass=cls==='Home Run'?'badge-hr':cls==='On Base'?'badge-ob':cls==='Strike Out'?'badge-so':'badge-un'; const ce={ impressions:Number(r.impressions)||0, clicks:Number(r.clicks)||0, video_15s:Number(r.video_15s)||0, video_p25:Number(r.video_p25)||0, video_p50:Number(r.video_p50)||0, video_p75:Number(r.video_p75)||0, video_p100:Number(r.video_p100)||0, video_plays:Number(r.video_plays)||0, outbound_clicks:Number(r.outbound_clicks)||0 }; const cr=creativeRates(ce); registerAdMetrics(r.ad_id, ce, undefined, creativeScoreHover(r.creative_score, { spend:r.lifetime_spend, metric:r[mCol], hook:cr.hook, hold:cr.hold, ctr:cr.ctr, completion:cr.completion, hasVideo:cr.hasVideo, activeDays:r.active_days }, metaScoreOpts()));
       return `<tr ${adNameAttr(r.ad_name)}><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adset_name}">${r.adset_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmt$(r.lifetime_spend)}</td><td>${r[mCol]&&Number(r[mCol])>0?fmtMetricCell(r[mCol]):'–'}</td><td>${fmtNum(r.total_conversions)}</td><td class="num">${cr.hold!=null?fmtPct(cr.hold,2):'–'}</td><td class="num">${cr.completion!=null?fmtPct(cr.completion,2):'–'}</td><td class="num">${cr.outboundCtr!=null?fmtPct(cr.outboundCtr,2):'–'}</td><td>${r.creative_link?`<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.creative_link}" target="_blank">Preview</a>`:'–'}</td><td><span class="badge ${badgeClass}">${cls}</span></td><td>${creativeScoreBadge(r.creative_score)}</td></tr>`; }));
     hideEl('scatter-table-loading'); showEl('scatter-table');
   } catch(err){ console.error('Production error:',err); }
@@ -360,7 +364,7 @@ async function loadCreativeEffectiveness(){
     const rows = data.map(r=>{
       const ce = { impressions:Number(r.impressions)||0, clicks:Number(r.clicks)||0, video_15s:Number(r.video_15s)||0, video_p25:Number(r.video_p25)||0, video_p50:Number(r.video_p50)||0, video_p75:Number(r.video_p75)||0, video_p100:Number(r.video_p100)||0, video_plays:Number(r.video_plays)||0, outbound_clicks:Number(r.outbound_clicks)||0 };
       const cr = creativeRates(ce);
-      registerAdMetrics(r.ad_id, ce, undefined, creativeScoreHover(r.creative_score, { spend:r.lifetime_spend, metric:r[lifetimeMetricCol()], hook:cr.hook, hold:cr.hold, ctr:cr.ctr, completion:cr.completion, hasVideo:cr.hasVideo, activeDays:r.active_days }));
+      registerAdMetrics(r.ad_id, ce, undefined, creativeScoreHover(r.creative_score, { spend:r.lifetime_spend, metric:r[lifetimeMetricCol()], hook:cr.hook, hold:cr.hold, ctr:cr.ctr, completion:cr.completion, hasVideo:cr.hasVideo, activeDays:r.active_days }, metaScoreOpts()));
       tImpr+=ce.impressions; t15+=ce.video_15s; t25+=ce.video_p25; t50+=ce.video_p50; t75+=ce.video_p75; t100+=ce.video_p100;
       const pct = (v) => v!=null ? fmtPct(v,2) : '–';
       const pv = r.creative_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.creative_link}" target="_blank">Preview</a>` : '–';
