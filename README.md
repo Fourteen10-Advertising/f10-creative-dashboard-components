@@ -25,7 +25,7 @@ The entire dashboard body is `<div id="app"></div>`. Define config, load the fou
 ```html
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@300;400;500;600&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.7.0/f10-shared.css" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.18.0/f10-shared.css" />
 ```
 
 ### 2. Body + scripts:
@@ -62,11 +62,11 @@ The entire dashboard body is `<div id="app"></div>`. Define config, load the fou
   /* Optional per-client Ad Production thresholds — see "Thresholds" below. */
   // const THRESHOLDS = { HR_SPEND: 8000, HR_CPA: 90 };
 </script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.7.0/f10-utils.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.7.0/f10-weekly.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.7.0/f10-monthly.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.7.0/f10-layout.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.7.0/f10-preview.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.18.0/f10-utils.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.18.0/f10-weekly.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.18.0/f10-monthly.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.18.0/f10-layout.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.18.0/f10-preview.js"></script>
 <script>
   renderLayout();
   wireControls();
@@ -120,6 +120,7 @@ cursor-following, click-through card. Regression coverage lives in
 | `REVENUE_EXPR` | no | SQL expression for the mart's **gated** revenue column (default `'revenue'`). Only consumed in ROAS mode. Never sum raw `conversion_value` |
 | `GROUP_FILTERS` | no | Array of `{ col, label }` segment dropdowns (default none) |
 | `THRESHOLDS` | no | Ad Production threshold overrides (see below) |
+| `CREATIVE_SCORE_CONFIG` | no | Creative Score weights, maturity target, per-rate quality ceilings and band cutoffs (see [Creative Score column](#creative-score-column)) |
 | `COMPETITORS` | no | Optional Competitor Ad Library overrides — the tab itself is automatic (see below) |
 
 ## Competitor Ad Library
@@ -294,7 +295,66 @@ The panel is **metric-aware**: the three spend floors are always shown, and the 
 
 ## Creative Score column
 
-The **Ad Production** and **Creative Effectiveness** per-ad tables (Meta and TikTok) carry a sortable **Creative Score** column: one 0 to 100 score per creative that blends efficiency (the account headline metric against the live bands), creative quality (hook/hold/CTR/completion), durability (active days) and a confidence weighting on spend. The score is computed **once in SQL** by `creativeScoreSQL(...)` as a `creative_score` column and rendered verbatim by `creativeScoreBadge(...)` (in `f10-utils.js`); the frontend never recomputes it. The badge text is the bare number so the universal table sort reads it numerically and sorts high to low on the first click; the colour band comes from `creativeScoreBand()` and reuses the framework palette (`.score-strong` green / `.score-mid` blue / `.score-weak` red in `f10-shared.css`, sharing the `--stabilo` / `--stabilo-red` vars with the classification badges). The Creative Effectiveness query is extended with the same efficiency inputs and active-days as Production, so a given ad shows the same score on both tabs for the same window. Score weights, quality ceilings and band cutoffs are tunable via `CREATIVE_SCORE_CONFIG` (see the helper in `f10-utils.js`).
+The **Ad Production** and **Creative Effectiveness** per-ad tables (Meta and TikTok) carry a sortable **Creative Score** column: one 0 to 100 score per creative that lets the team rank creatives on a single, cross-metric number. The score is computed **once in SQL** by `creativeScoreSQL(...)` as a `creative_score` column and rendered verbatim by `creativeScoreBadge(...)` (both in `f10-utils.js`); the frontend never recomputes it. The badge text is the bare number so the universal table sort reads it numerically and sorts high to low on the first click, and the colour band comes from `creativeScoreBand()`, reusing the framework palette (`.score-strong` green, `.score-mid` blue, `.score-weak` red in `f10-shared.css`, sharing the `--stabilo` / `--stabilo-red` vars with the classification badges). The Creative Effectiveness query carries the same efficiency inputs and active-days as Production, so a given ad shows the same score on both tabs for the same window.
+
+### The formula
+
+The score is a neutral 50 shifted by a confidence multiplier:
+
+```
+score = round(50 + (raw - 50) * confidence)
+raw   = 100 * (0.5 * efficiency + 0.3 * quality + 0.2 * durability)
+```
+
+`efficiency`, `quality` and `durability` are each a 0..1 sub-score, and `confidence` is a 0..1 multiplier. The four components:
+
+- **Efficiency** (weight 0.5) is anchored to the account's live HR/OB/SO threshold bands. In CPA mode it rewards a low CPA and anchors to `HR_CPA` / `OB_CPA` / `SO_CPA`. In ROAS mode it flips to reward a high ROAS against `HR_ROAS` / `OB_ROAS` / `SO_ROAS`, and reads **only** the gated revenue expression, never raw `conversion_value` (the same revenue-gating policy the rest of the framework follows).
+- **Quality** (weight 0.3) is the video gates (hook, hold, CTR, completion), each mapped 0..1 against a ceiling and then averaged. A static image with no video gates scores a neutral **0.5** on quality, so a still is not penalised for having no video attention to measure.
+- **Durability** (weight 0.2) is active days against a maturity target (default 30 days).
+- **Confidence** is `LN(1 + spend) / LN(1 + HR_SPEND)`, clamped 0..1, applied as a **multiplier**. It pulls a thin-spend ad toward the neutral 50 rather than letting a tiny-spend ad top the board; an ad with enough spend behind it (at or above `HR_SPEND`) is trusted in full.
+
+The hover breakdown (`f10-preview.js`) shows the final score plus its four component sub-scores, reading the **same registry numbers** the badge shows (no second computation), so the hover always reconciles to the table badge for that ad.
+
+### Per-platform quality ceilings
+
+Median video quality should centre near 0.5 on both platforms, so real video sits alongside the static 0.5 baseline and TikTok is not under-scaled against Meta. The quality ceilings are therefore **per-platform** (validated on FastCover live data), carried by `metaScoreOpts()` and `ttScoreOpts()`:
+
+| Platform | hook | hold | ctr | completion |
+|---|---|---|---|---|
+| Meta | n/a | 6 | 1.3 | 2.5 |
+| TikTok | 11 | 1.9 | 0.4 | 0.3 |
+
+Meta has no hook gate, so its quality is hold, ctr and completion. Each ceiling is overridable via `CREATIVE_SCORE_CONFIG.qualityCeil`; the config default is the Meta set, used only as a fallback.
+
+### Structural note
+
+Because efficiency carries half the weight and a zero-conversion ad grades efficiency at 0, a zero-conversion ad is capped at the neutral 50 and cannot reach the strong band, even with perfect quality and durability. That is deliberate: a creative that has never converted should not top a scoreboard on attention metrics alone.
+
+### Config
+
+All weights, the maturity target, the per-rate quality ceilings and the band cutoffs are tunable via the guarded-global `CREATIVE_SCORE_CONFIG`, set **before** the scripts load, the same idiom as `THRESHOLDS` / `TARGET_METRIC`:
+
+```js
+const CREATIVE_SCORE_CONFIG = { wEfficiency: 0.5, maturityDays: 45 };
+```
+
+| Key | Default | Purpose |
+|---|---|---|
+| `wEfficiency` | 0.5 | Efficiency weight in the blend |
+| `wQuality` | 0.3 | Quality weight in the blend |
+| `wDurability` | 0.2 | Durability weight in the blend |
+| `maturityDays` | 30 | Active-days target the durability sub-score maps against |
+| `qualityCeil` | per-platform | `{ hook, hold, ctr, completion }` ceilings; set per-platform at runtime by `metaScoreOpts()` / `ttScoreOpts()`, this config value is the Meta fallback |
+| `confidenceFloor` | 0 | Lower clamp on the confidence multiplier |
+| `bandStrong` | 70 | Score at or above this renders in the Strong (green) band |
+| `bandMid` | 40 | Score at or above this renders in the Mid (blue) band; below it is Weak (red) |
+| `neutral` | 50 | The neutral midpoint the raw score is shifted around |
+
+Any subset can be overridden; omitted keys keep their defaults.
+
+### Adopting the Creative Score on another dashboard
+
+The change is **purely additive**, so a dashboard adopts the Creative Score simply by re-pinning its jsDelivr URLs to **v1.18.0 or later** (see [How to use in a dashboard](#how-to-use-in-a-dashboard)). No config is required, the defaults ship, and it works in ROAS mode as well as CPA mode. Optionally tune `CREATIVE_SCORE_CONFIG` (weights, `maturityDays`, per-rate `qualityCeil`, band cutoffs) per client, and re-validate the score against that client's known winners and dogs before relying on it for cross-creative comparison.
 
 ## Co-branding (optional)
 
