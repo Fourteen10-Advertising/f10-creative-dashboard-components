@@ -162,6 +162,28 @@ async function loadAge(){
 
 /* ── Ad Production ── */
 
+/* Creative Score inputs for the Meta creative mart (US-002). Rates are a percent
+ * of impressions (0..100), matching creativeRates(); Meta has no early-view hook
+ * gate (profile hookCol is null) so hookExpr is omitted and drops out of the
+ * quality average. hasVideo gates on video_plays; activeDays reads the per-ad
+ * active_days column both per-ad queries expose. The Production and Creative
+ * Effectiveness tabs pass THESE SAME opts to creativeScoreSQL, so the score for a
+ * given ad and window matches across both tabs (computed once in SQL, rendered
+ * verbatim by creativeScoreBadge -- never recomputed in JS). */
+function metaScoreOpts(){
+  return {
+    holdExpr:       'SAFE_DIVIDE(video_15s, NULLIF(impressions, 0)) * 100',
+    ctrExpr:        'SAFE_DIVIDE(clicks, NULLIF(impressions, 0)) * 100',
+    completionExpr: 'SAFE_DIVIDE(video_p100, NULLIF(impressions, 0)) * 100',
+    hasVideoExpr:   'video_plays > 0',
+    activeDaysExpr: 'active_days',
+    /* Per-platform quality ceilings (rates as a percent of impressions),
+       validated on FastCover live data in US-004. Meta has no hook gate, so the
+       Meta set is hold/ctr/completion; centring a real Meta video near 0.5. */
+    qualityCeil:    { hold: 6, ctr: 1.3, completion: 2.5 },
+  };
+}
+
 async function loadProduction(){
   ensureProductionControls();
   fillProductionInputs();
@@ -173,6 +195,7 @@ async function loadProduction(){
     WITH per_ad AS (
       SELECT ad_id, ANY_VALUE(ad_name) AS ad_name, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(adset_name) AS adset_name,
         MIN(min_date) AS launch_date, ANY_VALUE(creative_link) AS creative_link,
+        DATE_DIFF(COALESCE(MAX(max_date), CURRENT_DATE()), MIN(min_date), DAY) AS active_days,
         ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend,
         ROUND(SUM(${CONV_EXPR}), 0) AS total_conversions,
         ROUND(${lifetimeMetricSQL('ANY_VALUE(lifetime_spend)', `SUM(${CONV_EXPR})`)}, 2) AS ${lifetimeMetricCol()},
@@ -182,7 +205,8 @@ async function loadProduction(){
       FROM \`${PROJECT}.${DATASET}.${TABLE}\`${scopeWhere('WHERE')} GROUP BY 1
     )
     SELECT *,
-      ${classificationCaseSQL('lifetime_spend', lifetimeMetricCol())} AS classification
+      ${classificationCaseSQL('lifetime_spend', lifetimeMetricCol())} AS classification,
+      ${creativeScoreSQL('lifetime_spend', lifetimeMetricCol(), metaScoreOpts())} AS creative_score
     FROM per_ad ORDER BY lifetime_spend DESC`;
   /* Metric-aware rollup: unique_ads carries the same per-ad lifetime metric the
      scatter uses (lifetime_cpa or lifetime_roas), classified by the single shared
@@ -272,8 +296,8 @@ async function loadProduction(){
       return `<tr><td>${r.launch_month}</td><td>${fmt$(r.total_spend)}</td><td>${ads}</td><td>${hr}</td><td>${fmtPct(hr/ads*100)}</td><td>${ob}</td><td>${fmtPct(ob/ads*100)}</td><td>${r.avg_cpa&&Number(r.avg_cpa)>0?fmtMetricCell(r.avg_cpa):'–'}</td><td>${fmtNum(r.total_conversions)}</td><td>${so}</td><td>${fmtPct(so/ads*100)}</td></tr>`; });
     renderPagedTable('production-table-body', prodRows, 20, `<tr style="font-weight:600; background:var(--paper);"><td>Grand Total</td><td>${fmt$(gSpend)}</td><td>${gAds}</td><td>${gHR}</td><td>${fmtPct(gHR/gAds*100)}</td><td>${gOB}</td><td>${fmtPct(gOB/gAds*100)}</td><td>–</td><td>${fmtNum(gConv)}</td><td>${gSO}</td><td>${fmtPct(gSO/gAds*100)}</td></tr>`);
     hideEl('production-table-loading'); showEl('production-table');
-    renderPagedTable('scatter-table-body', scatterData.map(r=>{ const cls=r.classification; const badgeClass=cls==='Home Run'?'badge-hr':cls==='On Base'?'badge-ob':cls==='Strike Out'?'badge-so':'badge-un'; const ce={ impressions:Number(r.impressions)||0, clicks:Number(r.clicks)||0, video_15s:Number(r.video_15s)||0, video_p25:Number(r.video_p25)||0, video_p50:Number(r.video_p50)||0, video_p75:Number(r.video_p75)||0, video_p100:Number(r.video_p100)||0, video_plays:Number(r.video_plays)||0, outbound_clicks:Number(r.outbound_clicks)||0 }; registerAdMetrics(r.ad_id, ce); const cr=creativeRates(ce);
-      return `<tr ${adNameAttr(r.ad_name)}><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adset_name}">${r.adset_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmt$(r.lifetime_spend)}</td><td>${r[mCol]&&Number(r[mCol])>0?fmtMetricCell(r[mCol]):'–'}</td><td>${fmtNum(r.total_conversions)}</td><td class="num">${cr.hold!=null?fmtPct(cr.hold,2):'–'}</td><td class="num">${cr.completion!=null?fmtPct(cr.completion,2):'–'}</td><td class="num">${cr.outboundCtr!=null?fmtPct(cr.outboundCtr,2):'–'}</td><td>${r.creative_link?`<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.creative_link}" target="_blank">Preview</a>`:'–'}</td><td><span class="badge ${badgeClass}">${cls}</span></td></tr>`; }));
+    renderPagedTable('scatter-table-body', scatterData.map(r=>{ const cls=r.classification; const badgeClass=cls==='Home Run'?'badge-hr':cls==='On Base'?'badge-ob':cls==='Strike Out'?'badge-so':'badge-un'; const ce={ impressions:Number(r.impressions)||0, clicks:Number(r.clicks)||0, video_15s:Number(r.video_15s)||0, video_p25:Number(r.video_p25)||0, video_p50:Number(r.video_p50)||0, video_p75:Number(r.video_p75)||0, video_p100:Number(r.video_p100)||0, video_plays:Number(r.video_plays)||0, outbound_clicks:Number(r.outbound_clicks)||0 }; const cr=creativeRates(ce); registerAdMetrics(r.ad_id, ce, undefined, creativeScoreHover(r.creative_score, { spend:r.lifetime_spend, metric:r[mCol], hook:cr.hook, hold:cr.hold, ctr:cr.ctr, completion:cr.completion, hasVideo:cr.hasVideo, activeDays:r.active_days }, metaScoreOpts()));
+      return `<tr ${adNameAttr(r.ad_name)}><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adset_name}">${r.adset_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmt$(r.lifetime_spend)}</td><td>${r[mCol]&&Number(r[mCol])>0?fmtMetricCell(r[mCol]):'–'}</td><td>${fmtNum(r.total_conversions)}</td><td class="num">${cr.hold!=null?fmtPct(cr.hold,2):'–'}</td><td class="num">${cr.completion!=null?fmtPct(cr.completion,2):'–'}</td><td class="num">${cr.outboundCtr!=null?fmtPct(cr.outboundCtr,2):'–'}</td><td>${r.creative_link?`<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.creative_link}" target="_blank">Preview</a>`:'–'}</td><td><span class="badge ${badgeClass}">${cls}</span></td><td>${creativeScoreBadge(r.creative_score)}</td></tr>`; }));
     hideEl('scatter-table-loading'); showEl('scatter-table');
   } catch(err){ console.error('Production error:',err); }
 }
@@ -314,13 +338,23 @@ async function loadPowerLaw(){
  * curve across all video ads in the last 90 days. Static-image ads (no
  * video plays) are excluded, since every attention metric is zero for them. */
 async function loadCreativeEffectiveness(){
+  /* Additive Creative Score (US-002): the inner query gains the score's efficiency
+     inputs (lifetime spend + the metric column via the SAME lifetimeMetricSQL the
+     Production tab uses) and active_days, then the outer SELECT computes
+     creative_score with the SAME metaScoreOpts as Production. Every original
+     column and the impressions>0 filter are unchanged, so existing rows/rates are
+     untouched and the same ad shows the same score as the Production tab. */
   const sql = `
-    SELECT * FROM (
+    SELECT *, ${creativeScoreSQL('lifetime_spend', lifetimeMetricCol(), metaScoreOpts())} AS creative_score FROM (
       SELECT ad_id, ANY_VALUE(ad_name) AS ad_name, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(creative_link) AS creative_link,
         ROUND(SUM(spend),2) AS spend, SUM(impressions) AS impressions, SUM(clicks) AS clicks,
         SUM(video_plays) AS video_plays, SUM(video_15s) AS video_15s,
         SUM(video_p25) AS video_p25, SUM(video_p50) AS video_p50, SUM(video_p75) AS video_p75, SUM(video_p100) AS video_p100,
-        SUM(outbound_clicks) AS outbound_clicks
+        SUM(outbound_clicks) AS outbound_clicks,
+        ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend,
+        ROUND(SUM(${CONV_EXPR}), 0) AS total_conversions,
+        ROUND(${lifetimeMetricSQL('ANY_VALUE(lifetime_spend)', `SUM(${CONV_EXPR})`)}, 2) AS ${lifetimeMetricCol()},
+        DATE_DIFF(COALESCE(MAX(max_date), CURRENT_DATE()), MIN(min_date), DAY) AS active_days
       FROM \`${PROJECT}.${DATASET}.${TABLE}\`
       WHERE date_start >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)${scopeWhere()}
       GROUP BY 1
@@ -330,12 +364,12 @@ async function loadCreativeEffectiveness(){
     let tImpr=0,t15=0,t25=0,t50=0,t75=0,t100=0;
     const rows = data.map(r=>{
       const ce = { impressions:Number(r.impressions)||0, clicks:Number(r.clicks)||0, video_15s:Number(r.video_15s)||0, video_p25:Number(r.video_p25)||0, video_p50:Number(r.video_p50)||0, video_p75:Number(r.video_p75)||0, video_p100:Number(r.video_p100)||0, video_plays:Number(r.video_plays)||0, outbound_clicks:Number(r.outbound_clicks)||0 };
-      registerAdMetrics(r.ad_id, ce);
       const cr = creativeRates(ce);
+      registerAdMetrics(r.ad_id, ce, undefined, creativeScoreHover(r.creative_score, { spend:r.lifetime_spend, metric:r[lifetimeMetricCol()], hook:cr.hook, hold:cr.hold, ctr:cr.ctr, completion:cr.completion, hasVideo:cr.hasVideo, activeDays:r.active_days }, metaScoreOpts()));
       tImpr+=ce.impressions; t15+=ce.video_15s; t25+=ce.video_p25; t50+=ce.video_p50; t75+=ce.video_p75; t100+=ce.video_p100;
       const pct = (v) => v!=null ? fmtPct(v,2) : '–';
       const pv = r.creative_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.creative_link}" target="_blank">Preview</a>` : '–';
-      return `<tr ${adNameAttr(r.ad_name)}><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name||''}">${r.ad_name||'–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name||''}">${r.campaign_name||'–'}</td><td class="num">${fmt$(r.spend)}</td><td class="num">${fmtNum(ce.impressions)}</td><td class="num">${pct(cr.hold)}</td><td class="num">${pct(cr.completion)}</td><td class="num">${pct(cr.retention.p25)}</td><td class="num">${pct(cr.retention.p50)}</td><td class="num">${pct(cr.retention.p75)}</td><td class="num">${pct(cr.retention.p100)}</td><td class="num">${pct(cr.ctr)}</td><td class="num">${pct(cr.outboundCtr)}</td><td>${pv}</td></tr>`;
+      return `<tr ${adNameAttr(r.ad_name)}><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name||''}">${r.ad_name||'–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name||''}">${r.campaign_name||'–'}</td><td class="num">${fmt$(r.spend)}</td><td class="num">${fmtNum(ce.impressions)}</td><td class="num">${pct(cr.hold)}</td><td class="num">${pct(cr.completion)}</td><td class="num">${pct(cr.retention.p25)}</td><td class="num">${pct(cr.retention.p50)}</td><td class="num">${pct(cr.retention.p75)}</td><td class="num">${pct(cr.retention.p100)}</td><td class="num">${pct(cr.ctr)}</td><td class="num">${pct(cr.outboundCtr)}</td><td>${pv}</td><td>${creativeScoreBadge(r.creative_score)}</td></tr>`;
     });
     renderPagedTable('creative-table-body', rows);
     hideEl('creative-table-loading'); showEl('creative-table');

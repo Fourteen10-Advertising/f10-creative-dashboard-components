@@ -158,6 +158,14 @@ tbody tr:hover { background: rgba(75,0,15,0.03); }
 .f10-pm-curvelbl { display: block; font-size: 8.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--grey); margin-top: 2px; text-align: center; }
 .f10-spark { overflow: visible; }
 
+/* Creative Score breakdown at the top of the hover panel (US-003) */
+.f10-preview-score { margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--paper-dark); }
+.f10-pm-score-head { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; margin-bottom: 3px; }
+.f10-pm-score-head span { letter-spacing: 0.06em; text-transform: uppercase; font-size: 9.5px; font-weight: 600; color: var(--grey); }
+.f10-pm-score-head b { font-size: 15px; color: var(--young-blood); font-weight: 700; }
+.f10-pm-band { font-style: normal; font-size: 8.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--grey); margin-left: 5px; }
+.f10-pm-note { font-size: 9px; line-height: 1.4; color: var(--grey); margin: 0 0 4px; }
+
 .rank-num { font-size: 11px; font-weight: 600; color: var(--grey); min-width: 24px; }
 
 .badge { display: inline-block; font-size: 9.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; padding: 3px 8px; border-radius: 3px; white-space: nowrap; }
@@ -171,6 +179,14 @@ tbody tr:hover { background: rgba(75,0,15,0.03); }
 .badge-ob { background: rgba(74,144,226,0.15); color: #1a4a8a; border: 1px solid #4a90e2; }
 .badge-so { background: color-mix(in srgb, var(--stabilo-red) 11%, transparent); color: color-mix(in srgb, var(--stabilo-red) 58%, #000); border: 1px solid var(--stabilo-red); }
 .badge-un { background: rgba(114,114,114,0.12); color: #505050; border: 1px solid #b0b0b0; }
+
+/* Creative Score bands (US-002). Reuse the existing palette bands so the score
+ * badge shares one colour system with the classification badges: strong mirrors
+ * badge-hr (--stabilo green), mid mirrors badge-ob (blue), weak mirrors badge-so
+ * (--stabilo-red). No new colour system is introduced. */
+.score-strong { background: color-mix(in srgb, var(--stabilo) 20%, transparent); color: color-mix(in srgb, var(--stabilo) 45%, #000); border: 1px solid var(--stabilo); }
+.score-mid    { background: rgba(74,144,226,0.15); color: #1a4a8a; border: 1px solid #4a90e2; }
+.score-weak   { background: color-mix(in srgb, var(--stabilo-red) 11%, transparent); color: color-mix(in srgb, var(--stabilo-red) 58%, #000); border: 1px solid var(--stabilo-red); }
 
 .table-pagination { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 10px 20px; border-top: 1px solid var(--paper-dark); background: var(--white); }
 .pg-btn { font-family: inherit; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; background: var(--white); color: var(--young-blood); border: 1.5px solid var(--young-blood); border-radius: 4px; padding: 5px 12px; cursor: pointer; transition: background 0.15s, color 0.15s; }

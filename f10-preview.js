@@ -100,8 +100,51 @@
     show('<div class="f10-preview-spinner"></div>');
   }
 
+  // Format a 0..1 sub-score to a stable 2-decimal string, so the hover shows the
+  // same numbers the score math (creativeScoreParts) produced.
+  function subVal(v) { return (Math.round((Number(v) || 0) * 100) / 100).toFixed(2); }
+
+  // Creative Score breakdown (US-003). The headline is the SQL creative_score the
+  // table badge shows, carried verbatim in the registry and never recomputed
+  // here, so the hover headline always equals the table score for the same ad.
+  // Under it sit the four component sub-scores (efficiency, creative quality,
+  // durability, and the confidence multiplier applied), each with a plain-English
+  // line saying what it means, so the score reads as a story instead of a black
+  // box. A component that does not apply (creative quality for a static image,
+  // durability with no run length) states its neutral 0.5 contribution rather
+  // than hiding, so the maths still adds up on screen.
+  function scoreBreakdownHtml(s) {
+    if (!s || s.value == null) return '';
+    function comp(label, valueHtml, note) {
+      return '<div class="f10-pm-row"><span>' + label + '</span><b>' + valueHtml + '</b></div>' +
+        '<div class="f10-pm-note">' + note + '</div>';
+    }
+    var band = (s.band && s.band.label) ? s.band.label : '';
+    var head = '<div class="f10-pm-score-head"><span>Creative Score</span><b>' + s.value +
+      (band ? ' <i class="f10-pm-band">' + band + '</i>' : '') + '</b></div>';
+    var efficiency = comp('Efficiency', subVal(s.efficiency),
+      'how well spend turns into results against the target band');
+    var quality = s.hasVideo
+      ? comp('Creative quality', subVal(s.quality),
+          'hook, hold and completion attention the video is earning')
+      : comp('Creative quality', 'neutral 0.5',
+          'no video to score, so this stays neutral and does not drag the score down');
+    var durability = s.activeKnown
+      ? comp('Durability', subVal(s.durability),
+          'how long the ad has run against the maturity target')
+      : comp('Durability', 'neutral 0.5',
+          'run length not available, so this stays neutral');
+    var confNote = (Number(s.confidence) >= 1)
+      ? 'enough spend behind it to trust the score in full'
+      : 'spend is still thin, so the score is pulled toward neutral';
+    var confidence = comp('Confidence applied', subVal(s.confidence) + 'x', confNote);
+    return '<div class="f10-preview-score">' + head + efficiency + quality + durability + confidence + '</div>';
+  }
+
   // Per-ad creative metrics panel, read from the registry that table renderers
-  // populate (window.F10_AD_METRICS). Empty string when an ad has no metrics.
+  // populate (window.F10_AD_METRICS). Leads with the Creative Score breakdown when
+  // the ad carries a score, then the raw attention rates. Empty string when an ad
+  // has no metrics at all.
   function metricsHtml(adId) {
     var reg = window.F10_AD_METRICS || {};
     var m = reg[adId];
@@ -118,9 +161,11 @@
     var hookRow = (m.hook != null) ? row('Hook rate', m.hook) : '';
     var outRow = (m.outboundCtr != null) ? row('Outbound CTR', m.outboundCtr) : '';
     return '<div class="f10-preview-metrics">' +
+      scoreBreakdownHtml(m.score) +
       hookRow + row('Hold rate', m.hold) + row('Completion', m.completion) +
       row('CTR', m.ctr) + outRow + curve + '</div>';
   }
+  window.f10MetricsHtml = metricsHtml;
 
   function showFallback(adId, platform) {
     var where = platform === 'tiktok' ? 'Opens on TikTok' : 'Opens on Facebook';
