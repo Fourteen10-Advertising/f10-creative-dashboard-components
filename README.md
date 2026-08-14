@@ -15,6 +15,7 @@ A dashboard is now just a config block plus script tags: the markup, styling, an
 | `f10-layout.js` | `renderLayout()` — builds the sidebar, controls bar, and all seven tab panels into `<div id="app"></div>`. Production benchmark copy is derived from the threshold constants |
 | `f10-preview.js` | Inline creative hover previews for `.preview-link` targets; renders a swipeable carousel when an ad has multiple cards. Exposes `f10MediaMarkup({type,url}, opts)` — the shared `<img>`/`<video>` builder reused by the competitor tab — plus `f10PreviewCards(media)` and `f10CarouselHtml(cards, idx)` |
 | `f10-competitors.js` | Competitor Ad Library tab (probe-driven: appears automatically when the client has competitor rows in `all_clients_adlib`): groups a client's tracked competitor Meta ads by competitor in the F10 card layout, with Status / Timeframe / Competitor filters, per-competitor pagination (20/page), and a metadata + on-demand creatives split that fetches only the visible page's signed media. Reuses `f10MediaMarkup` from `f10-preview.js` |
+| `f10-components.js` | Component Scale tab (probe-driven: appears automatically when the client has a `{client}_marts.component_performance` mart): grades the five creative components (hook, format, CTA, message angle, visual style) against the client's own baseline, with lift, evidence count, confidence tier, the verbatim descriptive caveat, and a co-occurrence mark; plus the cross-client whitespace lane as a separate, clearly-labelled hypotheses section. Adds `f10ActivateTab()` (in `f10-layout.js`) as the single generic tab dispatcher (see [Component Scale](#component-scale)) |
 
 ## How to use in a dashboard
 
@@ -65,6 +66,7 @@ The entire dashboard body is `<div id="app"></div>`. Define config, load the fou
 <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.18.0/f10-utils.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.18.0/f10-weekly.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.18.0/f10-monthly.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.18.0/f10-components.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.18.0/f10-layout.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.18.0/f10-preview.js"></script>
 <script>
@@ -122,6 +124,7 @@ cursor-following, click-through card. Regression coverage lives in
 | `THRESHOLDS` | no | Ad Production threshold overrides (see below) |
 | `CREATIVE_SCORE_CONFIG` | no | Creative Score weights, maturity target, per-rate quality ceilings and band cutoffs (see [Creative Score column](#creative-score-column)) |
 | `COMPETITORS` | no | Optional Competitor Ad Library overrides — the tab itself is automatic (see below) |
+| `COMPONENTS` | no | Optional Component Scale overrides; the tab itself is automatic (see [Component Scale](#component-scale)) |
 
 ## Competitor Ad Library
 
@@ -175,6 +178,34 @@ const COMPETITORS = {
   CLIENT:       'mosh', // optional f10_client override when DATASET doesn't follow {client}_marts / {client}_clean
   PER_PAGE:     20,     // optional; competitor cards shown per in-page page (default 20)
   MAX_PER_PAGE: 0,      // optional hard cap on ads rendered per competitor (0 = no cap)
+};
+```
+
+## Component Scale
+
+`f10-components.js` adds a **Component Scale** tab that surfaces the creative-component-pipeline evidence layer where creative reporting already lives. It grades every value of the five canonical components (**hook, format, call-to-action, message angle, visual style**) against the client's own baseline, from the pipeline's `{client}_marts.component_performance` mart (built by `component_scale.js` in `f10-dataform`, US-002). Each value shows its grade, the spend-weighted **lift vs baseline**, the delivered **evidence count**, the **confidence tier**, and the supporting metric (CPA, or gated-revenue ROAS for the revenue-gated clients).
+
+Visibility is **probe-driven**, exactly like the Competitor tab, so no per-client config is needed. On load, the module runs a cheap `EXISTS` probe on `{client}_marts.component_performance`; only when the mart has rows does it inject its own **Creative Components** nav section, **Component Scale** nav link and panel. A dashboard whose client has no mart (probe returns no rows, or the table does not exist and the query errors) shows **no tab** and leaves zero trace in the DOM: it fails closed, never a broken or empty tab. Every query runs through `runQuery()` (`f10-utils.js`) into the shared `bq` function, so it reuses the same 2 GB `maximumBytesBilled` cap and 30 s `jobTimeoutMs` guardrails as every other read; no fourth copy of the query options is pasted.
+
+Honesty is built into the render:
+
+- **Descriptive, not causal.** Every grade carries the mart's `label = 'descriptive'`; the tab renders the caveat verbatim: these are associations with performance against the client's own baseline, not proof of causation.
+- **Insufficient evidence is shown, never hidden.** A value below the 10-asset evidence gate (`confidence_tier = 'insufficient evidence'`) renders **greyed with its asset count**, so a thin read is visible and honestly weighted rather than silently dropped.
+- **Co-occurrence flag.** When US-005 populates `co_occurrence_flag`, a flagged grade is **marked** with a co-occurrence caution (its lift may be driven by a co-present component). Set `COMPONENTS = { SUPPRESS_CO_OCCURRENCE: true }` to hold the grade to a caution instead of showing it.
+- **Whitespace lane.** A separate, clearly-labelled section renders the cross-client whitespace lane (`all_clients.component_whitespace`, US-003): component values proven on other F10 clients but untested for this one. It is **hypotheses, not grades**: the verbatim label `untested here - hypothesis, not a grade`, a count of source clients (never their names) and this client's own thin evidence count only. No lift, CPA, ROAS or spend number appears in the lane.
+
+A failed component-scale query renders a **visible panel error state** ("Component Scale is temporarily unavailable") with the failure detail, never a blank tab or a console-only error. The whitespace read is secondary: if it fails the scale still renders and the lane shows its own note.
+
+### Generic tab dispatcher
+
+The Component Scale tab activates through **`f10ActivateTab()`** in `f10-layout.js`, a single generic dispatcher that clears **every** nav link (`#sidebar nav a`) and **every** panel (`.tab-panel`) before activating the selected pair. New modules call it instead of hard-coding a clear-list of every other tab's nav-link classes, which is the fix for the old O(tabs^2) activation coupling: adding this tab needed **no edit to any existing module**, and a future tab needs none either. The panel carries the shared `.tab-panel` class, so the existing engines' own clears hide it when another tab is selected, and the module binds a generic deactivate handler to the other nav anchors so its highlight clears too. A net-new live-path canary in `test/us-components-scale.test.js` boots the real base, TikTok and Competitor engines alongside this module and asserts each pre-existing tab (Weekly, Monthly, Competitors, TikTok) still switches to exactly one visible panel after the new module registers.
+
+`COMPONENTS` is an **optional overrides object** only:
+
+```js
+const COMPONENTS = {
+  CLIENT:                 'mosh', // optional f10 client slug override when DATASET doesn't follow {client}_marts / {client}_clean
+  SUPPRESS_CO_OCCURRENCE: false,  // optional; true hides co-occurrence-flagged grades instead of marking them (default: mark)
 };
 ```
 
