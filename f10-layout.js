@@ -418,6 +418,33 @@ function f10ThemeVars(b){
   return css;
 }
 
+/* ── Generic tab dispatcher (single source of truth for tab activation, US-004) ──
+ * One function that clears EVERY nav link and EVERY tab panel before activating the
+ * selected pair, so a module never hard-codes the other tabs' classes. Every nav link
+ * is an <a> inside `#sidebar nav` (base Meta, TikTok, Competitors and any self-
+ * registered module all inject there); every content panel carries the shared
+ * `.tab-panel` class. Selecting by those two shared shapes means adding a new tab needs
+ * no edit to any existing module - it is the fix for the old O(tabs^2) activation
+ * coupling where each module cleared a hand-maintained list of every other module's
+ * nav-link classes. New modules (f10-components.js) call this instead of repeating a
+ * clear-everything block; the existing engines keep their own equivalent clears.
+ *   opts.panelId  - id of the .tab-panel to show
+ *   opts.navLink  - the <a> nav element to mark active (optional)
+ *   opts.title    - page-title text to set (optional)
+ */
+function f10ActivateTab(opts){
+  opts = opts || {};
+  document.querySelectorAll('#sidebar nav a').forEach(function(l){ l.classList.remove('active'); });
+  document.querySelectorAll('.tab-panel').forEach(function(p){ p.classList.remove('active'); });
+  if (opts.panelId) { const panel = document.getElementById(opts.panelId); if (panel) panel.classList.add('active'); }
+  if (opts.navLink && opts.navLink.classList) opts.navLink.classList.add('active');
+  if (opts.title) { const t = document.getElementById('page-title'); if (t) t.textContent = opts.title; }
+  /* Leaving the Meta / TikTok engines: hide their control bars so a module tab never
+   * shows stray controls (mirrors the competitor tab's behaviour). */
+  const mc = document.getElementById('controls-bar'); if (mc) mc.style.display = 'none';
+  const tc = document.getElementById('tt-controls-bar'); if (tc) tc.style.display = 'none';
+}
+
 function renderLayout(){
   const client = (typeof CLIENT_NAME !== 'undefined' && CLIENT_NAME) ? CLIENT_NAME : 'Client';
   const report = (typeof REPORT_NAME !== 'undefined' && REPORT_NAME) ? REPORT_NAME : 'Creative Reporting';
@@ -722,4 +749,8 @@ ${ttControls}
    * cheap existence probe and registers its own nav entry + panel only when the
    * client has competitor rows — so this call is unconditional. */
   if (typeof initCompetitors === 'function') initCompetitors();
+  /* Component Scale tab (US-004): probe-driven, self-registering. It injects its own
+   * nav link + panel only when the client has a component_performance mart, so this
+   * call is unconditional - the probe decides whether the tab exists. */
+  if (typeof initComponents === 'function') initComponents();
 }
