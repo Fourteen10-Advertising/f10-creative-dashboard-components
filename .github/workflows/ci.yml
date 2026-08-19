@@ -1,0 +1,44 @@
+name: ci
+# Run every dependency-free Node test script under test/ on push and on pull
+# request. This gate is separate from doc-sync.yml (which enforces that docs
+# move with code); it only executes the module tests and fails the build when
+# any test script exits non-zero. There is no aggregate runner, so we iterate
+# over test/*.test.js and run each with node.
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run module tests
+        shell: bash
+        run: |
+          set -uo pipefail
+          shopt -s nullglob
+          total=0
+          failed=0
+          for f in test/*.test.js; do
+            total=$((total + 1))
+            echo "::group::$f"
+            if node "$f"; then
+              echo "PASS: $f"
+            else
+              echo "::error::FAIL: $f"
+              failed=$((failed + 1))
+            fi
+            echo "::endgroup::"
+          done
+          echo "ran $total test script(s), $failed failed"
+          if [ "$total" -eq 0 ]; then
+            echo "::error::no test scripts found under test/"
+            exit 1
+          fi
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
