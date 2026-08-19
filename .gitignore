@@ -1,0 +1,10 @@
+# Dependencies (the framework itself is dependency-free; nothing here is committed)
+node_modules/
+
+# Lockfiles - do not commit; the framework ships no runtime dependencies
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
+
+# Netlify local state
+.netlify/
