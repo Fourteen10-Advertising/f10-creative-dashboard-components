@@ -165,6 +165,22 @@ exports.handler = async function (event) {
     return queryCompetitorIntel(body, credentials, cors);
   }
 
+  // ── New-ad vs winning-historical join (creative-pipeline US-006) ──
+  // A READ-TIME, STRICTLY PER-CLIENT join: for a client plus a generated bundle it
+  // returns that client's top-N winning historical ads (from {client}_reporting.
+  // creative_reporting) with their policy metric and a signed image each, the
+  // winning component scoreboard (from {client}_marts.component_performance), the
+  // new generated ad, the bundle's coherence flags, and a so-what / now-what read
+  // comparing the concept to what already works. No mart pairs a generated ad with
+  // a client's winners, so this is composed at read time. Scoping is the DATASET
+  // identifier ({client}_marts / {client}_reporting), never cross-client pooling;
+  // the client key is sanitised to [a-z0-9_] before it is inlined, and the metric
+  // follows the revenue-gating policy (CPA default; ROAS only for PharmX/FastCover).
+  // Pass { probe:true } for a cheap component-scoreboard existence check.
+  if (body.action === 'winning-historical') {
+    return queryWinningHistorical(body, credentials, cors);
+  }
+
   const { query } = body;
   if (!query || typeof query !== 'string') {
     return {
@@ -1534,6 +1550,360 @@ async function queryCompetitorIntel(body, credentials, cors) {
     return json(200, { competitors, winners: winnerRows });
   } catch (err) {
     console.error('Competitor-intel query error:', err);
+    return json(500, { error: err.message });
+  }
+}
+
+/* ── New-ad vs winning-historical join (creative-pipeline US-006) ──────────────
+ *
+ * Self-contained, additive action. Does NOT touch the existing dispatch or any
+ * other action's helpers beyond the shared, already-exported signGcsUri /
+ * objectViewerCredentials seams (US-005), so it merges cleanly alongside sibling
+ * work in this file.
+ *
+ * Revenue-gating policy is encoded EXPLICITLY here: CPA is the default metric for
+ * every client; ROAS is used ONLY for the revenue-eligible clients, PharmX and
+ * FastCover. The metric is chosen from the CLIENT SCOPE KEY, never from any
+ * user-supplied field, so a caller can neither ask for ROAS on a lead-gen account
+ * nor coax a summed conversion_value out as revenue. */
+const REVENUE_ELIGIBLE_CLIENTS = new Set(['pharmx', 'fastcover']);
+const METRIC_POLICY_NOTE =
+  'CPA is the default metric; ROAS is used only for the revenue-eligible clients (PharmX and FastCover).';
+
+/* The BigQuery-dataset-safe client scope key: lowercased and reduced to the
+ * [a-z0-9_] charset, which is the exact charset a dataset identifier may contain.
+ * Everything else (backticks, quotes, semicolons, dots, spaces, hyphens) is
+ * stripped, so the sanitised key cannot break out of the `${client}_marts` /
+ * `${client}_reporting` identifier it is inlined into. It is the injection guard
+ * for a value that, being a dataset name, cannot be a bound query parameter. Mirrors
+ * f10-components.js clientKey(). Returns '' when nothing survives. */
+function winningClientKey(raw) {
+  return String(raw == null ? '' : raw).trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
+}
+
+/* Coerce a warehouse value to a finite Number, else null, so a null/blank/NaN
+ * metric is surfaced as null (n/a), never as a misleading 0. */
+function numOrNull(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/* Normalise the caller's generated bundle into a stable shape, accepting either
+ * snake_case or camelCase from the review surface. The bundle is DATA only: its
+ * component values are compared in JS (below), never inlined into SQL. */
+function normalizeBundle(b) {
+  const src = (b && typeof b === 'object' && !Array.isArray(b)) ? b : {};
+  const comps = (src.components && typeof src.components === 'object' && !Array.isArray(src.components))
+    ? src.components : {};
+  return {
+    bundle_id: typeof src.bundle_id === 'string' ? src.bundle_id
+      : (typeof src.bundleId === 'string' ? src.bundleId : null),
+    components: comps,
+    coherence_flags: Array.isArray(src.coherence_flags) ? src.coherence_flags
+      : (Array.isArray(src.coherenceFlags) ? src.coherenceFlags : []),
+    held_dimensions: Array.isArray(src.held_dimensions) ? src.held_dimensions
+      : (Array.isArray(src.heldDimensions) ? src.heldDimensions : []),
+    new_ad: (src.new_ad && typeof src.new_ad === 'object') ? src.new_ad
+      : ((src.newAd && typeof src.newAd === 'object') ? src.newAd : null),
+  };
+}
+
+/* Resolve ONE signed preview image per winning ad, keyed by THIS client's own
+ * winner ad_ids, from the shared asset store (all_clients.meta_creative_links →
+ * all_clients.creative_manifest), the same seam the `media` action uses. This is
+ * the client's own delivered ads' assets, not another client's performance data,
+ * so it does not breach the strict per-client scope. Best-effort: images are an
+ * enrichment, so a missing/failed asset store logs and yields null URLs (the UI
+ * falls back to the ad's creative_link) rather than sinking the winners payload.
+ * Signing uses the object-viewer SA path (US-005), never the BigQuery job SA. */
+async function resolveWinnerImages(bq, credentials, adIds) {
+  const out = new Map();
+  const ids = Array.isArray(adIds)
+    ? adIds.filter((x) => typeof x === 'string' && x).slice(0, 60)
+    : [];
+  if (!ids.length) return out;
+  const PROJECT = 'mcc-poc-477801';
+  try {
+    const [rows] = await bq.query({
+      query: `
+        SELECT l.ad_id, m.asset_type, m.gcs_uri, m.fetch_status
+        FROM \`${PROJECT}.all_clients.meta_creative_links\` l
+        LEFT JOIN \`${PROJECT}.all_clients.creative_manifest\` m
+          ON m.asset_id = COALESCE(l.video_id, l.image_hash) AND m.platform = 'meta'
+        WHERE l.ad_id IN UNNEST(@adIds)
+        QUALIFY ROW_NUMBER() OVER (
+          PARTITION BY l.ad_id
+          ORDER BY IF(m.gcs_uri IS NOT NULL, 0, 1), l.created_time DESC
+        ) = 1`,
+      params: { adIds: ids },
+      types: { adIds: ['STRING'] },
+      location: 'australia-southeast1',
+      useLegacySql: false,
+      maximumBytesBilled: MAX_BYTES_BILLED,
+      jobTimeoutMs: TIMEOUT_MS,
+    });
+    const storage = new Storage({ projectId: PROJECT, credentials: objectViewerCredentials(credentials) });
+    const expires = Date.now() + 15 * 60 * 1000; // 15 minutes, mirrors `media`
+    await Promise.all(
+      rows.map(async (r) => {
+        const adId = String(r.ad_id);
+        if (r.fetch_status !== 'fetched' || !r.gcs_uri) { out.set(adId, null); return; }
+        try {
+          out.set(adId, (await signGcsUri(storage, r.gcs_uri, expires)) || null);
+        } catch (e) {
+          console.error('Winner image sign error for', r.gcs_uri, e.message);
+          out.set(adId, null);
+        }
+      })
+    );
+  } catch (err) {
+    // Images are best-effort; a missing/failed asset store must not sink winners.
+    console.error('Winner image resolve error:', err.message);
+  }
+  return out;
+}
+
+/* Build the insight-ladder L4/L5 read: the "so what / now what" that lets the
+ * review surface judge the new concept in context, not just show raw metrics.
+ * Each of the bundle's component values is compared (in JS, never in SQL) against
+ * the client's PROVEN winning component values: a match is an aligned dimension
+ * (reuses a proven winner, the "so what"), a miss is an unproven dimension to
+ * hold and test (the "now what"). The bundle's coherence flags / held dimensions
+ * ride alongside so held dimensions are visible next to the comparison. */
+function buildComparison(bundle, winningComponents, metric, winners) {
+  const norm = (component, value) =>
+    `${String(component).toLowerCase()}=${String(value).toLowerCase()}`;
+  const winnerByKey = new Map();
+  for (const c of winningComponents) {
+    winnerByKey.set(norm(c.component, c.component_value), c);
+  }
+  const comps = (bundle && bundle.components && typeof bundle.components === 'object') ? bundle.components : {};
+  const aligned = [];
+  const unproven = [];
+  for (const [component, value] of Object.entries(comps)) {
+    if (value == null || value === '') continue;
+    const match = winnerByKey.get(norm(component, value));
+    if (match) {
+      aligned.push({
+        component, component_value: value,
+        lift: match.lift, label: match.label, confidence_tier: match.confidence_tier,
+      });
+    } else {
+      unproven.push({ component, component_value: value });
+    }
+  }
+  const metricLabel = metric === 'roas' ? 'ROAS' : 'CPA';
+  const fmtList = (arr) => arr.map((a) => `${a.component}: ${a.component_value}`).join('; ');
+  const soWhat = aligned.length
+    ? `This concept reuses ${aligned.length} of the client's proven winning component${aligned.length === 1 ? '' : 's'} (${fmtList(aligned)}), each already ahead of the client's baseline on ${metricLabel}.`
+    : `None of this concept's components match a proven ${metricLabel} winner in the client's scoreboard yet, so it is entirely unproven for this client.`;
+  const nowWhat = unproven.length
+    ? `${unproven.length} dimension${unproven.length === 1 ? ' is' : 's are'} unproven for this client (${fmtList(unproven)}); hold ${unproven.length === 1 ? 'it' : 'them'} against the winning ad above and test before scaling spend.`
+    : `Every dimension in this concept is already a proven winner for the client; ship it against the top historical ad and watch for regression.`;
+  return {
+    metric: metricLabel,
+    top_winner: winners[0]
+      ? { ad_id: winners[0].ad_id, ad_name: winners[0].ad_name, metric_value: winners[0].metric_value }
+      : null,
+    aligned_components: aligned,
+    unproven_components: unproven,
+    coherence_flags: (bundle && Array.isArray(bundle.coherence_flags)) ? bundle.coherence_flags : [],
+    held_dimensions: (bundle && Array.isArray(bundle.held_dimensions)) ? bundle.held_dimensions : [],
+    so_what: soWhat,
+    now_what: nowWhat,
+    summary: `${soWhat} ${nowWhat}`,
+  };
+}
+
+/* winning-historical: the read-time, strictly per-client new-ad vs winners join.
+ *
+ * SCOPE (category-1): the ONLY performance datasets read are the caller's own
+ * `${client}_marts` (component_performance) and `${client}_reporting`
+ * (creative_reporting). The dataset identifier IS the scope key, so there is no
+ * cross-client pooling and no client-column WHERE to forget. The client key is
+ * sanitised to [a-z0-9_] (winningClientKey) BEFORE it is inlined, guarding the
+ * one value that cannot be a bound parameter (a dataset name). Winner ad images
+ * come from the shared asset store by the client's own ad_ids only.
+ *
+ * METRIC POLICY (explicit): CPA is default; ROAS only for PharmX and FastCover.
+ * In CPA mode the winners query never selects a revenue column, so no summed
+ * conversion_value is ever exposed as revenue for a lead-gen client.
+ *
+ * FAIL-CLOSED: a { probe:true } call reports whether the client has a component
+ * scoreboard; a client whose marts do not exist yet returns a clean empty join
+ * (not a 500). Same maximumBytesBilled / jobTimeoutMs guardrails as every query.
+ *
+ *   { action:'winning-historical', client:'mosh', bundle:{...}, newAd:{...}, limit:5 }
+ *   { action:'winning-historical', client:'mosh', probe:true }  -> { exists: true|false }
+ */
+async function queryWinningHistorical(body, credentials, cors) {
+  const json = (statusCode, payload) => ({
+    statusCode,
+    headers: { ...cors, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  // Injection-safe, dataset-form client scope key. Empty ⇒ 400 (no query runs).
+  const client = winningClientKey(body.client);
+  if (!client) {
+    return json(400, { error: 'Missing or invalid "client" field for winning-historical action.' });
+  }
+
+  // Revenue-gating policy, encoded explicitly and derived from the client scope
+  // key alone, never from a user-supplied metric field.
+  const revenueEligible = REVENUE_ELIGIBLE_CLIENTS.has(client);
+  const metric = revenueEligible ? 'roas' : 'cpa';
+
+  const PROJECT = 'mcc-poc-477801';
+  const LOCATION = 'australia-southeast1';
+  const MARTS = `${client}_marts`;         // component_performance (the scoreboard)
+  const REPORTING = `${client}_reporting`; // creative_reporting (per-delivered-ad)
+  const COMPONENT_TABLE = `\`${PROJECT}.${MARTS}.component_performance\``;
+  const REPORTING_TABLE = `\`${PROJECT}.${REPORTING}.creative_reporting\``;
+
+  // Bounded top-N. Caller may ask for fewer, never more than the cap.
+  const CAP = 25;
+  const limit = Math.min(Math.max(parseInt(body.limit, 10) || 5, 1), CAP);
+
+  const bundle = normalizeBundle(body.bundle);
+  const newAd = (body.newAd && typeof body.newAd === 'object') ? body.newAd : bundle.new_ad;
+
+  try {
+    const bq = new BigQuery({ projectId: PROJECT, credentials, location: LOCATION });
+    const runQuery = (query, params = {}, types = {}) =>
+      bq.query({
+        query,
+        params,
+        types,
+        location: LOCATION,
+        useLegacySql: false,
+        maximumBytesBilled: MAX_BYTES_BILLED,
+        jobTimeoutMs: TIMEOUT_MS,
+      });
+
+    // Cheap existence probe: does this client have a component scoreboard yet? A
+    // not-yet-built mart fails closed to { exists:false } rather than erroring.
+    if (body.probe) {
+      try {
+        const [rows] = await runQuery(`SELECT EXISTS(SELECT 1 FROM ${COMPONENT_TABLE}) AS has_data`);
+        return json(200, { exists: !!(rows[0] && rows[0].has_data) });
+      } catch (err) {
+        if (isTableNotFound(err)) return json(200, { exists: false });
+        throw err;
+      }
+    }
+
+    // Metric column + order come from POLICY, not from the row or the caller. ROAS
+    // is higher-is-better (DESC); CPA is lower-is-better (ASC). Gated revenue is
+    // SELECTed ONLY in ROAS mode; raw conversion_value is never selected, so a
+    // lead-gen (CPA) client never emits a revenue column.
+    const metricCol = revenueEligible ? 'lifetime_roas' : 'lifetime_cpa';
+    const orderDir = revenueEligible ? 'DESC' : 'ASC';
+    const revenueSelect = revenueEligible ? ',\n          ROUND(SUM(revenue), 2)     AS revenue' : '';
+
+    const winnersSql = `
+      WITH per_ad AS (
+        SELECT
+          ad_id,
+          ANY_VALUE(ad_name)                  AS ad_name,
+          ANY_VALUE(is_active)                AS is_active,
+          ANY_VALUE(creative_link)            AS creative_link,
+          ROUND(ANY_VALUE(lifetime_spend), 2) AS spend,
+          ROUND(ANY_VALUE(${metricCol}), 2)   AS metric_value,
+          SUM(conversions)                    AS conversions${revenueSelect}
+        FROM ${REPORTING_TABLE}
+        GROUP BY ad_id
+      )
+      SELECT * FROM per_ad
+      WHERE spend > 0 AND metric_value IS NOT NULL AND metric_value > 0
+      ORDER BY metric_value ${orderDir}, spend DESC
+      LIMIT @limit`;
+
+    // Winning component scoreboard: the client's components that beat their own
+    // baseline (lift > 0) on a sufficiently-evidenced grade. ROAS is projected only
+    // for revenue-eligible clients so a lead-gen scoreboard never surfaces it.
+    const roasCol = revenueEligible ? 'roas,' : '';
+    const componentsSql = `
+      SELECT component, component_value, metric_type, cpa, ${roasCol} lift,
+             confidence_tier, label, asset_count, ROUND(spend, 2) AS spend
+      FROM ${COMPONENT_TABLE}
+      WHERE confidence_tier != 'insufficient evidence' AND lift > 0
+      ORDER BY lift DESC
+      LIMIT @componentLimit`;
+
+    const [winnerRows] = await runQuery(winnersSql, { limit }, { limit: 'INT64' });
+    const [componentRows] = await runQuery(componentsSql, { componentLimit: 50 }, { componentLimit: 'INT64' });
+
+    // Sign one preview image per winning ad, by this client's own winner ad_ids.
+    const adIds = winnerRows.map((r) => String(r.ad_id)).filter(Boolean);
+    const imageByAd = await resolveWinnerImages(bq, credentials, adIds);
+
+    const winners = winnerRows.map((r) => {
+      const w = {
+        ad_id: String(r.ad_id),
+        ad_name: r.ad_name != null ? r.ad_name : null,
+        is_active: r.is_active === true || r.is_active === 'true',
+        metric_type: metric,
+        metric_value: numOrNull(r.metric_value),
+        spend: numOrNull(r.spend),
+        conversions: numOrNull(r.conversions),
+        image_url: imageByAd.has(String(r.ad_id)) ? imageByAd.get(String(r.ad_id)) : null,
+        creative_link: r.creative_link != null ? r.creative_link : null,
+      };
+      // Gated revenue rides along ONLY for revenue-eligible (ROAS) clients.
+      if (revenueEligible) w.revenue = numOrNull(r.revenue);
+      return w;
+    });
+
+    const winningComponents = componentRows.map((r) => {
+      const c = {
+        component: r.component,
+        component_value: r.component_value,
+        metric_type: metric,
+        cpa: numOrNull(r.cpa),
+        lift: numOrNull(r.lift),
+        confidence_tier: r.confidence_tier,
+        label: r.label,
+        asset_count: numOrNull(r.asset_count),
+        spend: numOrNull(r.spend),
+      };
+      if (revenueEligible) c.roas = numOrNull(r.roas);
+      return c;
+    });
+
+    const comparison = buildComparison(bundle, winningComponents, metric, winners);
+
+    return json(200, {
+      client,
+      metric,
+      metric_policy: METRIC_POLICY_NOTE,
+      revenue_eligible: revenueEligible,
+      limit,
+      new_ad: newAd || null,
+      bundle,
+      winners,
+      winning_components: winningComponents,
+      comparison,
+    });
+  } catch (err) {
+    // A client whose scoreboard/reporting mart does not exist yet is a clean empty
+    // join, not a 500; the review surface simply has nothing to compare against.
+    if (isTableNotFound(err)) {
+      return json(200, {
+        client,
+        metric,
+        metric_policy: METRIC_POLICY_NOTE,
+        revenue_eligible: revenueEligible,
+        limit,
+        new_ad: newAd || null,
+        bundle,
+        winners: [],
+        winning_components: [],
+        comparison: buildComparison(bundle, [], metric, []),
+      });
+    }
+    console.error('Winning-historical query error:', err);
     return json(500, { error: err.message });
   }
 }
