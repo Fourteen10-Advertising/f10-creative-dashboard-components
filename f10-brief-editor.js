@@ -1,0 +1,973 @@
+/**
+ * f10-brief-editor.js - F10 Creative Brief Editor (US-004, dual-mode)
+ * Load via: <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@TAG/f10-brief-editor.js"></script>
+ *
+ * WHAT IT IS: the canonical-constrained brief editor for the F10 internal review app.
+ * An operator loads an existing brief revision, steers the five editable creative axes
+ * and the copy, and saves a NEW revision that the generation engine can be pointed at.
+ * Generation itself does NOT run from the app in v1 (vault Vertex SA plus a hard spend
+ * cap plus no Cloud Run): the editor only edits and saves; an operator fires generation
+ * later from the CLI against the saved revision id.
+ *
+ * THE CONTRACT (US-003, python pipeline, already merged): a brief revision persists as
+ *   - a JSON document in GCS at
+ *       gs://f10-creative-assets/brief-revisions/{client}/{revision_id}.json
+ *   - a registry row in BigQuery
+ *       mcc-poc-477801.creative_pipeline.brief_revisions
+ * carrying the five canonical axes (visual_style, hook_type, message_angle, cta_type,
+ * format), the copy blocks as free text, and provenance (client, evidence source,
+ * winning values, revision id). The axis vocabularies below MIRROR brief.py /
+ * brief_revision.schema.json EXACTLY - they are not invented here. A save both validates
+ * the axes against the canonical vocabulary and writes the doc + row so a future
+ * generation run reproduces the equivalent in-code brief.
+ *
+ * NEVER NON-CANONICAL (AC3): the five axes are edited through <select> dropdowns whose
+ * options are exactly the canonical enums, so a free-text axis value is not reachable in
+ * the UI. The save path validates a second time (defence in depth) and rejects any axis
+ * value outside its vocabulary before anything is written.
+ *
+ * DUAL MODE (one file, two roles):
+ *   1. BROWSER - a self-registering, probe-gated dashboard module. On boot it resolves
+ *      the client, runs a cheap probe ("does this client have any brief revision to
+ *      edit?") through the injectable brief store, and only then injects its own nav
+ *      section, nav link and panel. A dashboard whose client has no revisions (or whose
+ *      probe errors, e.g. the brief endpoint is not yet hosted) shows NO tab and leaves
+ *      zero DOM trace - it fails closed, exactly like f10-components.js. Tab activation
+ *      goes through the single generic dispatcher f10ActivateTab() (f10-layout.js), so it
+ *      never hard-codes another tab's classes and two panels can never show at once.
+ *   2. NODE - the brief persistence core behind an INJECTABLE WRITER SEAM. saveRevision /
+ *      loadRevision program against an object-store + registry seam (in tests these are
+ *      in-memory fakes; nothing touches Google), and makeAdcWriters() builds the live
+ *      writers WITHOUT credentials so they authenticate as the runtime service account
+ *      via Application Default Credentials on GCP compute - the same ADC model US-008's
+ *      feedback.js uses. exports.handler is a ready POST endpoint (probe / load / save)
+ *      for whatever hosts the review app's brief backend.
+ *
+ * CREDENTIAL FOLLOW-UP (not done here, deliberately): writing a brief revision needs GCS
+ * write to the brief-revisions/ prefix plus a brief_revisions insert. The existing
+ * read/object-viewer dashboard SA cannot do this, and the feedback-write SA is scoped
+ * only to status.json + feedback_audit, so it cannot either. Provisioning a brief-write
+ * runtime SA (or widening scope) AND hosting this handler as the review app's brief
+ * endpoint are live-provisioning follow-ups. Until they land, the browser probe fails
+ * closed and the tab simply does not appear - live client dashboards are unaffected.
+ *
+ * CONFIG (browser, all optional):
+ *   const BRIEF_EDITOR = {
+ *     CLIENT: 'moshy',           // override the f10 client slug (else derived from DATASET)
+ *     REVISION_ID: 'rev-123',    // auto-load this revision when the tab first opens
+ *     ACTOR: 'zac@fourteen10',   // created_by stamped on saved revisions
+ *     ENDPOINT: '/api/brief',    // brief backend URL (else window.BRIEF_FUNCTION, else
+ *                                // derived from BQ_FUNCTION by swapping /bq -> /brief)
+ *   };
+ */
+'use strict';
+
+/* ======================================================================== *
+ * SHARED CORE - environment-agnostic. Defined once; used by both the Node
+ * persistence half and the browser UI half below. No DOM, no require here.
+ * ======================================================================== */
+
+/* The canonical vocabularies. These MIRROR the python source of truth EXACTLY:
+ * brief.CANONICAL_VISUAL_STYLES / CANONICAL_HOOK_TYPES / CANONICAL_MESSAGE_ANGLES /
+ * CANONICAL_CTA_TYPES / CANONICAL_FORMATS and brief_revision.schema.json enums. A test
+ * asserts they stay in lockstep. Do not add or reorder values here without changing the
+ * schema; the whole point of the editor is that it cannot emit a non-canonical value. */
+var F10_BRIEF_CANONICAL = {
+  visual_style: [
+    'minimal-clean', 'bold-graphic', 'warm-natural', 'aspirational-premium',
+    'authentic-raw', 'playful-colorful', 'clinical-professional', 'dark-dramatic',
+    'illustrated', 'retro-nostalgic', 'other',
+  ],
+  hook_type: [
+    'question', 'stat', 'pattern-interrupt', 'bold-claim', 'problem-callout',
+    'pov', 'testimonial-open', 'demo-open', 'other',
+  ],
+  message_angle: [
+    'problem-solution', 'ease-convenience', 'price-value', 'offer-promo',
+    'social-proof', 'authority-clinical', 'empowerment-transformation',
+    'reassurance-trust', 'aspiration-lifestyle', 'comparison-alternative',
+    'education-howitworks', 'humour-entertainment', 'other',
+  ],
+  cta_type: [
+    'shop-now', 'learn-more', 'sign-up', 'book', 'download', 'subscribe',
+    'contact', 'none',
+  ],
+  format: [
+    'static-photo', 'static-illustration',
+  ],
+};
+
+/* The five editable axes, in render order, with human-readable labels. */
+var F10_BRIEF_AXES = [
+  { key: 'visual_style', label: 'Visual style' },
+  { key: 'hook_type', label: 'Hook type' },
+  { key: 'message_angle', label: 'Message angle' },
+  { key: 'cta_type', label: 'CTA type' },
+  { key: 'format', label: 'Format' },
+];
+
+var F10_BRIEF_SCHEMA = 'brief_revision';
+var F10_BRIEF_PROJECT = 'mcc-poc-477801';
+var F10_BRIEF_BUCKET = 'f10-creative-assets';
+var F10_BRIEF_REVISIONS_ROOT = 'brief-revisions';
+var F10_BRIEF_DATASET = 'creative_pipeline';
+var F10_BRIEF_TABLE = F10_BRIEF_PROJECT + '.' + F10_BRIEF_DATASET + '.brief_revisions';
+
+/* Path-segment slug, byte-for-byte the same rule as bundle.py _safe():
+ *   re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_") or "asset"
+ * so a JS-written object lands at the exact GCS key the python engine reads. */
+function f10BriefSafeSeg(value) {
+  var s = String(value == null ? '' : value).replace(/[^A-Za-z0-9._-]+/g, '_');
+  s = s.replace(/^_+/, '').replace(/_+$/, '');
+  return s || 'asset';
+}
+
+/* The GCS object key (no gs:// prefix) for a revision, scoped by client. */
+function f10BriefObjectName(client, revisionId) {
+  return F10_BRIEF_REVISIONS_ROOT + '/' + f10BriefSafeSeg(client) + '/'
+    + f10BriefSafeSeg(revisionId) + '.json';
+}
+
+/* gs:// URI under brief-revisions/{client}/{revision_id}.json. */
+function f10BriefGcsUri(client, revisionId, bucket) {
+  return 'gs://' + (bucket || F10_BRIEF_BUCKET) + '/' + f10BriefObjectName(client, revisionId);
+}
+
+function f10BriefIsCanonical(axis, value) {
+  var vocab = F10_BRIEF_CANONICAL[axis];
+  return !!vocab && vocab.indexOf(value) !== -1;
+}
+
+/* Deterministic JSON with recursively sorted keys and 2-space indent, matching the
+ * python side's json.dumps(doc, indent=2, sort_keys=True) so a re-save is stable and a
+ * within-JS round-trip is byte-faithful. */
+function f10BriefCanonicalJson(value) {
+  function sortKeys(v) {
+    if (Array.isArray(v)) return v.map(sortKeys);
+    if (v && typeof v === 'object') {
+      var out = {};
+      Object.keys(v).sort().forEach(function (k) { out[k] = sortKeys(v[k]); });
+      return out;
+    }
+    return v;
+  }
+  return JSON.stringify(sortKeys(value), null, 2);
+}
+
+/* Normalise + validate a record into a clean brief revision, or return { error }.
+ * Pure and side-effect free. This is the save-time gate that rejects a non-canonical
+ * vocab value (AC3) - the same contract as brief.BriefRevision.validate() plus the
+ * schema enums. */
+function f10BriefValidate(rec) {
+  if (!rec || typeof rec !== 'object') return { error: 'Missing brief revision.' };
+
+  var revisionId = rec.revision_id;
+  if (typeof revisionId !== 'string' || !revisionId.trim()) {
+    return { error: 'brief revision requires a non-empty revision_id' };
+  }
+  var client = rec.client;
+  if (typeof client !== 'string' || !client.trim()) {
+    return { error: 'brief revision requires a non-empty client' };
+  }
+
+  var axes = {};
+  for (var i = 0; i < F10_BRIEF_AXES.length; i++) {
+    var axis = F10_BRIEF_AXES[i].key;
+    var v = rec[axis];
+    if (!f10BriefIsCanonical(axis, v)) {
+      return {
+        error: 'non-canonical ' + axis + ' ' + JSON.stringify(v)
+          + '; allowed: ' + JSON.stringify(F10_BRIEF_CANONICAL[axis]),
+      };
+    }
+    axes[axis] = v;
+  }
+
+  // copy_blocks: optional array of { role (non-empty), text (string), slot_index? }.
+  var copyBlocks = [];
+  if (rec.copy_blocks !== undefined && rec.copy_blocks !== null) {
+    if (!Array.isArray(rec.copy_blocks)) return { error: 'copy_blocks must be an array.' };
+    for (var j = 0; j < rec.copy_blocks.length; j++) {
+      var cb = rec.copy_blocks[j];
+      if (!cb || typeof cb !== 'object') return { error: 'each copy block must be an object.' };
+      if (typeof cb.role !== 'string' || !cb.role.trim()) return { error: 'each copy block needs a non-empty role.' };
+      if (cb.text !== undefined && cb.text !== null && typeof cb.text !== 'string') {
+        return { error: 'copy block text must be a string.' };
+      }
+      var block = { role: cb.role, text: typeof cb.text === 'string' ? cb.text : '' };
+      if (cb.slot_index !== undefined && cb.slot_index !== null) {
+        if (typeof cb.slot_index !== 'number' || cb.slot_index < 0 || (cb.slot_index | 0) !== cb.slot_index) {
+          return { error: 'copy block slot_index must be a non-negative integer.' };
+        }
+        block.slot_index = cb.slot_index;
+      }
+      copyBlocks.push(block);
+    }
+  }
+
+  var record = {
+    revision_id: revisionId,
+    client: client,
+    bundle_id: typeof rec.bundle_id === 'string' ? rec.bundle_id : '',
+    visual_style: axes.visual_style,
+    hook_type: axes.hook_type,
+    message_angle: axes.message_angle,
+    cta_type: axes.cta_type,
+    format: axes.format,
+    copy_blocks: copyBlocks,
+    evidence_source: typeof rec.evidence_source === 'string' ? rec.evidence_source : '',
+    winning_values: (rec.winning_values && typeof rec.winning_values === 'object') ? rec.winning_values : {},
+    gcs_uri: typeof rec.gcs_uri === 'string' ? rec.gcs_uri : '',
+    created_at: typeof rec.created_at === 'string' ? rec.created_at : '',
+    created_by: typeof rec.created_by === 'string' ? rec.created_by : '',
+  };
+  return { record: record };
+}
+
+/* The persisted JSON document (mirrors brief.BriefRevision.to_dict exactly). */
+function f10BriefBuildDoc(record) {
+  return {
+    schema: F10_BRIEF_SCHEMA,
+    revision_id: record.revision_id,
+    client: record.client,
+    bundle_id: record.bundle_id || '',
+    visual_style: record.visual_style,
+    hook_type: record.hook_type,
+    message_angle: record.message_angle,
+    cta_type: record.cta_type,
+    format: record.format,
+    copy_blocks: (record.copy_blocks || []).map(function (cb) {
+      var out = { role: cb.role, text: cb.text || '' };
+      if (cb.slot_index !== undefined && cb.slot_index !== null) out.slot_index = cb.slot_index;
+      return out;
+    }),
+    provenance: {
+      evidence_source: record.evidence_source || '',
+      winning_values: record.winning_values || {},
+    },
+    gcs_uri: record.gcs_uri || '',
+    created_at: record.created_at || '',
+    created_by: record.created_by || '',
+  };
+}
+
+/* The BigQuery brief_revisions registry row (mirrors brief.BriefRevision.registry_row;
+ * empty bundle_id / created_by become null, as the MERGE NULLIFs them). */
+function f10BriefBuildRow(record) {
+  return {
+    revision_id: record.revision_id,
+    client: record.client,
+    bundle_id: record.bundle_id || null,
+    visual_style: record.visual_style,
+    hook_type: record.hook_type,
+    message_angle: record.message_angle,
+    cta_type: record.cta_type,
+    format: record.format,
+    gcs_uri: record.gcs_uri,
+    created_at: record.created_at,
+    created_by: record.created_by || null,
+  };
+}
+
+/* Rebuild a record from a persisted document (mirrors BriefRevision.from_dict). */
+function f10BriefFromDoc(doc) {
+  doc = doc || {};
+  var prov = (doc.provenance && typeof doc.provenance === 'object') ? doc.provenance : {};
+  return {
+    revision_id: doc.revision_id || '',
+    client: doc.client || '',
+    bundle_id: doc.bundle_id || '',
+    visual_style: doc.visual_style || '',
+    hook_type: doc.hook_type || '',
+    message_angle: doc.message_angle || '',
+    cta_type: doc.cta_type || '',
+    format: doc.format || '',
+    copy_blocks: Array.isArray(doc.copy_blocks) ? doc.copy_blocks.map(function (cb) {
+      var out = { role: cb.role, text: cb.text || '' };
+      if (cb.slot_index !== undefined && cb.slot_index !== null) out.slot_index = cb.slot_index;
+      return out;
+    }) : [],
+    evidence_source: prov.evidence_source || '',
+    winning_values: (prov.winning_values && typeof prov.winning_values === 'object') ? prov.winning_values : {},
+    gcs_uri: doc.gcs_uri || '',
+    created_at: doc.created_at || '',
+    created_by: doc.created_by || '',
+  };
+}
+
+/* ======================================================================== *
+ * NODE PERSISTENCE HALF - the injectable writer seam + the live ADC handler.
+ * Guarded to CommonJS so requiring this file in a test never touches the DOM,
+ * and loading it in a browser never sees `module`.
+ * ======================================================================== */
+
+/* Persist a revision behind the injected object-store + registry seams.
+ *
+ *   record       : the raw brief record (validated here)
+ *   objectStore  : { put(gcsUri, data, contentType) => Promise|any }
+ *   registry     : { register(row) => Promise|any }
+ *   now          : Date (defaults to new Date())
+ *   bucket       : GCS bucket (defaults to f10-creative-assets)
+ *
+ * Validates (rejecting non-canonical axes) BEFORE any write, sets gcs_uri, writes the
+ * JSON document, then registers the row. Returns { statusCode, payload }. Never throws
+ * for an expected failure. */
+async function f10BriefSaveRevision(opts) {
+  opts = opts || {};
+  var objectStore = opts.objectStore;
+  var registry = opts.registry;
+  if (!objectStore || typeof objectStore.put !== 'function'
+      || !registry || typeof registry.register !== 'function') {
+    return { statusCode: 500, payload: { error: 'Brief write backend unavailable.' } };
+  }
+
+  var validated = f10BriefValidate(opts.record);
+  if (validated.error) return { statusCode: 400, payload: { error: validated.error } };
+  var record = validated.record;
+
+  if (!record.created_at) record.created_at = (opts.now || new Date()).toISOString();
+  record.gcs_uri = f10BriefGcsUri(record.client, record.revision_id, opts.bucket);
+
+  var doc = f10BriefBuildDoc(record);
+  var data = f10BriefCanonicalJson(doc);
+
+  try {
+    await objectStore.put(record.gcs_uri, data, 'application/json');
+  } catch (err) {
+    return { statusCode: 502, payload: { error: 'Failed to write brief revision JSON: ' + err.message } };
+  }
+  try {
+    await registry.register(f10BriefBuildRow(record));
+  } catch (err) {
+    return { statusCode: 502, payload: { error: 'JSON written but registry insert failed: ' + err.message } };
+  }
+
+  return {
+    statusCode: 200,
+    payload: {
+      ok: true,
+      revision_id: record.revision_id,
+      client: record.client,
+      gcs_uri: record.gcs_uri,
+      created_at: record.created_at,
+    },
+  };
+}
+
+/* Load a revision by id: resolve gcs_uri from the registry, read the JSON from the
+ * object store, rebuild + validate. Mirrors brief.load_brief_revision. */
+async function f10BriefLoadRevision(opts) {
+  opts = opts || {};
+  var objectStore = opts.objectStore;
+  var registry = opts.registry;
+  var revisionId = opts.revisionId;
+  if (!objectStore || typeof objectStore.get !== 'function'
+      || !registry || typeof registry.lookup !== 'function') {
+    return { statusCode: 500, payload: { error: 'Brief read backend unavailable.' } };
+  }
+  if (typeof revisionId !== 'string' || !revisionId.trim()) {
+    return { statusCode: 400, payload: { error: 'Missing revision_id.' } };
+  }
+
+  var row;
+  try {
+    row = await registry.lookup(revisionId);
+  } catch (err) {
+    return { statusCode: 502, payload: { error: 'Registry lookup failed: ' + err.message } };
+  }
+  if (!row) return { statusCode: 404, payload: { error: 'No brief revision registered for id ' + revisionId } };
+  var uri = row.gcs_uri;
+  if (!uri) return { statusCode: 502, payload: { error: 'Brief revision ' + revisionId + ' has no gcs_uri in the registry.' } };
+
+  var raw;
+  try {
+    raw = await objectStore.get(uri);
+  } catch (err) {
+    return { statusCode: 502, payload: { error: 'Failed to read brief revision JSON: ' + err.message } };
+  }
+  var doc;
+  try {
+    doc = JSON.parse(typeof raw === 'string' ? raw : (raw && raw.toString ? raw.toString('utf8') : String(raw)));
+  } catch (err) {
+    return { statusCode: 502, payload: { error: 'Brief revision JSON is not parseable: ' + err.message } };
+  }
+
+  var record = f10BriefFromDoc(doc);
+  var validated = f10BriefValidate(record);
+  if (validated.error) {
+    return { statusCode: 502, payload: { error: 'Loaded brief revision is not canonical: ' + validated.error } };
+  }
+  return { statusCode: 200, payload: { ok: true, revision: doc } };
+}
+
+/* Cheap probe: does this client have any registered brief revision to edit? Programs
+ * against an optional registry.listByClient(client) seam; when the registry cannot
+ * answer, it fails closed (has_data:false) so the tab stays hidden rather than erroring. */
+async function f10BriefProbe(opts) {
+  opts = opts || {};
+  var registry = opts.registry;
+  var client = opts.client;
+  if (typeof client !== 'string' || !client.trim()) {
+    return { statusCode: 400, payload: { has_data: false, error: 'Missing client.' } };
+  }
+  if (!registry || typeof registry.listByClient !== 'function') {
+    return { statusCode: 200, payload: { has_data: false } };
+  }
+  try {
+    var rows = await registry.listByClient(client);
+    return { statusCode: 200, payload: { has_data: !!(rows && rows.length) } };
+  } catch (err) {
+    return { statusCode: 200, payload: { has_data: false } };
+  }
+}
+
+/* Generic request dispatch used by the live handler. Actions: probe | load | save. */
+async function f10BriefProcessRequest(opts) {
+  opts = opts || {};
+  var body = opts.body || {};
+  var seams = { objectStore: opts.objectStore, registry: opts.registry, now: opts.now };
+  switch (body.action) {
+    case 'probe':
+      return f10BriefProbe({ registry: seams.registry, client: body.client });
+    case 'load':
+      return f10BriefLoadRevision({
+        objectStore: seams.objectStore, registry: seams.registry, revisionId: body.revisionId || body.revision_id,
+      });
+    case 'save':
+      return f10BriefSaveRevision({
+        objectStore: seams.objectStore, registry: seams.registry, now: seams.now, record: body.revision || body.record,
+      });
+    default:
+      return { statusCode: 400, payload: { error: 'Unknown or missing action (expected probe, load, or save).' } };
+  }
+}
+
+/* Build the LIVE object-store + registry writers. Lazily requires the Google SDKs so
+ * this module can be required in tests without them installed, and constructs the
+ * clients WITHOUT credentials so they authenticate as the runtime service account via
+ * ADC on GCP compute (the US-008 model). Not exercised by the offline tests.
+ *
+ * NOTE (follow-up): the runtime SA under which this runs must be provisioned with GCS
+ * write to the brief-revisions/ prefix and BigQuery insert on creative_pipeline
+ * .brief_revisions. That SA (or scope widening) is a live provisioning step, not done
+ * here; see the header. */
+function f10BriefMakeWriters() {
+  // eslint-disable-next-line global-require
+  var Storage = require('@google-cloud/storage').Storage;
+  // eslint-disable-next-line global-require
+  var BigQuery = require('@google-cloud/bigquery').BigQuery;
+
+  var storage = new Storage({ projectId: F10_BRIEF_PROJECT }); // ADC / runtime SA
+  var bigquery = new BigQuery({ projectId: F10_BRIEF_PROJECT, location: 'australia-southeast1' });
+
+  function parseGsUri(gcsUri) {
+    var prefix = 'gs://';
+    if (String(gcsUri).indexOf(prefix) !== 0) throw new Error(gcsUri + ' is not a gs:// uri');
+    var rest = gcsUri.slice(prefix.length);
+    var slash = rest.indexOf('/');
+    return { bucket: rest.slice(0, slash), object: rest.slice(slash + 1) };
+  }
+
+  var objectStore = {
+    async put(gcsUri, data, contentType) {
+      var loc = parseGsUri(gcsUri);
+      await storage.bucket(loc.bucket).file(loc.object).save(data, { contentType: contentType, resumable: false });
+      return gcsUri;
+    },
+    async get(gcsUri) {
+      var loc = parseGsUri(gcsUri);
+      var res = await storage.bucket(loc.bucket).file(loc.object).download();
+      return res[0].toString('utf8');
+    },
+  };
+
+  var mergeSql = 'MERGE `' + F10_BRIEF_TABLE + '` t '
+    + 'USING (SELECT @revision_id AS revision_id) s ON t.revision_id = s.revision_id '
+    + 'WHEN MATCHED THEN UPDATE SET client=@client, bundle_id=NULLIF(@bundle_id, \'\'), '
+    + 'visual_style=@visual_style, hook_type=@hook_type, message_angle=@message_angle, '
+    + 'cta_type=@cta_type, format=@format, gcs_uri=@gcs_uri, created_at=@created_at, '
+    + 'created_by=NULLIF(@created_by, \'\') '
+    + 'WHEN NOT MATCHED THEN INSERT (revision_id, client, bundle_id, visual_style, '
+    + 'hook_type, message_angle, cta_type, format, gcs_uri, created_at, created_by) '
+    + 'VALUES (@revision_id, @client, NULLIF(@bundle_id, \'\'), @visual_style, @hook_type, '
+    + '@message_angle, @cta_type, @format, @gcs_uri, @created_at, NULLIF(@created_by, \'\'))';
+
+  var registry = {
+    async register(row) {
+      await bigquery.query({
+        query: mergeSql,
+        location: 'australia-southeast1',
+        params: {
+          revision_id: row.revision_id, client: row.client, bundle_id: row.bundle_id || '',
+          visual_style: row.visual_style, hook_type: row.hook_type, message_angle: row.message_angle,
+          cta_type: row.cta_type, format: row.format, gcs_uri: row.gcs_uri,
+          created_at: row.created_at, created_by: row.created_by || '',
+        },
+      });
+    },
+    async lookup(revisionId) {
+      var res = await bigquery.query({
+        query: 'SELECT revision_id, client, bundle_id, visual_style, hook_type, '
+          + 'message_angle, cta_type, format, gcs_uri, CAST(created_at AS STRING) AS created_at, '
+          + 'created_by FROM `' + F10_BRIEF_TABLE + '` WHERE revision_id=@revision_id LIMIT 1',
+        location: 'australia-southeast1',
+        params: { revision_id: revisionId },
+      });
+      var rows = res[0];
+      return rows && rows.length ? rows[0] : null;
+    },
+    async listByClient(client) {
+      var res = await bigquery.query({
+        query: 'SELECT revision_id FROM `' + F10_BRIEF_TABLE + '` WHERE client=@client LIMIT 1',
+        location: 'australia-southeast1',
+        params: { client: client },
+      });
+      return res[0] || [];
+    },
+  };
+
+  return { objectStore: objectStore, registry: registry };
+}
+
+/* Netlify-style POST handler for the review app's brief backend. Actions: probe, load,
+ * save. Builds the ADC writers lazily and delegates to the injectable core. */
+async function f10BriefHandler(event) {
+  var ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '';
+  var origin = (event && event.headers && (event.headers.origin || event.headers.Origin)) || '';
+  var cors = (ALLOWED_ORIGIN && origin === ALLOWED_ORIGIN)
+    ? { 'Access-Control-Allow-Origin': ALLOWED_ORIGIN, Vary: 'Origin' } : {};
+  var json = function (statusCode, payload) {
+    return {
+      statusCode: statusCode,
+      headers: Object.assign({}, cors, { 'Content-Type': 'application/json', 'X-Content-Type-Options': 'nosniff' }),
+      body: JSON.stringify(payload),
+    };
+  };
+
+  if (event.httpMethod === 'OPTIONS') {
+    return {
+      statusCode: 204,
+      headers: Object.assign({}, cors, {
+        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type',
+      }),
+      body: '',
+    };
+  }
+  if (event.httpMethod !== 'POST') return json(405, { error: 'Method Not Allowed' });
+
+  var body;
+  try {
+    body = JSON.parse(event.body);
+  } catch (e) {
+    return json(400, { error: 'Invalid request body.' });
+  }
+
+  var writers;
+  try {
+    writers = f10BriefMakeWriters();
+  } catch (err) {
+    return json(500, { error: 'Brief backend unavailable: ' + err.message });
+  }
+
+  var out = await f10BriefProcessRequest({
+    body: body, objectStore: writers.objectStore, registry: writers.registry,
+  });
+  return json(out.statusCode, out.payload);
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    // core (env-agnostic)
+    CANONICAL: F10_BRIEF_CANONICAL,
+    AXES: F10_BRIEF_AXES,
+    SCHEMA: F10_BRIEF_SCHEMA,
+    TABLE: F10_BRIEF_TABLE,
+    BUCKET: F10_BRIEF_BUCKET,
+    safeSeg: f10BriefSafeSeg,
+    objectName: f10BriefObjectName,
+    gcsUri: f10BriefGcsUri,
+    isCanonical: f10BriefIsCanonical,
+    canonicalJson: f10BriefCanonicalJson,
+    validate: f10BriefValidate,
+    buildDoc: f10BriefBuildDoc,
+    buildRow: f10BriefBuildRow,
+    fromDoc: f10BriefFromDoc,
+    // persistence (injectable seam)
+    saveRevision: f10BriefSaveRevision,
+    loadRevision: f10BriefLoadRevision,
+    probe: f10BriefProbe,
+    processRequest: f10BriefProcessRequest,
+    makeWriters: f10BriefMakeWriters,
+    handler: f10BriefHandler,
+  };
+}
+
+/* ======================================================================== *
+ * BROWSER UI HALF - the self-registering, probe-gated brief editor panel.
+ * Guarded to a real browser so requiring this file in Node never runs it.
+ * ======================================================================== */
+
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+  (function () {
+    var CFG = (typeof BRIEF_EDITOR !== 'undefined' && BRIEF_EDITOR) ? BRIEF_EDITOR : {};
+
+    var beClient = '';        // resolved f10 client slug
+    var beNavLink = null;     // the injected nav-link element
+    var beBooted = false;     // guard against double boot
+    var beLoadedRevision = null; // the currently loaded revision record (provenance carrier)
+    var beStore = null;       // injectable brief store (tests override via setStore)
+
+    function esc(s) {
+      if (s == null) return '';
+      return String(s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function clientKey() {
+      var raw = CFG.CLIENT
+        ? String(CFG.CLIENT)
+        : (typeof DATASET !== 'undefined' && DATASET ? String(DATASET).replace(/_(marts|clean)$/, '') : '');
+      return raw.replace(/[^a-z0-9_]/gi, '');
+    }
+
+    /* The brief backend endpoint: explicit config wins, then window.BRIEF_FUNCTION,
+     * then derive from BQ_FUNCTION by swapping the trailing /bq for /brief. */
+    function endpoint() {
+      if (CFG.ENDPOINT) return String(CFG.ENDPOINT);
+      if (typeof window.BRIEF_FUNCTION !== 'undefined' && window.BRIEF_FUNCTION) return String(window.BRIEF_FUNCTION);
+      if (typeof BQ_FUNCTION !== 'undefined' && BQ_FUNCTION) return String(BQ_FUNCTION).replace(/\/bq(\/)?$/, '/brief');
+      return '/.netlify/functions/brief';
+    }
+
+    /* Default store: POSTs { action, ... } to the brief endpoint, mirroring runQuery's
+     * fetch convention. Fails closed on a non-ok response. Overridable for tests. */
+    function defaultStore() {
+      var url = endpoint();
+      async function call(action, payload) {
+        var res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(Object.assign({ action: action }, payload || {})),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+      }
+      return {
+        async probe(client) { var r = await call('probe', { client: client }); return !!(r && r.has_data); },
+        async load(revisionId) { var r = await call('load', { revisionId: revisionId }); return r && r.revision; },
+        async save(record) { return call('save', { revision: record }); },
+      };
+    }
+
+    function store() { return beStore || defaultStore(); }
+
+    /* ---- markup ---- */
+
+    function axisSelectHtml(axis) {
+      var options = F10_BRIEF_CANONICAL[axis.key].map(function (v) {
+        return '<option value="' + esc(v) + '">' + esc(v) + '</option>';
+      }).join('');
+      return '<label class="be-field"><span class="be-label">' + esc(axis.label) + '</span>'
+        + '<select class="be-axis" id="be-axis-' + esc(axis.key) + '" data-axis="' + esc(axis.key) + '">'
+        + options + '</select></label>';
+    }
+
+    function panelMarkup() {
+      var axisFields = F10_BRIEF_AXES.map(axisSelectHtml).join('');
+      return '<div class="tab-panel brief-editor-tab-panel" id="panel-brief-editor">'
+        + '<style id="be-styles">'
+        + '#panel-brief-editor .be-insight{background:rgba(0,0,0,0.03);border-left:3px solid var(--brand,#7a1f2b);'
+        + 'padding:10px 14px;margin:0 0 18px;font-size:13px;line-height:1.5;border-radius:4px;}'
+        + '#panel-brief-editor .be-load{display:flex;gap:8px;align-items:flex-end;margin:0 0 18px;flex-wrap:wrap;}'
+        + '#panel-brief-editor .be-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin:0 0 18px;}'
+        + '#panel-brief-editor .be-field{display:flex;flex-direction:column;gap:4px;font-size:13px;}'
+        + '#panel-brief-editor .be-label{font-weight:600;}'
+        + '#panel-brief-editor select,#panel-brief-editor input,#panel-brief-editor textarea{'
+        + 'font:inherit;padding:7px 9px;border:1px solid rgba(0,0,0,0.2);border-radius:5px;background:#fff;}'
+        + '#panel-brief-editor textarea{min-height:60px;resize:vertical;}'
+        + '#panel-brief-editor .be-copy .be-field{margin-bottom:12px;}'
+        + '#panel-brief-editor .be-btn{background:var(--brand,#7a1f2b);color:#fff;border:0;border-radius:5px;'
+        + 'padding:9px 16px;font-weight:600;cursor:pointer;}'
+        + '#panel-brief-editor .be-btn[disabled]{opacity:0.5;cursor:default;}'
+        + '#panel-brief-editor .be-btn-secondary{background:#eee;color:#333;}'
+        + '#panel-brief-editor .be-status{margin-top:16px;font-size:13px;}'
+        + '#panel-brief-editor .be-ok{background:#e3f4e8;border:1px solid #b7e0c4;color:#1c6b34;padding:12px 14px;border-radius:6px;}'
+        + '#panel-brief-editor .be-err{background:#fbe6ea;border:1px solid #e3a9b6;color:#a3243c;padding:12px 14px;border-radius:6px;}'
+        + '#panel-brief-editor .be-revid{font-family:monospace;font-weight:700;word-break:break-all;}'
+        + '#panel-brief-editor .be-next{margin-top:6px;color:#555;}'
+        + '#panel-brief-editor .be-cli{font-family:monospace;background:rgba(0,0,0,0.05);padding:2px 5px;border-radius:3px;word-break:break-all;}'
+        + '</style>'
+        + '<div class="be-insight"><strong>Brief editor:</strong> steer generation before it spends. '
+        + 'Load a saved brief revision, adjust the five creative axes (dropdowns are locked to the canonical '
+        + 'vocabulary, so nothing off-vocabulary can be saved) and the copy, then save a NEW revision. '
+        + 'Generation does not run from here in v1: after saving, an operator runs it from the CLI against '
+        + 'the new revision id.</div>'
+        + '<div class="be-load">'
+        + '<label class="be-field" style="flex:1;min-width:220px;"><span class="be-label">Revision id to load</span>'
+        + '<input type="text" id="be-load-id" placeholder="existing revision id" /></label>'
+        + '<button type="button" class="be-btn be-btn-secondary" id="be-load-btn">Load revision</button>'
+        + '</div>'
+        + '<form id="be-form" autocomplete="off">'
+        + '<div class="be-grid">' + axisFields + '</div>'
+        + '<div class="be-copy" id="be-copy"></div>'
+        + '<button type="submit" class="be-btn" id="be-save-btn" disabled>Save as new revision</button>'
+        + '</form>'
+        + '<div class="be-status" id="be-status"></div>'
+        + '</div>';
+    }
+
+    function navLinkHtml() {
+      return '<a href="#" class="brief-editor-nav-link" data-brief-editor-tab="brief-editor">Brief Editor</a>';
+    }
+
+    /* ---- copy fields ---- */
+
+    function copyFieldHtml(role, text, idx) {
+      return '<label class="be-field"><span class="be-label">Copy: ' + esc(role) + '</span>'
+        + '<textarea class="be-copy-text" data-role="' + esc(role) + '" data-idx="' + esc(idx) + '">'
+        + esc(text) + '</textarea></label>';
+    }
+
+    function renderCopy(copyBlocks) {
+      var wrap = document.getElementById('be-copy');
+      if (!wrap) return;
+      var blocks = (copyBlocks && copyBlocks.length) ? copyBlocks
+        : [{ role: 'headline', text: '' }, { role: 'body', text: '' }];
+      wrap.innerHTML = blocks.map(function (cb, i) {
+        return copyFieldHtml(cb.role, cb.text || '', i);
+      }).join('');
+    }
+
+    function readCopy() {
+      var out = [];
+      var nodes = document.querySelectorAll ? document.querySelectorAll('#be-copy .be-copy-text') : [];
+      Array.prototype.forEach.call(nodes, function (n) {
+        var role = (n.getAttribute && n.getAttribute('data-role')) || '';
+        if (!role) return;
+        out.push({ role: role, text: n.value != null ? n.value : '' });
+      });
+      return out;
+    }
+
+    /* ---- form population + reading ---- */
+
+    function setAxis(axis, value) {
+      var sel = document.getElementById('be-axis-' + axis);
+      if (sel && f10BriefIsCanonical(axis, value)) sel.value = value;
+    }
+
+    function populateForm(record) {
+      F10_BRIEF_AXES.forEach(function (a) { setAxis(a.key, record[a.key]); });
+      renderCopy(record.copy_blocks);
+      var save = document.getElementById('be-save-btn');
+      if (save) save.disabled = false;
+    }
+
+    /* Read the current form into a new revision record. The axis values come only from
+     * the canonical <select>s, so they are canonical by construction; provenance is
+     * carried from the loaded revision so a non-edited scoreboard axis is preserved. */
+    function readForm() {
+      var loaded = beLoadedRevision || {};
+      var rec = {
+        revision_id: newRevisionId(loaded.client || beClient),
+        client: loaded.client || beClient,
+        bundle_id: loaded.bundle_id || '',
+        copy_blocks: readCopy(),
+        evidence_source: loaded.evidence_source || '',
+        winning_values: loaded.winning_values || {},
+        created_by: CFG.ACTOR ? String(CFG.ACTOR) : (loaded.created_by || ''),
+      };
+      F10_BRIEF_AXES.forEach(function (a) {
+        var sel = document.getElementById('be-axis-' + a.key);
+        rec[a.key] = sel ? sel.value : loaded[a.key];
+      });
+      return rec;
+    }
+
+    /* A fresh, client-scoped revision id. A save always writes a NEW revision (the editor
+     * never overwrites the loaded one), so id collisions are avoided by timestamp + rand. */
+    function newRevisionId(client) {
+      var stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, 'Z');
+      var rand = Math.random().toString(36).slice(2, 8);
+      return 'rev_' + f10BriefSafeSeg(client || 'brief') + '_' + stamp + '_' + rand;
+    }
+
+    /* ---- status rendering ---- */
+
+    function renderSaved(result) {
+      var el = document.getElementById('be-status');
+      if (!el) return;
+      var id = (result && result.revision_id) || '';
+      var cli = 'hq secrets exec -- python -m f10_creative_pipeline.generate --revision ' + id;
+      el.innerHTML = '<div class="be-ok"><strong>Saved.</strong> New revision id: '
+        + '<span class="be-revid" id="be-saved-id">' + esc(id) + '</span>'
+        + '<div class="be-next">Next step: an operator runs generation from the CLI against this revision '
+        + '(generation does not run from this app):<br><span class="be-cli">' + esc(cli) + '</span></div></div>';
+    }
+
+    function renderStatusError(msg) {
+      var el = document.getElementById('be-status');
+      if (el) el.innerHTML = '<div class="be-err">' + esc(msg || 'Something went wrong.') + '</div>';
+    }
+
+    /* ---- load + save actions ---- */
+
+    async function loadRevisionById(revisionId) {
+      if (!revisionId) { renderStatusError('Enter a revision id to load.'); return; }
+      var el = document.getElementById('be-status');
+      if (el) el.innerHTML = 'Loading revision ' + esc(revisionId) + '...';
+      try {
+        var doc = await store().load(revisionId);
+        if (!doc) { renderStatusError('No brief revision found for id ' + revisionId + '.'); return; }
+        beLoadedRevision = f10BriefFromDoc(doc);
+        populateForm(beLoadedRevision);
+        if (el) el.innerHTML = '';
+      } catch (err) {
+        renderStatusError('Failed to load revision: ' + (err && err.message ? err.message : err));
+      }
+    }
+
+    async function saveNewRevision() {
+      var record = readForm();
+      // Defence in depth: the dropdowns are canonical, but validate before any write.
+      var validated = f10BriefValidate(record);
+      if (validated.error) { renderStatusError(validated.error); return; }
+      var save = document.getElementById('be-save-btn');
+      if (save) save.disabled = true;
+      try {
+        var result = await store().save(record);
+        if (result && result.ok === false) throw new Error(result.error || 'save rejected');
+        renderSaved(result || { revision_id: record.revision_id });
+      } catch (err) {
+        renderStatusError('Failed to save revision: ' + (err && err.message ? err.message : err));
+      } finally {
+        if (save) save.disabled = false;
+      }
+    }
+
+    /* ---- tab activation (single generic dispatcher) ---- */
+
+    function activate() {
+      if (typeof f10ActivateTab === 'function') {
+        f10ActivateTab({ panelId: 'panel-brief-editor', navLink: beNavLink, title: 'Brief Editor' });
+      } else {
+        var links = document.querySelectorAll ? document.querySelectorAll('#sidebar nav a') : [];
+        Array.prototype.forEach.call(links, function (l) { if (l.classList) l.classList.remove('active'); });
+        var panels = document.querySelectorAll ? document.querySelectorAll('.tab-panel') : [];
+        Array.prototype.forEach.call(panels, function (p) { if (p.classList) p.classList.remove('active'); });
+        var panel = document.getElementById('panel-brief-editor'); if (panel) panel.classList.add('active');
+        if (beNavLink && beNavLink.classList) beNavLink.classList.add('active');
+        var t = document.getElementById('page-title'); if (t) t.textContent = 'Brief Editor';
+      }
+      if (window.F10A) F10A.track('tab_viewed', { tab: 'brief-editor', tab_label: 'Brief Editor' });
+    }
+
+    function deactivateOnOtherNav() {
+      var panels = document.querySelectorAll ? document.querySelectorAll('.brief-editor-tab-panel') : [];
+      Array.prototype.forEach.call(panels, function (p) { if (p.classList) p.classList.remove('active'); });
+      var links = document.querySelectorAll ? document.querySelectorAll('.brief-editor-nav-link') : [];
+      Array.prototype.forEach.call(links, function (l) { if (l.classList) l.classList.remove('active'); });
+    }
+
+    /* ---- registration ---- */
+
+    function registerTab() {
+      var nav = document.querySelector('#sidebar nav');
+      var content = document.getElementById('content');
+      if (!nav || !content) return;
+      nav.insertAdjacentHTML('beforeend', '<div class="nav-section">Creative Briefs</div>');
+      nav.insertAdjacentHTML('beforeend', navLinkHtml());
+      content.insertAdjacentHTML('beforeend', panelMarkup());
+      beNavLink = document.querySelector('.brief-editor-nav-link');
+      if (beNavLink && beNavLink.addEventListener) {
+        beNavLink.addEventListener('click', function (e) { if (e && e.preventDefault) e.preventDefault(); activate(); });
+      }
+      var loadBtn = document.getElementById('be-load-btn');
+      if (loadBtn && loadBtn.addEventListener) {
+        loadBtn.addEventListener('click', function (e) {
+          if (e && e.preventDefault) e.preventDefault();
+          var input = document.getElementById('be-load-id');
+          loadRevisionById(input ? input.value : '');
+        });
+      }
+      var form = document.getElementById('be-form');
+      if (form && form.addEventListener) {
+        form.addEventListener('submit', function (e) { if (e && e.preventDefault) e.preventDefault(); saveNewRevision(); });
+      }
+      var others = document.querySelectorAll ? document.querySelectorAll('#sidebar nav a') : [];
+      Array.prototype.forEach.call(others, function (a) {
+        if (a === beNavLink || !a.addEventListener) return;
+        a.addEventListener('click', deactivateOnOtherNav);
+      });
+      // Optional auto-load of a configured revision once the panel exists.
+      if (CFG.REVISION_ID) loadRevisionById(String(CFG.REVISION_ID));
+    }
+
+    /* ---- boot ----
+     * Resolve the client, run the cheap probe through the store, and register the tab only
+     * when the client has a brief revision to edit. Any probe error fails closed (no tab,
+     * no DOM trace). Does not require an f10-layout.js edit: it self-boots and also exposes
+     * window.initBriefEditor for explicit dispatch. */
+    async function initBriefEditor() {
+      if (beBooted) return;
+      beBooted = true;
+      beClient = clientKey();
+      if (!beClient) return; // no client -> silent no-op
+      try {
+        var ok = await store().probe(beClient);
+        if (ok === true) registerTab();
+      } catch (err) {
+        // Fail closed: no tab, no empty state.
+        if (window.console && console.warn) {
+          console.warn('Brief Editor visibility probe error:', err && err.message ? err.message : err);
+        }
+      }
+    }
+
+    window.initBriefEditor = initBriefEditor;
+
+    /* Self-boot without editing f10-layout.js. renderLayout() runs synchronously in a
+     * trailing inline script, so by DOMContentLoaded / load the nav + content exist. The
+     * beBooted guard makes an explicit initBriefEditor() call idempotent. */
+    (function autoBoot() {
+      var run = function () { initBriefEditor(); };
+      if (document.readyState === 'complete' || document.readyState === 'interactive') {
+        if (typeof setTimeout === 'function') setTimeout(run, 0);
+      } else if (document.addEventListener) {
+        document.addEventListener('DOMContentLoaded', function () {
+          if (typeof setTimeout === 'function') setTimeout(run, 0); else run();
+        });
+      }
+    })();
+
+    /* Test surface (US-004): expose internals so the acceptance test can drive
+     * registration, probe gating, load + save via a fake store, and canonical enforcement
+     * without a full dashboard boot. Production paths do not read these. */
+    window.f10BriefEditor = {
+      initBriefEditor: initBriefEditor,
+      registerTab: registerTab,
+      activate: activate,
+      deactivateOnOtherNav: deactivateOnOtherNav,
+      loadRevisionById: loadRevisionById,
+      saveNewRevision: saveNewRevision,
+      populateForm: populateForm,
+      readForm: readForm,
+      renderSaved: renderSaved,
+      panelMarkup: panelMarkup,
+      navLinkHtml: navLinkHtml,
+      endpoint: endpoint,
+      validate: f10BriefValidate,
+      isCanonical: f10BriefIsCanonical,
+      CANONICAL: F10_BRIEF_CANONICAL,
+      AXES: F10_BRIEF_AXES,
+      setStore: function (s) { beStore = s; },
+      setClient: function (c) { beClient = c; },
+      getClient: function () { return beClient; },
+      getLoaded: function () { return beLoadedRevision; },
+      isBooted: function () { return beBooted; },
+      resetForTest: function () { beBooted = false; beLoadedRevision = null; },
+    };
+  })();
+}
