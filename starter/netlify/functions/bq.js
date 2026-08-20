@@ -82,6 +82,18 @@ exports.handler = async function (event) {
     return resolveMedia(body, credentials, cors);
   }
 
+  // ── Generated-ad preview: sign a GENERATED bundle's composed preview image ──
+  // Delivered ads (the `media` action) resolve through BigQuery by ad_id;
+  // GENERATED bundles are in no BigQuery table, so this action is a net-new,
+  // bundle-keyed resolver straight against the components bucket. Given the
+  // caller's client scope plus a bundle id it returns a short-lived signed READ
+  // URL for that bundle's composite.png, or { url:null, reason } when the bundle
+  // belongs to another client or no composite exists. Touches no BigQuery: it
+  // signs with the GCS object-viewer SA path only. See resolveGeneratedPreview.
+  if (body.action === 'generated-preview') {
+    return resolveGeneratedPreview(body, credentials, cors);
+  }
+
   // ── Competitor Ad Library: this client's tracked competitor ads + creatives ──
   // Queries the shared all_clients_adlib dataset (keyed by f10_client) for the
   // latest snapshot per competitor ad, its longevity from ad_registry, its
@@ -378,6 +390,143 @@ async function resolveMedia(body, credentials, cors) {
   } catch (err) {
     console.error('Media resolve error:', err);
     return json(500, { error: err.message });
+  }
+}
+
+/* The components bucket the Python pipeline publishes generated bundles into. */
+const COMPONENTS_BUCKET = 'f10-creative-assets';
+
+/* Path-safe GCS segment, mirroring the pipeline's _safe(): any run of characters
+ * outside [A-Za-z0-9._-] collapses to '_', leading/trailing '_' are stripped, and
+ * an empty result falls back to 'asset'. Case is PRESERVED so the segment matches
+ * exactly what the pipeline wrote for the client and bundle id. */
+function safeGcsSegment(value) {
+  const s = String(value == null ? '' : value)
+    .replace(/[^A-Za-z0-9._-]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return s || 'asset';
+}
+
+/* The caller's client reduced to the pipeline's brief-id client slug form: the
+ * lowercased client with any non-alphanumeric run turned into '-'. This is the
+ * form embedded in a brief/bundle id, so it is what the scope check compares. */
+function clientSlug(client) {
+  return (
+    String(client == null ? '' : client)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'client'
+  );
+}
+
+/* The client slug a bundle id provably belongs to, or '' when the id does not
+ * encode one. Pipeline brief ids are `brief_{clientslug}_{archetypeslug}_{digest}`
+ * and neither slug contains an underscore (their builder maps non-alnum to '-'),
+ * so a well-formed id splits on '_' into exactly [brief, client, archetype, digest]
+ * and the owning client slug is the second token. */
+function bundleOwnerSlug(bundleId) {
+  const parts = String(bundleId == null ? '' : bundleId).split('_');
+  if (parts.length >= 4 && parts[0] === 'brief' && parts[1]) {
+    return parts[1].toLowerCase();
+  }
+  return '';
+}
+
+/* The bundle-keyed object path (no gs:// prefix) for a bundle's composed preview,
+ * matching the pipeline exactly:
+ *   components/{platform}/{client}/{bundle_id}/composite.png */
+function compositeObjectName(client, bundleId, platform) {
+  const plat = platform === 'tiktok' ? 'tiktok' : 'meta';
+  return (
+    'components/' + plat + '/' + safeGcsSegment(client) + '/' +
+    safeGcsSegment(bundleId) + '/composite.png'
+  );
+}
+
+/* GCS object-viewer credentials for signing bucket reads. Prefers a dedicated
+ * GCS_OBJECT_VIEWER_SA when configured, else the dashboard's storage-read SA
+ * (GOOGLE_SERVICE_ACCOUNT, which holds roles/storage.objectViewer on the bucket).
+ * This is the object-viewer SA path; the resolver never uses the BigQuery job SA
+ * to read the bucket. */
+function objectViewerCredentials(fallback) {
+  const raw = process.env.GCS_OBJECT_VIEWER_SA;
+  if (raw) {
+    try {
+      return JSON.parse(raw);
+    } catch (e) {
+      console.error('GCS_OBJECT_VIEWER_SA is set but not valid JSON; falling back.');
+    }
+  }
+  return fallback;
+}
+
+/* Resolve a GENERATED bundle's composed preview image to a short-lived signed
+ * read URL, given the caller's client scope and the bundle id.
+ *
+ * Delivered ads map an ad_id to an asset through BigQuery (the `media` action);
+ * a generated bundle is in no BigQuery table. Its composed preview lands at ONE
+ * deterministic, bundle-keyed object written by the pipeline at publish time:
+ *   gs://f10-creative-assets/components/{platform}/{client}/{bundle_id}/composite.png
+ * so this resolver touches NO BigQuery at all and signs the read URL with the GCS
+ * object-viewer SA path (never the BigQuery SA).
+ *
+ * Client scope is category-1. The composite path is keyed by the CALLER'S client,
+ * and the bundle id must belong to that same client, so a caller scoped to client
+ * A can neither name nor resolve client B's object. A bundle id that provably
+ * encodes a different owner is refused before storage is ever touched.
+ *
+ * Never throws for a foreign/absent/unsignable composite: it returns
+ * { url: null, reason } so the review surface can fall back without leaking
+ * another client's data. */
+async function resolveGeneratedPreview(body, credentials, cors) {
+  const json = (statusCode, payload) => ({
+    statusCode,
+    headers: { ...cors, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  const client = typeof body.client === 'string' ? body.client.trim() : '';
+  const bundleId = typeof body.bundleId === 'string' ? body.bundleId.trim() : '';
+  const platform = body.platform === 'tiktok' ? 'tiktok' : 'meta';
+
+  if (!client || !bundleId) {
+    return json(200, { url: null, reason: 'missing-client-or-bundle' });
+  }
+
+  // Enforce client scope up front: refuse a bundle that provably belongs to a
+  // different client before any storage call, so A can never probe B's namespace.
+  const owner = bundleOwnerSlug(bundleId);
+  if (owner && owner !== clientSlug(client)) {
+    return json(200, { url: null, reason: 'client-scope-mismatch' });
+  }
+
+  const objectName = compositeObjectName(client, bundleId, platform);
+  const gcsUri = 'gs://' + COMPONENTS_BUCKET + '/' + objectName;
+
+  try {
+    // Object-viewer SA path only. This resolver never constructs a BigQuery
+    // client, so the BigQuery SA is never used to read the bucket.
+    const storage = new Storage({
+      projectId: 'mcc-poc-477801',
+      credentials: objectViewerCredentials(credentials),
+    });
+
+    // Only sign what actually exists, so an absent composite returns a clean
+    // { url:null, reason } instead of a signed URL that 404s in the browser.
+    const [exists] = await storage.bucket(COMPONENTS_BUCKET).file(objectName).exists();
+    if (!exists) {
+      return json(200, { url: null, reason: 'not-found' });
+    }
+
+    const expires = Date.now() + 15 * 60 * 1000; // 15 minutes, mirrors `media`
+    const url = await signGcsUri(storage, gcsUri, expires);
+    if (!url) {
+      return json(200, { url: null, reason: 'unresolvable' });
+    }
+    return json(200, { url, client, bundleId, platform });
+  } catch (err) {
+    console.error('Generated-preview resolve error:', err);
+    return json(200, { url: null, reason: 'error' });
   }
 }
 

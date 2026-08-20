@@ -111,6 +111,28 @@ cursor-following, click-through card. Regression coverage lives in
 
 `renderLayout()` generates all markup (including the `#ctrl-groups` / `#weekly-controls` containers), so dashboards no longer hand-maintain the HTML or the monthly loaders.
 
+### Generated-ad preview resolver (`generated-preview` action)
+
+Delivered ads resolve to a signed GCS URL through BigQuery by `ad_id` (the `media`
+action). A GENERATED bundle from the creative pipeline is in no BigQuery table, so
+the `bq` function exposes a net-new, bundle-keyed resolver for it:
+`{ action:'generated-preview', client, bundleId, platform? }` returns a short-lived
+(15-min) v4 signed READ url for that bundle's composed preview image, which the
+pipeline publishes at `components/{platform}/{client}/{bundle_id}/composite.png` in
+`gs://f10-creative-assets` at bundle publish time. `platform` defaults to `meta`.
+
+Client scope is category-1: the composite path is keyed by the caller's `client`,
+and a `bundleId` that provably encodes a different owner (pipeline brief ids are
+`brief_{client}_{archetype}_{digest}`) is refused before any storage call, so a
+caller for client A can neither name nor resolve client B's object. A foreign,
+absent, or unsignable composite returns `{ url:null, reason }` and never throws or
+leaks another client's data (`reason` is one of `client-scope-mismatch`,
+`not-found`, `missing-client-or-bundle`, `unresolvable`, `error`). The read signs
+with the GCS object-viewer service account only (a dedicated `GCS_OBJECT_VIEWER_SA`
+when set, else the dashboard's `GOOGLE_SERVICE_ACCOUNT`, which holds
+`roles/storage.objectViewer` on the bucket) and constructs no BigQuery client.
+Regression coverage lives in `test/us-005-generated-preview.test.js`.
+
 ## Config reference
 
 | Global | Required | Purpose |
