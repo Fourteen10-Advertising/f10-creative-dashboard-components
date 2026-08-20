@@ -17,6 +17,7 @@ A dashboard is now just a config block plus script tags: the markup, styling, an
 | `f10-competitors.js` | Competitor Ad Library tab (probe-driven: appears automatically when the client has competitor rows in `all_clients_adlib`): groups a client's tracked competitor Meta ads by competitor in the F10 card layout, with Status / Timeframe / Competitor filters, per-competitor pagination (20/page), and a metadata + on-demand creatives split that fetches only the visible page's signed media. Reuses `f10MediaMarkup` from `f10-preview.js` |
 | `f10-components.js` | Component Scale tab (probe-driven: appears automatically when the client has a `{client}_marts.component_performance` mart): grades the five creative components (hook, format, CTA, message angle, visual style) against the client's own baseline, with lift, evidence count, confidence tier, the verbatim descriptive caveat, and a co-occurrence mark; plus the cross-client whitespace lane as a separate, clearly-labelled hypotheses section. Adds `f10ActivateTab()` (in `f10-layout.js`) as the single generic tab dispatcher (see [Component Scale](#component-scale)) |
 | `f10-brief-editor.js` | Brief Editor tab (probe-driven: appears only when the client has a saved brief revision to edit): a canonical-constrained editor for the F10 internal review app. Loads a brief revision and saves a NEW one via the US-003 persistence contract (GCS `brief-revisions/{client}/{id}.json` + a `brief_revisions` BigQuery row). The five creative axes (visual style, hook, message angle, CTA, format) are dropdowns locked to the canonical vocabularies, so a non-canonical value can never be saved; copy is free text. Dual-mode: the same file exports the persistence core behind an injectable writer seam for the brief backend (see [Brief editor](#brief-editor)) |
+| `f10-review.js` | Creative Review tab (probe-gated AND live-path safe: appears only on the F10-internal review surface that carries a `REVIEW` config AND has review data). Renders each newly generated ad next to the client's winning historical ads and their policy metric (from the US-006 `winning-historical` action), the new ad's own preview image (from the US-005 `generated-preview` action), and the ad's coherence flags plus the so-what / now-what read. Strictly additive: a dashboard with no `REVIEW` config never probes and injects nothing (see [Creative review](#creative-review)) |
 
 ## How to use in a dashboard
 
@@ -172,6 +173,7 @@ inside `{client}_marts`, so reconcile the dataset location at live verification.
 | `CREATIVE_SCORE_CONFIG` | no | Creative Score weights, maturity target, per-rate quality ceilings and band cutoffs (see [Creative Score column](#creative-score-column)) |
 | `COMPETITORS` | no | Optional Competitor Ad Library overrides — the tab itself is automatic (see below) |
 | `COMPONENTS` | no | Optional Component Scale overrides; the tab itself is automatic (see [Component Scale](#component-scale)) |
+| `REVIEW` | no | F10-internal Creative Review surface only: the bundles-under-review plus optional overrides. **Absent on every live client dashboard**, which is what keeps the review tab strictly additive (see [Creative review](#creative-review)) |
 
 ## Competitor Ad Library
 
@@ -282,6 +284,43 @@ const BRIEF_EDITOR = {
   ENDPOINT:    '/api/brief',  // optional brief backend URL (else window.BRIEF_FUNCTION, else derived from BQ_FUNCTION by swapping /bq -> /brief)
 };
 ```
+
+## Creative review
+
+`f10-review.js` adds a **Creative Review** tab for the F10-internal review surface: an interactive preview that shows each newly generated ad next to the client's winning historical ads and their metric, so a reviewer can judge a concept in context instead of reading a static report. For each bundle-under-review the panel renders the new ad's own preview image beside the client's top winners, the policy metric on each winner, the bundle's coherence flags and held dimensions, and the so-what / now-what read that compares the concept to what already works for the client.
+
+**Data sources (both already merged).** Winners, metrics and the comparison come from the US-006 [`winning-historical`](#new-ad-vs-winning-historical-join-winning-historical-action) action (strictly per-client: only `{client}_marts` and `{client}_reporting` are read, and the metric follows the revenue-gating policy - CPA default, ROAS only for PharmX and FastCover). The new ad's composed preview image comes from the US-005 [`generated-preview`](#generated-ad-preview-resolver-generated-preview-action) action. A winner with no fetched asset falls back to its click-through link, and a missing new-ad composite falls back to a labelled placeholder, so nothing renders as a broken image.
+
+**Probe-gated AND live-path safe - two gates, both fail closed.** This module feeds the same shared framework that renders live client dashboards, so it is strictly additive:
+
+1. **Config gate (live-path safety).** The bundles-under-review come from the optional `REVIEW` config block. A dashboard that carries **no `REVIEW` config** - which is every live client dashboard - short-circuits to a silent no-op: no probe, no network call, no nav link, no panel, zero DOM trace. An existing dashboard cannot be altered by a module it never configures.
+2. **Data probe gate.** Even with bundles configured, the module first runs the cheap `winning-historical` existence probe. Only when the client actually has review data is the **Creative Review** nav section, nav link and panel injected. A client with no review data, or any probe error (endpoint down, mart not built), shows **no tab** and leaves zero trace.
+
+**Single generic dispatcher.** Tab activation goes through the same `f10ActivateTab()` dispatcher as every other module (see [Generic tab dispatcher](#generic-tab-dispatcher)): it clears every nav link and every `.tab-panel` before activating the selected pair, so two panels can never both be active and no existing module needed editing. `f10-layout.js` calls `initReview()` at the tail of `renderLayout()` (the same probe-decides pattern as `initComponents()`), and the module also self-boots on `DOMContentLoaded` behind an idempotent guard, so a dashboard pinned to an older `f10-layout.js` tag still gets the tab.
+
+**Live-path release discipline (`livePathWatch`).** Because a bad framework release can blank-screen live dashboards, a framework tag bump follows the [release process](#release-process): after tagging, **purge and verify the jsDelivr tag**, then load a known-good existing client dashboard (for example `matilda` or `stake`) on the new tag and confirm it still renders before bumping other dashboards. The code-level invariant behind that canary - that a dashboard without a `REVIEW` config injects nothing and the base nav is unchanged - is asserted in `test/f10-review.test.js`.
+
+Config (F10-internal review surface only; all optional except providing at least one bundle):
+
+```js
+const REVIEW = {
+  CLIENT: 'moshy',            // optional f10 client slug override when DATASET doesn't follow {client}_marts / {client}_clean
+  LIMIT: 5,                   // optional winners per bundle to request (server caps at 25)
+  BUNDLES: [                  // the generated ads to review, from the operator's generation run
+    {
+      bundle_id: 'brief_moshy_founder_ab12cd',
+      platform: 'meta',                          // optional; defaults to meta
+      label: 'Founder story - bold typographic', // optional display label
+      components: { hook_type: 'Founder story', format_canonical: 'UGC video' },
+      coherence_flags: ['visual_style held for review'],
+      held_dimensions: ['visual_style_canonical'],
+      new_ad: { headline: '...', body: '...' }   // optional copy metadata
+    }
+  ]
+};
+```
+
+Regression coverage (registration, probe gating, live-path safety, the single-dispatcher activation and new-vs-winners render) lives in `test/f10-review.test.js`.
 
 ## Target metric (CPA vs ROAS)
 

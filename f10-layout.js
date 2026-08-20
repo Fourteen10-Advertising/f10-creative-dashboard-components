@@ -753,4 +753,11 @@ ${ttControls}
    * nav link + panel only when the client has a component_performance mart, so this
    * call is unconditional - the probe decides whether the tab exists. */
   if (typeof initComponents === 'function') initComponents();
+  /* Creative Review tab (US-007): probe-gated and live-path safe, self-registering. It
+   * short-circuits to a zero-trace no-op unless the dashboard carries a REVIEW config
+   * (no live client dashboard does) AND the client has review data, so this call is
+   * unconditional - the config + probe gates decide whether the tab exists. f10-review.js
+   * also self-boots on DOMContentLoaded behind an idempotent guard, so this call is safe
+   * whether or not the module script is present. */
+  if (typeof initReview === 'function') initReview();
 }
