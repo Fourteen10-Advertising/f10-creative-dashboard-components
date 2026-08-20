@@ -133,6 +133,30 @@ when set, else the dashboard's `GOOGLE_SERVICE_ACCOUNT`, which holds
 `roles/storage.objectViewer` on the bucket) and constructs no BigQuery client.
 Regression coverage lives in `test/us-005-generated-preview.test.js`.
 
+### New-ad vs winning-historical join (`winning-historical` action)
+
+Puts a newly generated ad next to the client's proven winners so the review UI can
+show new-vs-winners. `{ action:'winning-historical', client, bundleId, platform? }`
+returns, for that client and bundle, the top-N winning historical ads from the
+client's own marts (per-delivered-ad metrics plus the winning component scoreboard),
+each with a signed preview image, and echoes the new generated ad alongside.
+
+Client scope is category-1: the only performance datasets read are the caller's own
+`{client}_marts` and `{client}_reporting`, so there is no cross-client pooling. The
+client key is sanitised to `[a-z0-9_]` before it is inlined (a dataset name cannot be
+a bound parameter), so an injected value collapses to a harmless slug or a `400`.
+
+Metric selection follows the revenue-gating policy: CPA is the default, and ROAS is
+used only for PharmX and FastCover, chosen from the client scope alone, so a lead-gen
+client never emits a revenue column. The response also carries a `comparison` block
+that aligns the bundle's components against the proven winners into aligned and
+unproven dimensions, with a so-what and a now-what, to clear the insight-ladder L4/L5
+bar. Regression coverage lives in `test/us-006-winning-historical.test.js`.
+
+Note: this action follows the productization dataset convention (`creative_reporting`
+in `{client}_reporting`); the live growth dashboards currently keep `creative_reporting`
+inside `{client}_marts`, so reconcile the dataset location at live verification.
+
 ## Config reference
 
 | Global | Required | Purpose |
