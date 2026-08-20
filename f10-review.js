@@ -1,5 +1,6 @@
 /**
- * f10-review.js - F10 Creative Review tab (probe-gated, live-path safe, US-007)
+ * f10-review.js - F10 Creative Review tab (probe-gated, live-path safe, US-007;
+ *                 approve/decline gate + approval state, US-009)
  * Load via: <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@TAG/f10-review.js"></script>
  *
  * WHAT IT SHOWS: the interactive preview surface for the creative pipeline. For each
@@ -36,11 +37,22 @@
  * older f10-layout.js tag still gets the tab. Both paths call the same idempotent
  * initReview().
  *
+ * APPROVE / DECLINE GATE (US-009): each ad carries a coarse concept-level decision -
+ * approve (marks the bundle servable, sets its approved flag) or decline (records a reason
+ * and marks it not-servable). The decision is recorded via the US-008 feedback WRITE path
+ * (this module never re-implements that write); the persisted state is read back on load, so
+ * reloading the surface shows the real approved / declined / pending state. Both the write and
+ * the read sit behind an injectable feedback-client seam (setFeedbackClient) so tests use
+ * fakes and never hit a live service. There is NO regenerate / re-prompt loop: refinement is a
+ * designer pass in Figma after approval, decided in interview.
+ *
  * CONFIG (optional): REVIEW is only defined on the F10-internal review surface; live
  * client dashboards never define it.
  *   const REVIEW = {
  *     CLIENT: 'moshy',          // optional; override the f10 client slug when DATASET
  *                               // does not follow the {client}_marts / {client}_clean convention
+ *     ACTOR: 'zac@f10',         // optional; who is recording the decision. Behind the F10 gate
+ *                               // the endpoint stamps the authenticated actor, so this is optional.
  *     LIMIT: 5,                 // optional; winners per bundle to request (server caps at 25)
  *     BUNDLES: [                // the generated ads to review, from the operator's run
  *       {
@@ -68,6 +80,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     var rvNavLink = null;    // the injected nav-link element (bound once)
     var rvStore = null;      // injectable data store (tests override via setStore)
     var rvBundles = null;    // injectable bundle list (tests override via setBundles)
+    var rvFeedback = null;   // injectable feedback client (US-009; tests override via setFeedbackClient)
+    var rvResults = [];      // last-loaded per-bundle results, so a decision can re-render in place
+    var rvStatus = {};       // per-bundle approval state {state,comment,actor,updated_at}, read back + updated on decide
+    var rvBusy = {};         // per-bundle in-flight guard so a double click cannot double-post
+    var rvDecErr = {};       // per-bundle last decision error message, surfaced inline (never a silent failure)
 
     /* ---- small local helpers ---- */
 
@@ -184,6 +201,80 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function store() { return rvStore || defaultStore(); }
 
+    /* ---- feedback write/read seam (US-009; injectable, default hits the US-008 endpoint) ----
+     *
+     * The approve/decline decision is recorded by the US-008 feedback write path; this module
+     * never re-implements that write. The default client POSTs the exact US-008 contract
+     * ({ client, platform, bundle_id, state, comment?, actor? }) to the feedback function and
+     * reads the persisted state back from the same source so a reload shows the real decision.
+     * The endpoint runs on GCP compute and is not deployed yet, so both calls sit behind this
+     * seam: tests inject a fake via setFeedbackClient, and a read that cannot resolve degrades
+     * to "pending" rather than throwing. Two operations:
+     *   submit(record)                 -> the endpoint's success payload (includes state, updated_at)
+     *   read(client, bundleId, plat)   -> the persisted status.json shape, or null when none (pending)
+     */
+    function feedbackUrl() {
+      if (typeof FEEDBACK_FUNCTION !== 'undefined' && FEEDBACK_FUNCTION) return FEEDBACK_FUNCTION;
+      if (CFG.FEEDBACK_FUNCTION) return String(CFG.FEEDBACK_FUNCTION);
+      return '/.netlify/functions/feedback';
+    }
+
+    function defaultFeedbackClient() {
+      var url = feedbackUrl();
+      return {
+        async submit(record) {
+          var res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(record),
+          });
+          if (!res.ok) throw new Error(await res.text());
+          return res.json();
+        },
+        async read(client, id, platform) {
+          // Read back the persisted decision (status.json sidecar) from the same source.
+          // A non-ok response (no decision yet, or the read path not deployed) means "pending".
+          var q = url + (url.indexOf('?') === -1 ? '?' : '&')
+            + 'client=' + encodeURIComponent(client)
+            + '&bundle_id=' + encodeURIComponent(id)
+            + '&platform=' + encodeURIComponent(platform);
+          var res = await fetch(q, { method: 'GET', headers: { Accept: 'application/json' } });
+          if (!res.ok) return null;
+          var data = await res.json();
+          return (data && data.state) ? data : null;
+        },
+      };
+    }
+
+    function feedbackClient() { return rvFeedback || defaultFeedbackClient(); }
+
+    /* The three visible states, nothing else. Anything unrecognised reads as pending so the
+     * UI never shows an invented or half-set decision. */
+    function normState(s) {
+      return (s === 'approved' || s === 'declined') ? s : 'pending';
+    }
+
+    /* The current known decision for a bundle, defaulting to pending. */
+    function statusOf(id) {
+      var st = rvStatus[id];
+      return { state: normState(st && st.state), comment: (st && st.comment) || '', actor: (st && st.actor) || '', updated_at: (st && st.updated_at) || '' };
+    }
+
+    /* Who is recording the decision. An explicit REVIEW.ACTOR wins; otherwise a global the
+     * host may set. Empty is fine: behind the F10 gate the endpoint stamps the actor from the
+     * authenticated header, so the client need not know it. */
+    function actorName() {
+      if (CFG.ACTOR) return String(CFG.ACTOR);
+      if (typeof F10_ACTOR !== 'undefined' && F10_ACTOR) return String(F10_ACTOR);
+      return '';
+    }
+
+    function findBundleById(id) {
+      var list = getBundles();
+      for (var i = 0; i < list.length; i++) { if (bundleId(list[i]) === id) return list[i]; }
+      return null;
+    }
+
     /* ---- rendering ---- */
 
     function flagBadges(flags, cls, emptyNote) {
@@ -261,6 +352,53 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return '<div class="rev-compare">' + so + now + '</div>';
     }
 
+    /* The per-bundle approve/decline gate (US-009). A coarse concept-level decision: approve
+     * sets the bundle's approved flag (recorded via the US-008 write path) or decline records
+     * a reason and marks the ad not-servable. The current state (approved / declined / pending)
+     * is always shown, and after a decision the panel reflects the new state. There is
+     * deliberately NO regenerate / re-prompt control: refinement is a designer pass in Figma
+     * after approval, not an LLM tweak-and-regenerate loop. */
+    function decisionHtml(bundle) {
+      var id = bundleId(bundle);
+      var st = statusOf(id);
+      var busy = !!rvBusy[id];
+      var err = rvDecErr[id] || '';
+
+      var stateLabel = st.state === 'approved' ? 'Approved' : (st.state === 'declined' ? 'Declined' : 'Pending');
+      var badge = '<span class="rev-state rev-state-' + st.state + '" data-rev-state="' + esc(st.state) + '">' + esc(stateLabel) + '</span>';
+      var meta = '';
+      if (st.state === 'declined') {
+        meta = '<span class="rev-state-note">Not servable'
+          + (st.comment ? ' &middot; reason: ' + esc(st.comment) : '')
+          + (st.actor ? ' &middot; by ' + esc(st.actor) : '') + '</span>';
+      } else if (st.state === 'approved') {
+        meta = '<span class="rev-state-note">Servable'
+          + (st.actor ? ' &middot; by ' + esc(st.actor) : '') + '</span>';
+      }
+
+      var dis = busy ? ' disabled' : '';
+      var approveBtn = '<button type="button" class="rev-btn rev-approve" data-rev-action="approve" data-bundle-id="' + esc(id) + '"'
+        + (st.state === 'approved' ? ' aria-pressed="true"' : '') + dis + '>Approve</button>';
+      var declineBtn = '<button type="button" class="rev-btn rev-decline" data-rev-action="decline" data-bundle-id="' + esc(id) + '"'
+        + (st.state === 'declined' ? ' aria-pressed="true"' : '') + dis + '>Decline</button>';
+      var comment = '<textarea class="rev-comment" id="rev-comment-' + esc(id) + '" data-bundle-id="' + esc(id) + '" rows="1" '
+        + 'placeholder="Optional reason for a decline">' + esc(st.state === 'declined' ? st.comment : '') + '</textarea>';
+
+      var errHtml = err ? '<div class="rev-dec-err" data-bundle-id="' + esc(id) + '">Could not save decision: ' + esc(err) + '</div>' : '';
+      var busyHtml = busy ? '<span class="rev-dec-busy">Saving&hellip;</span>' : '';
+
+      return '<div class="rev-decision" data-bundle-id="' + esc(id) + '">'
+        + '<div class="rev-decision-row">'
+        + '<span class="rev-decision-label">Decision:</span> ' + badge + meta
+        + '<span class="rev-decision-actions">' + approveBtn + declineBtn + busyHtml + '</span>'
+        + '</div>'
+        + '<div class="rev-decision-comment">' + comment + '</div>'
+        + errHtml
+        + '<div class="rev-refine-note">Refinement happens with the designer in Figma after approval. '
+        + 'This is a yes/no concept gate; there is no regenerate or re-prompt step here.</div>'
+        + '</div>';
+    }
+
     /* One bundle-under-review block: the new ad beside the client's winners, the metric
      * policy note, the coherence flags / held dimensions, and the so-what/now-what read.
      * Coherence flags come from BOTH the bundle config and the action's echoed comparison
@@ -298,6 +436,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '<div class="rev-winners-list">' + winnersInner + '</div></div>'
         + '</div>'
         + comparisonHtml(cmp)
+        + decisionHtml(bundle)
         + '</div>';
     }
 
@@ -313,9 +452,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     /* Render every bundle block into the panel. A single bundle's read failure degrades
      * to a per-bundle error card, never a blank panel: the reviewer still sees the rest. */
     function renderBundles(results) {
+      rvResults = Array.isArray(results) ? results : [];
       var body = document.getElementById('rev-body');
       if (body) {
-        body.innerHTML = results.map(function (r) {
+        body.innerHTML = rvResults.map(function (r) {
           if (r.error) {
             return '<div class="rev-bundle rev-bundle-error"><div class="rev-bundle-head">'
               + '<span class="rev-bundle-title">' + esc(r.label || bundleId(r.bundle)) + '</span></div>'
@@ -353,6 +493,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var st = store();
       var payloadP = st.winners(rvClient, bundle);
       var previewP = st.preview(rvClient, id, bundlePlatform(bundle)).catch(function () { return null; });
+      // Read the persisted decision back from the feedback/status source (US-009 AC3) in
+      // parallel; a miss (or a read path not yet deployed) is simply "pending". The read is
+      // authoritative on load, so reloading the surface always reflects the stored state.
+      var statusP = feedbackClient().read(rvClient, id, bundlePlatform(bundle)).catch(function () { return null; });
+      var persisted = await statusP;
+      rvStatus[id] = (persisted && persisted.state)
+        ? { state: normState(persisted.state), comment: persisted.comment || '', actor: persisted.actor || '', updated_at: persisted.updated_at || '' }
+        : { state: 'pending', comment: '', actor: '', updated_at: '' };
+      rvDecErr[id] = '';
       try {
         var payload = await payloadP;
         var preview = await previewP;
@@ -378,6 +527,81 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         renderBundles(results);
       } catch (err) {
         renderError(err);
+      }
+    }
+
+    /* ---- decide (US-009): approve / decline a bundle via the US-008 write path ---- */
+
+    /* Re-render every loaded bundle from the cached results; each block reads the current
+     * rvStatus, so a decision reflects in the panel without a full reload. */
+    function rerender() {
+      if (rvResults && rvResults.length) renderBundles(rvResults);
+    }
+
+    /* Record an approve/decline decision for one bundle. Posts the exact US-008 contract to
+     * the feedback write path (we never re-implement that write), then reflects the persisted
+     * new state in the panel. Approve sets state 'approved' (servable); decline sets state
+     * 'declined' with the optional reason (not-servable). An in-flight guard prevents a
+     * double-post, and a failure is surfaced inline, never swallowed. */
+    async function submitDecision(id, state, comment) {
+      id = String(id || '');
+      if (!id || rvBusy[id]) return;
+      var target = normState(state);
+      if (target === 'pending') return;           // only approve/decline are user decisions
+      var bundle = findBundleById(id);
+      if (!bundle) return;
+
+      var reason = (comment != null && String(comment).trim()) ? String(comment).trim() : null;
+      var record = {
+        client: rvClient,
+        platform: bundlePlatform(bundle),
+        bundle_id: id,
+        state: target,
+        comment: target === 'declined' ? reason : null,
+        actor: actorName() || null,
+      };
+
+      rvBusy[id] = true;
+      rvDecErr[id] = '';
+      rerender();
+      try {
+        var resp = await feedbackClient().submit(record);
+        var newState = normState((resp && resp.state) || target);
+        rvStatus[id] = {
+          state: newState,
+          comment: record.comment || '',
+          actor: (resp && resp.actor) || record.actor || '',
+          updated_at: (resp && resp.updated_at) || '',
+        };
+      } catch (err) {
+        rvDecErr[id] = (err && err.message) ? err.message : String(err);
+      } finally {
+        rvBusy[id] = false;
+        rerender();
+      }
+      return rvStatus[id];
+    }
+
+    /* Delegated click handling for the approve/decline controls. Bound ONCE on the stable
+     * rev-body container (survives re-renders), so no per-render rebinding. Walks up from the
+     * click target to the nearest [data-rev-action] control and reads the sibling comment. */
+    function onDecisionClick(e) {
+      var el = e && (e.target || e.srcElement);
+      var action = null, id = null;
+      while (el && el !== document) {
+        if (el.getAttribute) {
+          var a = el.getAttribute('data-rev-action');
+          if (a) { action = a; id = el.getAttribute('data-bundle-id'); break; }
+        }
+        el = el.parentNode;
+      }
+      if (!action || !id) return;
+      if (e && e.preventDefault) e.preventDefault();
+      if (action === 'approve') {
+        submitDecision(id, 'approved', null);
+      } else if (action === 'decline') {
+        var box = document.getElementById('rev-comment-' + id);
+        submitDecision(id, 'declined', box ? box.value : null);
       }
     }
 
@@ -456,11 +680,34 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '#panel-review .rev-bundle-error{border-color:#e3a9b6;}'
         + '#panel-review .rev-err,#panel-review .rev-error-detail{color:#a3243c;font-size:12px;margin-top:6px;word-break:break-word;}'
         + '#panel-review .rev-error{background:#fbe6ea;border:1px solid #e3a9b6;color:#a3243c;padding:14px 16px;border-radius:6px;}'
+        + '#panel-review .rev-decision{margin-top:16px;padding-top:14px;border-top:1px solid rgba(0,0,0,0.08);}'
+        + '#panel-review .rev-decision-row{display:flex;align-items:center;flex-wrap:wrap;gap:10px;font-size:13px;}'
+        + '#panel-review .rev-decision-label{font-weight:700;color:#555;}'
+        + '#panel-review .rev-state{padding:2px 10px;border-radius:10px;font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:0.03em;}'
+        + '#panel-review .rev-state-pending{background:#eee;color:#666;}'
+        + '#panel-review .rev-state-approved{background:#e2f3e6;color:#1c6b34;}'
+        + '#panel-review .rev-state-declined{background:#fbe6ea;color:#a3243c;}'
+        + '#panel-review .rev-state-note{font-size:12px;color:#777;}'
+        + '#panel-review .rev-decision-actions{margin-left:auto;display:flex;gap:8px;align-items:center;}'
+        + '#panel-review .rev-btn{font:inherit;font-size:13px;font-weight:600;padding:6px 14px;border-radius:6px;border:1px solid rgba(0,0,0,0.15);cursor:pointer;background:#fff;}'
+        + '#panel-review .rev-btn[disabled]{opacity:0.5;cursor:default;}'
+        + '#panel-review .rev-approve{border-color:#1c6b34;color:#1c6b34;}'
+        + '#panel-review .rev-approve[aria-pressed="true"]{background:#1c6b34;color:#fff;}'
+        + '#panel-review .rev-decline{border-color:#a3243c;color:#a3243c;}'
+        + '#panel-review .rev-decline[aria-pressed="true"]{background:#a3243c;color:#fff;}'
+        + '#panel-review .rev-decision-comment{margin-top:8px;}'
+        + '#panel-review .rev-comment{width:100%;box-sizing:border-box;font:inherit;font-size:12px;padding:6px 8px;border:1px solid rgba(0,0,0,0.15);border-radius:6px;resize:vertical;min-height:32px;}'
+        + '#panel-review .rev-dec-busy{font-size:12px;color:#777;}'
+        + '#panel-review .rev-dec-err{color:#a3243c;font-size:12px;margin-top:6px;word-break:break-word;}'
+        + '#panel-review .rev-refine-note{margin-top:8px;font-size:12px;color:#777;font-style:italic;}'
         + '</style>'
         + '<div class="rev-insight"><strong>Creative Review:</strong> each newly generated ad shown next to '
         + 'this client\'s winning historical ads and their metric, so a concept is judged in context - not in a '
         + 'static report. The so-what / now-what read compares the concept to what already works; coherence flags '
-        + 'and held dimensions are shown alongside so any held axis is visible before approval.</div>'
+        + 'and held dimensions are shown alongside so any held axis is visible before approval. '
+        + 'Each ad has a coarse approve / decline gate: approve marks the bundle servable, decline records a reason '
+        + 'and marks it not-servable. Refinement then happens with the designer in Figma after approval - there is no '
+        + 'regenerate or re-prompt loop here.</div>'
         + '<div id="rev-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>'
         + '<div id="rev-error" class="rev-error" style="display:none;"></div>'
         + '<div id="rev-body" style="display:none;"></div>'
@@ -480,6 +727,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (rvNavLink && rvNavLink.addEventListener) {
         rvNavLink.addEventListener('click', function (e) { if (e && e.preventDefault) e.preventDefault(); activate(); });
       }
+      // Bind the approve/decline delegation ONCE on the stable rev-body container so it
+      // survives every re-render (renderBundles only swaps the container's innerHTML).
+      var body = document.getElementById('rev-body');
+      if (body && body.addEventListener) body.addEventListener('click', onDecisionClick);
       // Bind the deactivate handler to every OTHER existing nav anchor - generic, no
       // hard-coded class list - so this never needs editing when tabs are added.
       var others = document.querySelectorAll ? document.querySelectorAll('#sidebar nav a') : [];
@@ -554,12 +805,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       getBundles: getBundles,
       fmtMetric: fmtMetric,
       flagText: flagText,
+      // US-009 approve/decline surface
+      decisionHtml: decisionHtml,
+      submitDecision: submitDecision,
+      onDecisionClick: onDecisionClick,
+      approve: function (id) { return submitDecision(id, 'approved', null); },
+      decline: function (id, comment) { return submitDecision(id, 'declined', comment); },
+      statusOf: statusOf,
+      isBusy: function (id) { return !!rvBusy[id]; },
+      decisionError: function (id) { return rvDecErr[id] || ''; },
       setStore: function (s) { rvStore = s; },
       setBundles: function (b) { rvBundles = b; },
+      setFeedbackClient: function (fc) { rvFeedback = fc; },
       setClient: function (c) { rvClient = c; },
       getClient: function () { return rvClient; },
       isLoaded: function () { return rvLoaded; },
       _resetBooted: function () { rvBooted = false; rvLoaded = false; },
+      _resetState: function () { rvStatus = {}; rvBusy = {}; rvDecErr = {}; rvResults = []; },
     };
   })();
 }
