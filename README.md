@@ -16,6 +16,7 @@ A dashboard is now just a config block plus script tags: the markup, styling, an
 | `f10-preview.js` | Inline creative hover previews for `.preview-link` targets; renders a swipeable carousel when an ad has multiple cards. Exposes `f10MediaMarkup({type,url}, opts)` — the shared `<img>`/`<video>` builder reused by the competitor tab — plus `f10PreviewCards(media)` and `f10CarouselHtml(cards, idx)` |
 | `f10-competitors.js` | Competitor Ad Library tab (probe-driven: appears automatically when the client has competitor rows in `all_clients_adlib`): groups a client's tracked competitor Meta ads by competitor in the F10 card layout, with Status / Timeframe / Competitor filters, per-competitor pagination (20/page), and a metadata + on-demand creatives split that fetches only the visible page's signed media. Reuses `f10MediaMarkup` from `f10-preview.js` |
 | `f10-components.js` | Component Scale tab (probe-driven: appears automatically when the client has a `{client}_marts.component_performance` mart): grades the five creative components (hook, format, CTA, message angle, visual style) against the client's own baseline, with lift, evidence count, confidence tier, the verbatim descriptive caveat, and a co-occurrence mark; plus the cross-client whitespace lane as a separate, clearly-labelled hypotheses section. Adds `f10ActivateTab()` (in `f10-layout.js`) as the single generic tab dispatcher (see [Component Scale](#component-scale)) |
+| `f10-brief-editor.js` | Brief Editor tab (probe-driven: appears only when the client has a saved brief revision to edit): a canonical-constrained editor for the F10 internal review app. Loads a brief revision and saves a NEW one via the US-003 persistence contract (GCS `brief-revisions/{client}/{id}.json` + a `brief_revisions` BigQuery row). The five creative axes (visual style, hook, message angle, CTA, format) are dropdowns locked to the canonical vocabularies, so a non-canonical value can never be saved; copy is free text. Dual-mode: the same file exports the persistence core behind an injectable writer seam for the brief backend (see [Brief editor](#brief-editor)) |
 
 ## How to use in a dashboard
 
@@ -228,6 +229,33 @@ The Component Scale tab activates through **`f10ActivateTab()`** in `f10-layout.
 const COMPONENTS = {
   CLIENT:                 'mosh', // optional f10 client slug override when DATASET doesn't follow {client}_marts / {client}_clean
   SUPPRESS_CO_OCCURRENCE: false,  // optional; true hides co-occurrence-flagged grades instead of marking them (default: mark)
+};
+```
+
+## Brief editor
+
+`f10-brief-editor.js` adds a **Brief Editor** tab for the F10 internal review app. An operator loads an existing brief revision, steers the five editable creative axes and the copy, and saves a **new** revision that the generation engine can be pointed at, so a brief can be steered before generation spends without breaking the canonical vocabularies. **Generation does not run from the app in v1** (vault Vertex SA plus a hard spend cap plus no Cloud Run): the editor only edits and saves; after saving, an operator fires generation from the CLI against the new revision id.
+
+**The contract (US-003, already merged in the Python pipeline).** A brief revision persists as a JSON document in GCS at `gs://f10-creative-assets/brief-revisions/{client}/{revision_id}.json` plus a registry row in `mcc-poc-477801.creative_pipeline.brief_revisions`. It carries the five canonical axes, the copy blocks as free text, and provenance (client, evidence source, winning values, revision id). The axis vocabularies in this module **mirror `brief.py` / `brief_revision.schema.json` exactly** and a test asserts they stay in lockstep: the whole point of the editor is that it cannot emit a non-canonical value.
+
+**Never non-canonical.** The five axes (**visual style, hook type, message angle, CTA type, format**) are edited through `<select>` dropdowns whose options are exactly the canonical enums, so a free-text axis value is not reachable in the UI. The save path validates a second time and rejects any axis value outside its vocabulary before anything is written, so even a tampered DOM cannot persist an off-vocabulary value. Copy is captured as free text.
+
+**Probe-gated, fails closed.** On boot the module resolves the client, runs a cheap probe ("does this client have any brief revision to edit?") through the injectable brief store, and only then injects its own **Creative Briefs** nav section, **Brief Editor** nav link and panel. A client with no revisions, or a probe error (for example the brief backend is not yet hosted), shows **no tab** and leaves zero trace in the DOM. Tab activation goes through the same generic `f10ActivateTab()` dispatcher, so two panels can never show at once and no existing module needed editing. It self-boots (no `f10-layout.js` edit) and also exposes `window.initBriefEditor` for explicit dispatch.
+
+**After save (AC4).** The panel shows the saved revision id and a clear next step: an operator runs generation from the CLI against that id (`hq secrets exec -- python -m f10_creative_pipeline.generate --revision <id>`), making explicit that generation is not run from the app.
+
+**Dual-mode, injectable writer seam.** The same file is both the browser panel and the brief persistence core. In Node it exports `saveRevision` / `loadRevision` / `processRequest` programmed against an object-store + registry seam (offline tests use in-memory fakes; nothing touches Google), plus `makeWriters()` which builds the live writers **without credentials** so they authenticate as the runtime service account via Application Default Credentials on GCP compute (the same ADC model US-008's `feedback.js` uses), and `handler` (a `probe` / `load` / `save` POST endpoint) for whatever hosts the review app's brief backend.
+
+> **Provisioning follow-up (not done in this change).** Writing a brief revision needs GCS write to the `brief-revisions/` prefix plus a `brief_revisions` insert. The read/object-viewer dashboard SA cannot do this, and the `feedback-write` SA is scoped only to `status.json` + `feedback_audit`, so it cannot either. Provisioning a brief-write runtime SA (or widening scope) **and** hosting `f10-brief-editor.js`'s `handler` as the review app's brief endpoint are live-provisioning steps that are still pending. Until they land, the browser probe fails closed and the tab does not appear, so live client dashboards are unaffected.
+
+Config (browser, all optional):
+
+```js
+const BRIEF_EDITOR = {
+  CLIENT:      'moshy',       // optional f10 client slug override when DATASET doesn't follow {client}_marts / {client}_clean
+  REVISION_ID: 'rev-123',     // optional; auto-load this revision when the tab first opens
+  ACTOR:       'zac@fourteen10', // optional; stamped as created_by on saved revisions
+  ENDPOINT:    '/api/brief',  // optional brief backend URL (else window.BRIEF_FUNCTION, else derived from BQ_FUNCTION by swapping /bq -> /brief)
 };
 ```
 
