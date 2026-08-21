@@ -150,13 +150,24 @@ function statusObjectPath(platform, client, bundle_id) {
   return 'components/' + platform + '/' + client + '/' + bundle_id + '/status.json';
 }
 
-/* The status.json sidecar the bundle service reads. Small, self-describing. */
+/* The status.json sidecar the bundle service reads. Small, self-describing.
+ *
+ * The sidecar carries the decision under TWO field names on purpose:
+ *   status : the field the bundle service (US-010) gates serving on. It reads
+ *            doc.status and serves only when it equals "approved", so this field
+ *            is what actually unlocks an approved bundle.
+ *   state  : the original review vocabulary (approved | declined | pending),
+ *            kept for the feedback_audit row and the review UI, which speak
+ *            "state".
+ * Both are always the same decision value, so the writer and the reader share
+ * one contract and an approved decision writes status: "approved" verbatim. */
 function buildStatusJson(record, updatedAt) {
   return {
     client: record.client,
     bundle_id: record.bundle_id,
     platform: record.platform,
     state: record.state,
+    status: record.state,
     comment: record.comment,
     actor: record.actor,
     updated_at: updatedAt,
