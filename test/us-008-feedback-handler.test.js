@@ -98,7 +98,11 @@ function check(name, fn) {
     assert.strictEqual(fakes.saved[0].bucketName, 'f10-creative-assets', 'writes to the components bucket');
     assert.strictEqual(fakes.saved[0].objectPath, 'components/meta/moshy/b_42/status.json');
     assert.strictEqual(fakes.saved[0].options.contentType, 'application/json');
-    assert.strictEqual(JSON.parse(fakes.saved[0].contents).state, 'approved');
+    const written = JSON.parse(fakes.saved[0].contents);
+    assert.strictEqual(written.state, 'approved');
+    // Cross-repo contract: the written sidecar carries `status` too, so the
+    // bundle service (which gates on doc.status === "approved") serves it.
+    assert.strictEqual(written.status, 'approved', 'sidecar carries status the bundle service reads');
 
     assert.strictEqual(fakes.inserted.length, 1, 'one audit insert');
     assert.strictEqual(fakes.inserted[0].dataset, 'creative_pipeline');

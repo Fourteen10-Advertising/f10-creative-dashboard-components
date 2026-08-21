@@ -18,6 +18,17 @@ config; the UI and logic come from the shared components via jsDelivr.
 4. Deploy. No build step — Netlify publishes the static files and the `bq.js`
    function.
 
+## Feedback write path (`netlify/functions/feedback.js`)
+
+Records a per-bundle approve / decline / pending decision. Each decision writes a
+`status.json` sidecar to the bundle's own GCS prefix
+(`components/{platform}/{client}/{bundle_id}/status.json`) and an audit row to
+BigQuery. The sidecar carries the decision under two field names on purpose:
+`status` is the field the bundle service reads to gate serving (it serves only
+when `status` is `approved`), and `state` keeps the review vocabulary for the
+audit row and the review UI. Both always hold the same decision value, so an
+approved bundle is written with `status: "approved"` and is served.
+
 ## Keeping up to date
 
 Bump the `@vX.Y.Z` tag in the jsDelivr URLs in `index.html` to pick up new

@@ -77,6 +77,11 @@ function check(name, fn) {
     assert.strictEqual(gcs.saves[0].contentType, 'application/json');
     const status = JSON.parse(gcs.saves[0].contents);
     assert.strictEqual(status.state, 'approved', 'sidecar shows approved');
+    // REGRESSION (cross-repo contract): the sidecar must also carry `status`,
+    // equal to the decision, because the bundle service (US-010) gates serving
+    // on doc.status === "approved". An approved decision therefore has to write
+    // status: "approved" verbatim, or an approved bundle is never served.
+    assert.strictEqual(status.status, 'approved', 'sidecar carries status === decision (what the service reads)');
     assert.strictEqual(status.client, 'moshy');
     assert.strictEqual(status.bundle_id, 'b_123');
     // exactly one audit row, mirroring the decision
@@ -106,6 +111,8 @@ function check(name, fn) {
     assert.strictEqual(status.comment, 'logo too small');
     assert.strictEqual(status.actor, 'cam@f10');
     assert.strictEqual(status.state, 'declined');
+    // status mirrors the decision for every value, not just approved.
+    assert.strictEqual(status.status, 'declined', 'sidecar status mirrors a declined decision too');
   });
 
   /* ------------------------------------------------------------------ *
@@ -225,8 +232,12 @@ function check(name, fn) {
   await check('buildStatusJson has the documented shape and the audit row matches the BQ schema', () => {
     const record = { client: 'moshy', platform: 'meta', bundle_id: 'b1', state: 'approved', comment: 'nice', actor: 'zac@f10' };
     const status = buildStatusJson(record, '2026-08-20T03:04:05.000Z');
-    assert.deepStrictEqual(Object.keys(status).sort(), ['actor', 'bundle_id', 'client', 'comment', 'platform', 'state', 'updated_at'].sort());
+    assert.deepStrictEqual(Object.keys(status).sort(), ['actor', 'bundle_id', 'client', 'comment', 'platform', 'state', 'status', 'updated_at'].sort());
     assert.strictEqual(status.updated_at, '2026-08-20T03:04:05.000Z');
+    // The sidecar carries the decision twice: `state` (review vocab) and
+    // `status` (the field the bundle service gates on). Both equal the decision.
+    assert.strictEqual(status.state, 'approved');
+    assert.strictEqual(status.status, 'approved', 'status equals the decision so the service serves an approved bundle');
 
     const row = buildAuditRow(record, '2026-08-20T03:04:05.000Z');
     assert.deepStrictEqual(Object.keys(row).sort(), ['actor', 'bundle_id', 'client', 'comment', 'created_at', 'state'].sort());
