@@ -17,7 +17,7 @@ A dashboard is now just a config block plus script tags: the markup, styling, an
 | `f10-competitors.js` | Competitor Ad Library tab (probe-driven: appears automatically when the client has competitor rows in `all_clients_adlib`): groups a client's tracked competitor Meta ads by competitor in the F10 card layout, with Status / Timeframe / Competitor filters, per-competitor pagination (20/page), and a metadata + on-demand creatives split that fetches only the visible page's signed media. Reuses `f10MediaMarkup` from `f10-preview.js` |
 | `f10-components.js` | Component Scale tab (probe-driven: appears automatically when the client has a `{client}_marts.component_performance` mart): grades the five creative components (hook, format, CTA, message angle, visual style) against the client's own baseline, with lift, evidence count, confidence tier, the verbatim descriptive caveat, and a co-occurrence mark; plus the cross-client whitespace lane as a separate, clearly-labelled hypotheses section. Adds `f10ActivateTab()` (in `f10-layout.js`) as the single generic tab dispatcher (see [Component Scale](#component-scale)) |
 | `f10-brief-editor.js` | Brief Editor tab (probe-driven: appears only when the client has a saved brief revision to edit): a canonical-constrained editor for the F10 internal review app. Loads a brief revision and saves a NEW one via the US-003 persistence contract (GCS `brief-revisions/{client}/{id}.json` + a `brief_revisions` BigQuery row). The five creative axes (visual style, hook, message angle, CTA, format) are dropdowns locked to the canonical vocabularies, so a non-canonical value can never be saved; copy is free text. Dual-mode: the same file exports the persistence core behind an injectable writer seam for the brief backend (see [Brief editor](#brief-editor)) |
-| `f10-review.js` | Creative Review tab (probe-gated AND live-path safe: appears only on the F10-internal review surface that carries a `REVIEW` config AND has review data). Renders each newly generated ad next to the client's winning historical ads and their policy metric (from the US-006 `winning-historical` action), the new ad's own preview image (from the US-005 `generated-preview` action), and the ad's coherence flags plus the so-what / now-what read. Each ad also has a coarse **approve / decline** gate (US-009) that records the decision via the US-008 feedback write path and shows the persisted approved / declined / pending state on reload. Strictly additive: a dashboard with no `REVIEW` config never probes and injects nothing (see [Creative review](#creative-review)) |
+| `f10-review.js` | Creative Review tab (probe-gated AND live-path safe: appears only on the F10-internal review surface that carries a `REVIEW` config AND has review data). When more than one bundle is under review the default view is a **ranked grid of scorecards**, best-first (roadmap #5): each card fetches its coherence scorecard from the `coherence` action and shows the composite thumbnail, the three dimension scores (client-fit / component-fidelity / brand-compliance) with pass/flag chips, the flags, and an overall verdict badge + score. Expanding a card reveals that ad next to the client's winning historical ads and their policy metric (from the US-006 `winning-historical` action), the new ad's own preview image (from the US-005 `generated-preview` action), and the so-what / now-what read. Each ad also has a coarse **approve / decline** gate (US-009) that records the decision via the US-008 feedback write path and shows the persisted approved / declined / pending state on reload. Strictly additive: a dashboard with no `REVIEW` config never probes and injects nothing (see [Creative review](#creative-review)) |
 
 ## How to use in a dashboard
 
@@ -287,9 +287,9 @@ const BRIEF_EDITOR = {
 
 ## Creative review
 
-`f10-review.js` adds a **Creative Review** tab for the F10-internal review surface: an interactive preview that shows each newly generated ad next to the client's winning historical ads and their metric, so a reviewer can judge a concept in context instead of reading a static report. For each bundle-under-review the panel renders the new ad's own preview image beside the client's top winners, the policy metric on each winner, the bundle's coherence flags and held dimensions, and the so-what / now-what read that compares the concept to what already works for the client.
+`f10-review.js` adds a **Creative Review** tab for the F10-internal review surface. A batch of generated ads is triaged as a **ranked grid of scorecard cards, best-first** (roadmap #5), so a reviewer sees the strongest concepts at a glance instead of reading a static report or scrolling one ad at a time. Each card carries the ad's **coherence scorecard** and its approve / decline gate; expanding a card drops down the full single-bundle detail - the new ad next to the client's winning historical ads and their metric, the bundle's coherence flags and held dimensions, and the so-what / now-what read that compares the concept to what already works. With a single bundle under review the detail view is shown directly (no grid).
 
-**Data sources (both already merged).** Winners, metrics and the comparison come from the US-006 [`winning-historical`](#new-ad-vs-winning-historical-join-winning-historical-action) action (strictly per-client: only `{client}_marts` and `{client}_reporting` are read, and the metric follows the revenue-gating policy - CPA default, ROAS only for PharmX and FastCover). The new ad's composed preview image comes from the US-005 [`generated-preview`](#generated-ad-preview-resolver-generated-preview-action) action. A winner with no fetched asset falls back to its click-through link, and a missing new-ad composite falls back to a labelled placeholder, so nothing renders as a broken image.
+**Data sources (all already merged).** Each card's coherence scorecard comes from the `coherence` action (see [Scored batch review — ranked scorecard grid](#scored-batch-review--ranked-scorecard-grid-roadmap-5) below for the request/response contract). Winners, metrics and the comparison come from the US-006 [`winning-historical`](#new-ad-vs-winning-historical-join-winning-historical-action) action (strictly per-client: only `{client}_marts` and `{client}_reporting` are read, and the metric follows the revenue-gating policy - CPA default, ROAS only for PharmX and FastCover). The new ad's composed preview image comes from the US-005 [`generated-preview`](#generated-ad-preview-resolver-generated-preview-action) action. A winner with no fetched asset falls back to its click-through link, and a missing new-ad composite falls back to a labelled placeholder, so nothing renders as a broken image.
 
 **Probe-gated AND live-path safe - two gates, both fail closed.** This module feeds the same shared framework that renders live client dashboards, so it is strictly additive:
 
@@ -321,6 +321,42 @@ const REVIEW = {
 ```
 
 Regression coverage (registration, probe gating, live-path safety, the single-dispatcher activation and new-vs-winners render) lives in `test/f10-review.test.js`.
+
+### Scored batch review — ranked scorecard grid (roadmap #5)
+
+When **more than one** bundle is under review, the tab defaults to a **ranked grid of cards**, best-first, so a whole batch is triaged at a glance. Each card carries:
+
+- the **composite thumbnail** (the US-005 `generated-preview` path);
+- the **label** and a small **rank / among-N** indicator;
+- the **coherence scorecard**: an overall **verdict badge (pass / flag) + score**, plus the three dimensions — **client fit**, **component fidelity** (shown as `matched / total`), and **brand compliance** — each with its own pass/flag chip, and the **flags** list;
+- the existing **Approve / Decline** controls and persisted state;
+- an **expand** control that drops down the single-bundle detail (the ad next to the client's winners, so-what / now-what) so the US-006 comparison is never lost.
+
+**Sort order.** Cards with `found && overall_verdict === 'pass'` come first, ordered by `overall_score` descending; scored-but-flagged cards follow (also by score descending); **unscored bundles (`found: false`) always sort last**. A single bundle under review skips the grid and renders the detail view directly.
+
+**Scorecard fetch — a new `coherence` action.** For each bundle the module calls the store's `coherence(client, bundleId, platform)` method, which POSTs the following to `BQ_FUNCTION` (the same fetch convention as every other action — the app injects `Authorization` via its fetch shim; the module just POSTs):
+
+```jsonc
+// request
+{ "action": "coherence", "client": "moshy", "bundleId": "brief_moshy_founder_ab12cd", "platform": "meta" }
+
+// response contract (consumed by the grid; fail-closed on any error → treated as unscored)
+{
+  "found": true,                        // false ⇒ "not scored yet" card (still approvable)
+  "overall_verdict": "pass",            // "pass" | "flag"
+  "overall_score": 0.87,                // number in 0..1, rendered as a whole percent
+  "dimensions": {
+    "client_fit":         { "score": 0.9,  "verdict": "pass", "reason": "…" },
+    "component_fidelity": { "score": 0.8,  "verdict": "pass", "reason": "…", "matched": 3, "total": 4 },
+    "brand_compliance":   { "score": 0.85, "verdict": "pass", "reason": "…" }
+  },
+  "flags": ["brand palette drift on CTA"]
+}
+```
+
+**Fail-closed (never breaks the tab).** Any coherence failure — a `found: false` response, a rejected/`!ok` fetch, a malformed shape, or a store with no `coherence` method — renders a clean **"not scored yet"** card that is **still approvable**. The scorecard fetch runs in parallel with the winners join, so even a winners failure still leaves a full scorecard card standing in the grid (only the expandable comparison carries the per-bundle error). Live-path safety is unchanged: a dashboard with no `REVIEW` config still injects nothing and never posts a `coherence` request.
+
+Regression coverage (the `coherence` request contract, the ranked sort, the dimension/flags/verdict render, the unscored + fetch-error fallback, per-card approve/decline + reload, and the expand-to-comparison path) lives in `test/f10-review-grid.test.js`.
 
 ### Approve / decline gate and approval state (US-009)
 

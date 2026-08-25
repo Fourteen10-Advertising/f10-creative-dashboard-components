@@ -1,6 +1,7 @@
 /**
  * f10-review.js - F10 Creative Review tab (probe-gated, live-path safe, US-007;
- *                 approve/decline gate + approval state, US-009)
+ *                 approve/decline gate + approval state, US-009;
+ *                 scored batch review / ranked grid, roadmap #5)
  * Load via: <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@TAG/f10-review.js"></script>
  *
  * WHAT IT SHOWS: the interactive preview surface for the creative pipeline. For each
@@ -11,6 +12,21 @@
  * US-006 `winning-historical` bq action (strictly per-client); the new ad's own preview
  * image comes from the US-005 `generated-preview` action. The bundle's coherence flags
  * and held dimensions ride alongside so the reviewer sees any held dimensions in context.
+ *
+ * SCORED BATCH REVIEW - RANKED GRID (roadmap #5): when more than one bundle is under
+ * review the DEFAULT view is a ranked GRID of scorecard cards, best-first, so a whole
+ * batch is triaged at a glance instead of one ad at a time. Each card fetches its
+ * coherence scorecard from the backend via the store's `coherence` action
+ * ({ found, overall_verdict, overall_score, dimensions:{client_fit, component_fidelity,
+ * brand_compliance}, flags }) and shows the composite thumbnail, the three dimension
+ * scores with pass/flag chips, the flags, the overall verdict badge + score, and the same
+ * Approve / Decline controls + persisted state. Cards sort `found && verdict==='pass'`
+ * first, then by overall_score desc, with unscored (found:false) bundles last; a small
+ * rank / among-N indicator rides on each card. The scorecard fetch FAILS CLOSED: any
+ * error (or a store with no `coherence` method) renders a clean "not scored yet" card that
+ * is still approvable - a scorecard miss never breaks the tab. The single-bundle detail
+ * (new ad vs the client's winners, so-what / now-what) stays reachable by expanding a card,
+ * and remains the default view when exactly one bundle is under review.
  *
  * VISIBILITY IS DATA-DRIVEN AND LIVE-PATH SAFE - two gates, both fail closed:
  *   1. CONFIG GATE (live-path safety). The module reads its bundles-under-review from
@@ -85,6 +101,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     var rvStatus = {};       // per-bundle approval state {state,comment,actor,updated_at}, read back + updated on decide
     var rvBusy = {};         // per-bundle in-flight guard so a double click cannot double-post
     var rvDecErr = {};       // per-bundle last decision error message, surfaced inline (never a silent failure)
+    var rvExpanded = {};     // per-bundle expand state in the ranked grid (winners + comparison detail shown inline)
 
     /* ---- small local helpers ---- */
 
@@ -163,10 +180,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     /* The default store posts { action, ... } to BQ_FUNCTION, mirroring runQuery's
      * fetch convention, and fails closed on a non-ok response. Overridable for tests
-     * and for a future backend wiring via setStore. Three reads:
+     * and for a future backend wiring via setStore. Four reads:
      *   probe(client)                     -> boolean  (winning-historical { probe:true })
      *   winners(client, bundle)           -> payload  (winning-historical join, US-006)
      *   preview(client, bundleId, plat)   -> { url }  (generated-preview, US-005)
+     *   coherence(client, bundleId, plat) -> scorecard (coherence action, roadmap #5)
+     *
+     * The coherence scorecard contract (fail-closed on any error -> treated as unscored):
+     *   { found:bool,
+     *     overall_verdict:'pass'|'flag', overall_score:number(0..1),
+     *     dimensions:{
+     *       client_fit:{ score, verdict, reason },
+     *       component_fidelity:{ score, verdict, reason, matched, total },
+     *       brand_compliance:{ score, verdict, reason } },
+     *     flags:[string] }
      */
     function defaultStore() {
       var url = (typeof BQ_FUNCTION !== 'undefined' && BQ_FUNCTION) ? BQ_FUNCTION : '/.netlify/functions/bq';
@@ -195,6 +222,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         },
         async preview(client, id, platform) {
           return call({ action: 'generated-preview', client: client, bundleId: id, platform: platform });
+        },
+        async coherence(client, id, platform) {
+          return call({ action: 'coherence', client: client, bundleId: id, platform: platform });
         },
       };
     }
@@ -273,6 +303,56 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var list = getBundles();
       for (var i = 0; i < list.length; i++) { if (bundleId(list[i]) === id) return list[i]; }
       return null;
+    }
+
+    /* ---- coherence scorecard (roadmap #5; fail-closed) ----
+     *
+     * Fetch one bundle's coherence scorecard from the store. FAILS CLOSED in every failure
+     * mode - a store with no coherence method, a rejected fetch, or a non-object response all
+     * resolve to null (treated as "not scored yet"), so a scorecard miss can never throw and
+     * never breaks the tab. Never rejects. */
+    async function fetchCoherence(bundle) {
+      var st = store();
+      if (!st || typeof st.coherence !== 'function') return null;
+      try {
+        var sc = await st.coherence(rvClient, bundleId(bundle), bundlePlatform(bundle));
+        return (sc && typeof sc === 'object') ? sc : null;
+      } catch (err) {
+        return null;
+      }
+    }
+
+    /* A scorecard counts as scored only when the backend explicitly says found:true. Anything
+     * else (null, found:false, a malformed shape) is unscored. */
+    function isScored(sc) {
+      return !!(sc && sc.found === true);
+    }
+
+    /* Ranking tier for the grid sort: 0 = scored & passing, 1 = scored & flagged,
+     * 2 = unscored (always last). */
+    function rankTier(sc) {
+      if (!isScored(sc)) return 2;
+      return (sc.overall_verdict === 'pass') ? 0 : 1;
+    }
+
+    function overallScore(sc) {
+      var n = num(sc && sc.overall_score);
+      return n == null ? -1 : n;
+    }
+
+    /* Best-first ordering: `found && verdict==='pass'` first, then by overall_score desc,
+     * with unscored (found:false) bundles last. Stable within ties (original load order). */
+    function sortForGrid(results) {
+      var list = Array.isArray(results) ? results : [];
+      return list.map(function (r, i) { return { r: r, i: i }; })
+        .sort(function (a, b) {
+          var ta = rankTier(a.r && a.r.coherence), tb = rankTier(b.r && b.r.coherence);
+          if (ta !== tb) return ta - tb;
+          var sa = overallScore(a.r && a.r.coherence), sb = overallScore(b.r && b.r.coherence);
+          if (sa !== sb) return sb - sa;      // overall_score desc
+          return a.i - b.i;                   // stable
+        })
+        .map(function (x) { return x.r; });
     }
 
     /* ---- rendering ---- */
@@ -399,15 +479,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '</div>';
     }
 
-    /* One bundle-under-review block: the new ad beside the client's winners, the metric
-     * policy note, the coherence flags / held dimensions, and the so-what/now-what read.
-     * Coherence flags come from BOTH the bundle config and the action's echoed comparison
-     * so a held dimension shows even if only one side carried it. */
-    function bundleHtml(bundle, payload, previewUrl, previewReason) {
+    /* The shared new-ad-vs-winners detail body (the US-006 comparison surface): the coherence
+     * flags / held dimensions row, the new ad beside the client's winners, and the
+     * so-what / now-what read. Reused by the single-bundle detail view AND by an expanded
+     * grid card, so the winners comparison is never lost. Coherence flags come from BOTH the
+     * bundle config and the action's echoed comparison so a held dimension shows even if only
+     * one side carried it. */
+    function detailBodyHtml(bundle, payload, previewUrl, previewReason) {
       var winners = (payload && Array.isArray(payload.winners)) ? payload.winners : [];
       var cmp = payload && payload.comparison;
-      var id = bundleId(bundle);
-      var label = (bundle && bundle.label) ? bundle.label : id;
 
       var cohFlags = (bundle && bundle.coherence_flags) || (cmp && cmp.coherence_flags) || [];
       var held = (bundle && bundle.held_dimensions) || (cmp && cmp.held_dimensions) || [];
@@ -422,6 +502,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         ? winners.map(winnerHtml).join('')
         : '<div class="rev-muted">No winning historical ads for this client yet.</div>';
 
+      return flagsRow
+        + '<div class="rev-grid">'
+        + newAdHtml(bundle, previewUrl, previewReason)
+        + '<div class="rev-winners"><div class="rev-col-head">Client winners</div>'
+        + '<div class="rev-winners-list">' + winnersInner + '</div></div>'
+        + '</div>'
+        + comparisonHtml(cmp);
+    }
+
+    /* One bundle-under-review block for the single-bundle detail view: the head + the shared
+     * detail body + the approve/decline gate. */
+    function bundleHtml(bundle, payload, previewUrl, previewReason) {
+      var id = bundleId(bundle);
+      var label = (bundle && bundle.label) ? bundle.label : id;
       var metricNote = (payload && payload.metric)
         ? '<span class="rev-metric-note">Metric: ' + esc(String(payload.metric).toUpperCase()) + '</span>'
         : '';
@@ -429,15 +523,149 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return '<div class="rev-bundle" data-bundle-id="' + esc(id) + '">'
         + '<div class="rev-bundle-head"><span class="rev-bundle-title">' + esc(label) + '</span>'
         + '<span class="rev-bundle-id">' + esc(id) + '</span>' + metricNote + '</div>'
-        + flagsRow
-        + '<div class="rev-grid">'
-        + newAdHtml(bundle, previewUrl, previewReason)
-        + '<div class="rev-winners"><div class="rev-col-head">Client winners</div>'
-        + '<div class="rev-winners-list">' + winnersInner + '</div></div>'
-        + '</div>'
-        + comparisonHtml(cmp)
+        + detailBodyHtml(bundle, payload, previewUrl, previewReason)
         + decisionHtml(bundle)
         + '</div>';
+    }
+
+    /* ---- coherence scorecard rendering (roadmap #5) ---- */
+
+    /* A 0..1 score as a whole-percent, or a dash when absent. Never invents a number. */
+    function fmtScore(v) {
+      var n = num(v);
+      return n == null ? '&mdash;' : Math.round(n * 100) + '%';
+    }
+
+    /* A pass/flag verdict chip. Anything not 'pass'/'flag' renders as a neutral dash chip. */
+    function verdictChip(verdict) {
+      var v = (verdict === 'pass') ? 'pass' : (verdict === 'flag' ? 'flag' : 'na');
+      var label = v === 'pass' ? 'Pass' : (v === 'flag' ? 'Flag' : '&mdash;');
+      return '<span class="rev-chip rev-chip-' + v + '" data-rev-verdict="' + v + '">' + label + '</span>';
+    }
+
+    function dimRow(label, valueHtml, verdict) {
+      return '<div class="rev-dim">'
+        + '<span class="rev-dim-label">' + esc(label) + '</span>'
+        + '<span class="rev-dim-val">' + valueHtml + '</span>'
+        + verdictChip(verdict) + '</div>';
+    }
+
+    /* The coherence scorecard for one card: overall verdict badge + score, the three
+     * dimension scores (client_fit / component_fidelity as matched/total / brand_compliance)
+     * with pass/flag chips, and the flags list. An unscored bundle (found:false, or a fetch
+     * error) renders a clean "not scored yet" block - still approvable. */
+    function scorecardHtml(sc) {
+      if (!isScored(sc)) {
+        return '<div class="rev-scorecard rev-scorecard-unscored" data-rev-scored="false">'
+          + '<div class="rev-overall rev-overall-unscored">'
+          + '<span class="rev-overall-badge rev-overall-na">Not scored yet</span></div>'
+          + '<div class="rev-scorecard-note rev-muted">No coherence scorecard for this bundle yet.</div>'
+          + '</div>';
+      }
+      var dims = (sc.dimensions && typeof sc.dimensions === 'object') ? sc.dimensions : {};
+      var cf = dims.client_fit || {};
+      var comp = dims.component_fidelity || {};
+      var bc = dims.brand_compliance || {};
+      var matched = num(comp.matched), total = num(comp.total);
+      var compVal = (matched != null && total != null)
+        ? esc(Math.round(matched) + '/' + Math.round(total))
+        : fmtScore(comp.score);
+      var overallV = (sc.overall_verdict === 'pass') ? 'pass' : 'flag';
+      var overallLabel = overallV === 'pass' ? 'PASS' : 'FLAG';
+
+      var flags = Array.isArray(sc.flags) ? sc.flags.filter(function (f) { return flagText(f); }) : [];
+      var flagsHtml = flags.length
+        ? '<ul class="rev-scorecard-flags">'
+          + flags.map(function (f) { return '<li>' + esc(flagText(f)) + '</li>'; }).join('')
+          + '</ul>'
+        : '<div class="rev-scorecard-flags rev-scorecard-flags-none rev-muted">No flags</div>';
+
+      return '<div class="rev-scorecard rev-scorecard-' + overallV + '" data-rev-scored="true">'
+        + '<div class="rev-overall rev-overall-' + overallV + '">'
+        + '<span class="rev-overall-badge rev-overall-' + overallV + '" data-rev-verdict="' + overallV + '">' + overallLabel + '</span>'
+        + '<span class="rev-overall-score">' + fmtScore(sc.overall_score) + '</span>'
+        + '</div>'
+        + '<div class="rev-dims">'
+        + dimRow('Client fit', fmtScore(cf.score), cf.verdict)
+        + dimRow('Component fidelity', compVal, comp.verdict)
+        + dimRow('Brand compliance', fmtScore(bc.score), bc.verdict)
+        + '</div>'
+        + flagsHtml
+        + '</div>';
+    }
+
+    /* The expandable detail inside a grid card: the US-006 winners comparison, or the
+     * per-bundle load error when the winners fetch failed (the scorecard card still stands). */
+    function cardDetailHtml(r) {
+      if (r && r.error) {
+        return '<div class="rev-err">Could not load the winners comparison: ' + esc(r.error) + '</div>';
+      }
+      var metricNote = (r && r.payload && r.payload.metric)
+        ? '<div class="rev-metric-note rev-card-metric">Metric: ' + esc(String(r.payload.metric).toUpperCase()) + '</div>'
+        : '';
+      return metricNote + detailBodyHtml(r.bundle, r.payload, r.previewUrl, r.previewReason);
+    }
+
+    /* One ranked grid card: rank / among-N indicator, composite thumbnail, label, the
+     * coherence scorecard, the approve/decline gate + persisted state, and an expand control
+     * that reveals the winners comparison inline (so US-006 is never lost). */
+    function cardHtml(r, rank, total) {
+      var bundle = r.bundle;
+      var id = bundleId(bundle);
+      var label = (bundle && bundle.label) ? bundle.label : id;
+      var scored = isScored(r.coherence);
+
+      var rankBadge = scored
+        ? '<span class="rev-rank" data-rev-rank="' + rank + '">#' + rank + ' of ' + total + '</span>'
+        : '<span class="rev-rank rev-rank-unscored" data-rev-rank="0">Unscored &middot; ' + total + ' total</span>';
+
+      var thumb = r.previewUrl
+        ? '<img class="rev-img rev-card-thumb" src="' + esc(r.previewUrl) + '" alt="New generated ad preview" loading="lazy" />'
+        : '<div class="rev-img rev-card-thumb rev-img-empty">Preview not available'
+          + (r.previewReason ? ' <span class="rev-muted">(' + esc(r.previewReason) + ')</span>' : '') + '</div>';
+
+      var expanded = !!rvExpanded[id];
+      var expandBtn = '<button type="button" class="rev-btn rev-expand" data-rev-action="expand" data-bundle-id="' + esc(id) + '"'
+        + ' aria-expanded="' + (expanded ? 'true' : 'false') + '">'
+        + (expanded ? 'Hide winners &amp; comparison' : 'View winners &amp; comparison') + '</button>';
+      var detail = expanded ? '<div class="rev-card-detail">' + cardDetailHtml(r) + '</div>' : '';
+
+      return '<div class="rev-card' + (scored ? '' : ' rev-card-unscored') + '" data-bundle-id="' + esc(id) + '">'
+        + '<div class="rev-card-head">' + rankBadge
+        + '<span class="rev-card-title" title="' + esc(label) + '">' + esc(label) + '</span>'
+        + '<span class="rev-card-id">' + esc(id) + '</span>'
+        + '</div>'
+        + '<div class="rev-card-thumb-wrap">' + thumb + '</div>'
+        + scorecardHtml(r.coherence)
+        + decisionHtml(bundle)
+        + '<div class="rev-card-foot">' + expandBtn + '</div>'
+        + detail
+        + '</div>';
+    }
+
+    /* The ranked grid: cards best-first with a small rank / among-N indicator. */
+    function gridHtml(results) {
+      var sorted = sortForGrid(results);
+      var total = sorted.length;
+      var scoredRank = 0;
+      var cards = sorted.map(function (r) {
+        var rank = isScored(r.coherence) ? (++scoredRank) : 0;
+        return cardHtml(r, rank, total);
+      });
+      return '<div class="rev-cards">' + cards.join('') + '</div>';
+    }
+
+    /* The single-bundle detail view (the original stacked layout): each bundle's new ad
+     * beside the client's winners, the comparison, and the decision gate. */
+    function detailHtml(results) {
+      return results.map(function (r) {
+        if (r.error) {
+          return '<div class="rev-bundle rev-bundle-error"><div class="rev-bundle-head">'
+            + '<span class="rev-bundle-title">' + esc(r.label || bundleId(r.bundle)) + '</span></div>'
+            + '<div class="rev-err">Could not load this bundle: ' + esc(r.error) + '</div></div>';
+        }
+        return bundleHtml(r.bundle, r.payload, r.previewUrl, r.previewReason);
+      }).join('');
     }
 
     function showEl(id, disp) {
@@ -449,20 +677,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (el) el.style.display = 'none';
     }
 
-    /* Render every bundle block into the panel. A single bundle's read failure degrades
-     * to a per-bundle error card, never a blank panel: the reviewer still sees the rest. */
+    /* Render the review body. With MORE THAN ONE bundle under review the default view is the
+     * ranked scorecard GRID (roadmap #5); with a single bundle it is the original detail view.
+     * A single bundle's read failure degrades to a per-bundle error card (detail) or an
+     * unscored card whose expanded detail carries the error (grid), never a blank panel: the
+     * reviewer still sees the rest. */
     function renderBundles(results) {
       rvResults = Array.isArray(results) ? results : [];
       var body = document.getElementById('rev-body');
       if (body) {
-        body.innerHTML = rvResults.map(function (r) {
-          if (r.error) {
-            return '<div class="rev-bundle rev-bundle-error"><div class="rev-bundle-head">'
-              + '<span class="rev-bundle-title">' + esc(r.label || bundleId(r.bundle)) + '</span></div>'
-              + '<div class="rev-err">Could not load this bundle: ' + esc(r.error) + '</div></div>';
-          }
-          return bundleHtml(r.bundle, r.payload, r.previewUrl, r.previewReason);
-        }).join('');
+        body.innerHTML = (getBundles().length > 1)
+          ? gridHtml(rvResults)
+          : detailHtml(rvResults);
       }
       hideEl('rev-loading');
       hideEl('rev-error');
@@ -493,6 +719,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var st = store();
       var payloadP = st.winners(rvClient, bundle);
       var previewP = st.preview(rvClient, id, bundlePlatform(bundle)).catch(function () { return null; });
+      // The coherence scorecard for the ranked grid (roadmap #5), fetched in parallel and
+      // FAIL-CLOSED: fetchCoherence never rejects, so a scorecard miss resolves to an unscored
+      // card without touching the rest of the load.
+      var coherenceP = fetchCoherence(bundle);
       // Read the persisted decision back from the feedback/status source (US-009 AC3) in
       // parallel; a miss (or a read path not yet deployed) is simply "pending". The read is
       // authoritative on load, so reloading the surface always reflects the stored state.
@@ -502,19 +732,24 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         ? { state: normState(persisted.state), comment: persisted.comment || '', actor: persisted.actor || '', updated_at: persisted.updated_at || '' }
         : { state: 'pending', comment: '', actor: '', updated_at: '' };
       rvDecErr[id] = '';
+      // Preview and coherence resolve independently of the winners join, so a winners failure
+      // still leaves a full scorecard card (thumbnail + score) standing in the grid; only the
+      // expandable winners comparison carries the per-bundle error.
+      var preview = await previewP;
+      var coherence = await coherenceP;
+      var base = {
+        bundle: bundle,
+        label: label,
+        previewUrl: (preview && preview.url) || null,
+        previewReason: (preview && !preview.url) ? (preview.reason || '') : '',
+        coherence: coherence,
+      };
       try {
-        var payload = await payloadP;
-        var preview = await previewP;
-        return {
-          bundle: bundle,
-          label: label,
-          payload: payload,
-          previewUrl: (preview && preview.url) || null,
-          previewReason: (preview && !preview.url) ? (preview.reason || '') : '',
-        };
+        base.payload = await payloadP;
       } catch (err) {
-        return { bundle: bundle, label: label, error: (err && err.message) ? err.message : String(err) };
+        base.error = (err && err.message) ? err.message : String(err);
       }
+      return base;
     }
 
     async function loadReview() {
@@ -582,9 +817,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return rvStatus[id];
     }
 
-    /* Delegated click handling for the approve/decline controls. Bound ONCE on the stable
-     * rev-body container (survives re-renders), so no per-render rebinding. Walks up from the
-     * click target to the nearest [data-rev-action] control and reads the sibling comment. */
+    /* Toggle a grid card's expanded winners-comparison detail. Re-renders from the cached
+     * results so the winners comparison (US-006) stays reachable from the ranked grid. */
+    function toggleExpand(id) {
+      id = String(id || '');
+      if (!id) return;
+      rvExpanded[id] = !rvExpanded[id];
+      rerender();
+    }
+
+    /* Delegated click handling for the approve/decline controls AND the grid expand control.
+     * Bound ONCE on the stable rev-body container (survives re-renders), so no per-render
+     * rebinding. Walks up from the click target to the nearest [data-rev-action] control and
+     * reads the sibling comment. */
     function onDecisionClick(e) {
       var el = e && (e.target || e.srcElement);
       var action = null, id = null;
@@ -602,6 +847,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       } else if (action === 'decline') {
         var box = document.getElementById('rev-comment-' + id);
         submitDecision(id, 'declined', box ? box.value : null);
+      } else if (action === 'expand') {
+        toggleExpand(id);
       }
     }
 
@@ -700,11 +947,46 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '#panel-review .rev-dec-busy{font-size:12px;color:#777;}'
         + '#panel-review .rev-dec-err{color:#a3243c;font-size:12px;margin-top:6px;word-break:break-word;}'
         + '#panel-review .rev-refine-note{margin-top:8px;font-size:12px;color:#777;font-style:italic;}'
+        // ---- ranked scorecard grid (roadmap #5) ----
+        + '#panel-review .rev-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:18px;align-items:start;}'
+        + '#panel-review .rev-card{border:1px solid rgba(0,0,0,0.1);border-radius:8px;padding:14px;display:flex;flex-direction:column;}'
+        + '#panel-review .rev-card-unscored{border-style:dashed;}'
+        + '#panel-review .rev-card-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:0 0 10px;}'
+        + '#panel-review .rev-rank{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:#555;background:#eee;padding:2px 8px;border-radius:10px;}'
+        + '#panel-review .rev-rank-unscored{color:#888;background:#f3f3f3;}'
+        + '#panel-review .rev-card-title{font-size:14px;font-weight:700;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}'
+        + '#panel-review .rev-card-id{font-family:monospace;font-size:11px;color:#999;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}'
+        + '#panel-review .rev-card-thumb-wrap{margin:0 0 12px;}'
+        + '#panel-review .rev-card-thumb{max-width:100%;}'
+        + '#panel-review .rev-scorecard{margin:0 0 12px;}'
+        + '#panel-review .rev-overall{display:flex;align-items:center;gap:8px;margin:0 0 10px;}'
+        + '#panel-review .rev-overall-badge{font-size:12px;font-weight:800;letter-spacing:0.05em;padding:3px 10px;border-radius:6px;}'
+        + '#panel-review .rev-overall-pass{background:#e2f3e6;color:#1c6b34;}'
+        + '#panel-review .rev-overall-flag{background:#fbe6ea;color:#a3243c;}'
+        + '#panel-review .rev-overall-na{background:#eee;color:#666;}'
+        + '#panel-review .rev-overall-score{font-size:18px;font-weight:800;color:#222;}'
+        + '#panel-review .rev-dims{font-size:12px;margin:0 0 10px;}'
+        + '#panel-review .rev-dim{display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid rgba(0,0,0,0.06);}'
+        + '#panel-review .rev-dim-label{color:#555;flex:1;}'
+        + '#panel-review .rev-dim-val{font-weight:700;color:#222;}'
+        + '#panel-review .rev-chip{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.03em;padding:1px 7px;border-radius:8px;}'
+        + '#panel-review .rev-chip-pass{background:#e2f3e6;color:#1c6b34;}'
+        + '#panel-review .rev-chip-flag{background:#fbe6ea;color:#a3243c;}'
+        + '#panel-review .rev-chip-na{background:#eee;color:#888;}'
+        + '#panel-review .rev-scorecard-flags{font-size:12px;color:#8a5a00;margin:0;padding-left:18px;}'
+        + '#panel-review .rev-scorecard-flags-none{padding-left:0;color:#999;}'
+        + '#panel-review .rev-scorecard-note{font-size:12px;margin-top:6px;}'
+        + '#panel-review .rev-card-foot{margin-top:auto;padding-top:10px;}'
+        + '#panel-review .rev-expand{width:100%;}'
+        + '#panel-review .rev-card-detail{margin-top:12px;padding-top:12px;border-top:1px solid rgba(0,0,0,0.08);}'
+        + '#panel-review .rev-card-metric{font-size:12px;color:#555;margin:0 0 8px;}'
         + '</style>'
-        + '<div class="rev-insight"><strong>Creative Review:</strong> each newly generated ad shown next to '
-        + 'this client\'s winning historical ads and their metric, so a concept is judged in context - not in a '
-        + 'static report. The so-what / now-what read compares the concept to what already works; coherence flags '
-        + 'and held dimensions are shown alongside so any held axis is visible before approval. '
+        + '<div class="rev-insight"><strong>Creative Review:</strong> a batch of generated ads is triaged as a '
+        + 'ranked grid of scorecards, best-first - each card carries its coherence scorecard (an overall pass / flag '
+        + 'verdict and score, plus client-fit, component-fidelity and brand-compliance dimensions), so the strongest '
+        + 'concepts surface at a glance and unscored bundles fall to the end. Expand any card to see the ad next to '
+        + 'this client\'s winning historical ads and their metric, with the so-what / now-what read that compares the '
+        + 'concept to what already works. '
         + 'Each ad has a coarse approve / decline gate: approve marks the bundle servable, decline records a reason '
         + 'and marks it not-servable. Refinement then happens with the designer in Figma after approval - there is no '
         + 'regenerate or re-prompt loop here.</div>'
@@ -805,6 +1087,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       getBundles: getBundles,
       fmtMetric: fmtMetric,
       flagText: flagText,
+      // Scored batch review / ranked grid (roadmap #5)
+      scorecardHtml: scorecardHtml,
+      cardHtml: cardHtml,
+      gridHtml: gridHtml,
+      detailHtml: detailHtml,
+      detailBodyHtml: detailBodyHtml,
+      sortForGrid: sortForGrid,
+      isScored: isScored,
+      fetchCoherence: fetchCoherence,
+      toggleExpand: toggleExpand,
+      expand: function (id) { rvExpanded[String(id || '')] = true; rerender(); },
+      collapse: function (id) { rvExpanded[String(id || '')] = false; rerender(); },
+      isExpanded: function (id) { return !!rvExpanded[String(id || '')]; },
       // US-009 approve/decline surface
       decisionHtml: decisionHtml,
       submitDecision: submitDecision,
@@ -821,7 +1116,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       getClient: function () { return rvClient; },
       isLoaded: function () { return rvLoaded; },
       _resetBooted: function () { rvBooted = false; rvLoaded = false; },
-      _resetState: function () { rvStatus = {}; rvBusy = {}; rvDecErr = {}; rvResults = []; },
+      _resetState: function () { rvStatus = {}; rvBusy = {}; rvDecErr = {}; rvResults = []; rvExpanded = {}; },
     };
   })();
 }
