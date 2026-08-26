@@ -257,12 +257,54 @@ async function runUnit() {
     assert.ok(!/data-bundle-id="old_a"/.test(html), 'the older-date bundle is hidden by default');
     assert.ok(/rev-cards/.test(html), 'the most recent date with two bundles renders the grid');
 
-    // Changing to the older date re-filters to that date's single bundle (detail view).
-    R.setDate('2026-08-18');
+    // Changing to the older date lazy-loads and shows that date's single bundle (detail view).
+    // setDate is async under the lazy model (it loads the date's bundles on first selection).
+    await R.setDate('2026-08-18');
     html = (ctx._slots['rev-body'] && ctx._slots['rev-body'].innerHTML) || '';
     assert.ok(/data-bundle-id="old_a"/.test(html), 'the older-date bundle appears after the filter change');
     assert.ok(!/data-bundle-id="new_a"/.test(html) && !/data-bundle-id="new_b"/.test(html), 'the newest-date bundles are hidden after the change');
     assert.ok(!/rev-cards/.test(html) && /rev-bundle"/.test(html), 'a date with one bundle renders the detail view');
+  });
+
+  // ── Lazy per-date load: only the most-recent date's bundles are fetched on open; an older
+  //    date is fetched only when it is first selected, and a loaded date is cached (no refetch). ──
+  await check('only the most-recent date loads on open; an older date lazy-loads on first selection and is then cached', async () => {
+    const bundles = [
+      sampleBundle({ bundle_id: 'old_a', date: '2026-08-18', label: 'Old A' }),
+      sampleBundle({ bundle_id: 'old_b', date: '2026-08-18', label: 'Old B' }),
+      sampleBundle({ bundle_id: 'new_a', date: '2026-08-20', label: 'New A' }),
+      sampleBundle({ bundle_id: 'new_b', date: '2026-08-20', label: 'New B' }),
+    ];
+    const previewCalls = [];
+    const coherenceCalls = [];
+    const ctx = makeUnitCtx(async () => jsonResponse({}));
+    const R = ctx.window.f10Review;
+    R.setStore({
+      async listBundles() { return { bundles: bundles }; },
+      async preview(client, id) { previewCalls.push(id); return { url: 'https://signed.example/' + id + '.png' }; },
+      async coherence(client, id) { coherenceCalls.push(id); return scorecard('pass', 0.9); },
+    });
+    R.setClient('moshy');
+    await R.load();
+
+    // Initial load fetched ONLY the most-recent date's two bundles, never the older date's.
+    assert.deepStrictEqual(previewCalls.slice().sort(), ['new_a', 'new_b'], 'preview fetched only for the most-recent date on load');
+    assert.deepStrictEqual(coherenceCalls.slice().sort(), ['new_a', 'new_b'], 'coherence fetched only for the most-recent date on load');
+    assert.ok(previewCalls.indexOf('old_a') === -1 && previewCalls.indexOf('old_b') === -1, 'the older date is NOT loaded up front');
+
+    // Selecting the older date now lazy-loads exactly that date's bundles.
+    await R.setDate('2026-08-18');
+    assert.deepStrictEqual(previewCalls.slice().sort(), ['new_a', 'new_b', 'old_a', 'old_b'], 'the older date is fetched only after it is selected');
+    assert.deepStrictEqual(coherenceCalls.slice().sort(), ['new_a', 'new_b', 'old_a', 'old_b'], 'coherence for the older date fetched on selection');
+    let html = (ctx._slots['rev-body'] && ctx._slots['rev-body'].innerHTML) || '';
+    assert.ok(/data-bundle-id="old_a"/.test(html) && /data-bundle-id="old_b"/.test(html), 'the older date bundles render after selection');
+
+    // Switching BACK to the already-loaded most-recent date renders from cache with no refetch.
+    const previewCountBefore = previewCalls.length;
+    await R.setDate('2026-08-20');
+    assert.strictEqual(previewCalls.length, previewCountBefore, 'switching back to a loaded date does not re-fetch');
+    html = (ctx._slots['rev-body'] && ctx._slots['rev-body'].innerHTML) || '';
+    assert.ok(/data-bundle-id="new_a"/.test(html) && /data-bundle-id="new_b"/.test(html), 'the cached most-recent date renders instantly on switch back');
   });
 }
 
