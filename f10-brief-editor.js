@@ -627,6 +627,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     var beBooted = false;     // guard against double boot
     var beLoadedRevision = null; // the currently loaded revision record (provenance carrier)
     var beStore = null;       // injectable brief store (tests override via setStore)
+    var beInspiration = [];   // selected inspiration refs: [{gcs_uri, thumb_url, source, label}]
+    var beInspTab = 'upload'; // active inspiration picker tab: upload | client | competitor
+    var beLibrary = [];       // the last-loaded library grid (for toggle lookups)
+    var INSP_MAX_BYTES = 8 * 1024 * 1024; // client-side mirror of the backend 8 MB cap
 
     function esc(s) {
       if (s == null) return '';
@@ -664,14 +668,53 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (!res.ok) throw new Error(await res.text());
         return res.json();
       }
+      // The reference list + upload live on the /bq and /upload endpoints, not /brief.
+      async function callAt(targetUrl, payload) {
+        var res = await fetch(targetUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload || {}),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+      }
       return {
         async probe(client) { var r = await call('probe', { client: client }); return !!(r && r.has_data); },
         async load(revisionId) { var r = await call('load', { revisionId: revisionId }); return r && r.revision; },
         async save(record) { return call('save', { revision: record }); },
+        async references(source) {
+          var r = await callAt(bqEndpoint(), { action: 'list-references', client: beClient, source: source });
+          return (r && r.references) || [];
+        },
+        async upload(payload) {
+          return callAt(uploadEndpoint(), Object.assign({ action: 'upload', client: beClient }, payload || {}));
+        },
       };
     }
 
-    function store() { return beStore || defaultStore(); }
+    /* The reads endpoint (/bq) and the upload endpoint (/upload), derived off the same
+     * BACKEND as the brief endpoint. Live requests to BACKEND get their bearer token from
+     * the review app's fetch shim (index.html), so the picker never handles a token. */
+    function bqEndpoint() {
+      if (typeof BQ_FUNCTION !== 'undefined' && BQ_FUNCTION) return String(BQ_FUNCTION);
+      return endpoint().replace(/\/brief(\/)?$/, '/bq');
+    }
+    function uploadEndpoint() {
+      if (typeof window.UPLOAD_FUNCTION !== 'undefined' && window.UPLOAD_FUNCTION) return String(window.UPLOAD_FUNCTION);
+      return bqEndpoint().replace(/\/bq(\/)?$/, '/upload');
+    }
+
+    function store() {
+      var s = beStore || defaultStore();
+      // The picker's two calls are optional on an injected store; back them with the
+      // default network store so a test store that only stubs probe/load/save still works.
+      if (!s.references || !s.upload) {
+        var net = defaultStore();
+        if (!s.references) s.references = net.references;
+        if (!s.upload) s.upload = net.upload;
+      }
+      return s;
+    }
 
     /* ---- markup ---- */
 
@@ -708,6 +751,33 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '#panel-brief-editor .be-revid{font-family:monospace;font-weight:700;word-break:break-all;}'
         + '#panel-brief-editor .be-next{margin-top:6px;color:#555;}'
         + '#panel-brief-editor .be-cli{font-family:monospace;background:rgba(0,0,0,0.05);padding:2px 5px;border-radius:3px;word-break:break-all;}'
+        + '#panel-brief-editor .be-insp{margin:0 0 16px;}'
+        + '#panel-brief-editor .be-muted{color:#888;font-size:12px;}'
+        + '#panel-brief-editor .be-chips{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 10px;min-height:8px;}'
+        + '#panel-brief-editor .be-chip{position:relative;width:56px;height:56px;border-radius:6px;overflow:hidden;'
+        + 'border:1px solid rgba(0,0,0,0.15);background:#f4f4f4;display:inline-flex;align-items:center;justify-content:center;}'
+        + '#panel-brief-editor .be-chip img{width:100%;height:100%;object-fit:cover;display:block;}'
+        + '#panel-brief-editor .be-noimg{font-size:9px;color:#777;text-align:center;padding:2px;text-transform:uppercase;}'
+        + '#panel-brief-editor .be-chip-x{position:absolute;top:1px;right:2px;width:16px;height:16px;line-height:15px;'
+        + 'text-align:center;border-radius:50%;background:rgba(0,0,0,0.65);color:#fff;font-size:12px;cursor:pointer;}'
+        + '#panel-brief-editor .be-insp-tabs{display:flex;gap:6px;margin:4px 0 10px;}'
+        + '#panel-brief-editor .be-insp-tabs button{font:inherit;font-size:12px;padding:6px 12px;border:1px solid rgba(0,0,0,0.2);'
+        + 'background:#fff;border-radius:16px;cursor:pointer;color:#444;}'
+        + '#panel-brief-editor .be-insp-tabs button.active{background:var(--brand,#7a1f2b);color:#fff;border-color:transparent;}'
+        + '#panel-brief-editor .be-drop{border:2px dashed rgba(0,0,0,0.22);border-radius:8px;padding:22px 14px;text-align:center;'
+        + 'color:#666;font-size:13px;background:rgba(0,0,0,0.015);}'
+        + '#panel-brief-editor .be-drop.be-dragover{border-color:var(--brand,#7a1f2b);background:rgba(122,31,43,0.06);color:#333;}'
+        + '#panel-brief-editor .be-link{color:var(--brand,#7a1f2b);text-decoration:underline;cursor:pointer;font-weight:600;}'
+        + '#panel-brief-editor .be-thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:8px;margin-top:10px;}'
+        + '#panel-brief-editor .be-thumb{position:relative;aspect-ratio:1/1;border-radius:6px;overflow:hidden;cursor:pointer;'
+        + 'border:2px solid transparent;background:#f4f4f4;}'
+        + '#panel-brief-editor .be-thumb img{width:100%;height:100%;object-fit:cover;display:block;}'
+        + '#panel-brief-editor .be-thumb.selected{border-color:var(--brand,#7a1f2b);}'
+        + '#panel-brief-editor .be-thumb .be-tick{position:absolute;top:3px;right:4px;width:18px;height:18px;line-height:17px;'
+        + 'text-align:center;border-radius:50%;background:var(--brand,#7a1f2b);color:#fff;font-size:12px;display:none;}'
+        + '#panel-brief-editor .be-thumb.selected .be-tick{display:block;}'
+        + '#panel-brief-editor .be-thumb .be-cap{position:absolute;left:0;right:0;bottom:0;font-size:9px;line-height:1.2;padding:2px 3px;'
+        + 'background:rgba(0,0,0,0.55);color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}'
         + '</style>'
         + '<div class="be-insight"><strong>Brief editor:</strong> steer generation before it spends. '
         + 'Load a saved brief revision, adjust the five creative axes (dropdowns are locked to the canonical '
@@ -725,6 +795,25 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '<label class="be-field" style="margin-bottom:14px;"><span class="be-label">Creative direction '
         + '<span style="font-weight:400;color:#666;">(optional — steers the picture, never the copy)</span></span>'
         + '<textarea id="be-direction" placeholder="e.g. the people shown have a higher BMI / are plus-size, warm and authentic — or — minimal, one person talking to a doctor"></textarea></label>'
+        + '<div class="be-insp" id="be-insp">'
+        + '<span class="be-label">Inspiration references '
+        + '<span style="font-weight:400;color:#666;">(optional — real images the model looks at for style/subject)</span></span>'
+        + '<div class="be-chips" id="be-insp-chips"></div>'
+        + '<div class="be-insp-tabs" id="be-insp-tabs">'
+        + '<button type="button" data-insp-tab="upload" class="active">Upload</button>'
+        + '<button type="button" data-insp-tab="client">Your library</button>'
+        + '<button type="button" data-insp-tab="competitor">Competitors</button>'
+        + '</div>'
+        + '<div class="be-insp-body" id="be-insp-upload">'
+        + '<div class="be-drop" id="be-drop">Drag an image here, or '
+        + '<label class="be-link">browse<input type="file" id="be-file" accept="image/png,image/jpeg,image/webp" multiple style="display:none;" /></label>'
+        + '<div class="be-muted" style="margin-top:6px;">PNG, JPG or WebP · up to 8&nbsp;MB each</div></div>'
+        + '</div>'
+        + '<div class="be-insp-body" id="be-insp-lib" style="display:none;">'
+        + '<div class="be-muted" id="be-lib-status">Pick a tab to load images.</div>'
+        + '<div class="be-thumbs" id="be-thumbs"></div>'
+        + '</div>'
+        + '</div>'
         + '<button type="submit" class="be-btn" id="be-save-btn" disabled>Save as new revision</button>'
         + '</form>'
         + '<div class="be-status" id="be-status"></div>'
@@ -764,6 +853,185 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return out;
     }
 
+    /* ---- inspiration picker (upload + client/competitor libraries) ---- */
+
+    function inspHas(uri) {
+      for (var i = 0; i < beInspiration.length; i++) if (beInspiration[i].gcs_uri === uri) return true;
+      return false;
+    }
+
+    function selectRef(ref) {
+      if (!ref || !ref.gcs_uri || inspHas(ref.gcs_uri)) return;
+      beInspiration.push({
+        gcs_uri: ref.gcs_uri,
+        thumb_url: ref.thumb_url || '',
+        source: ref.source || '',
+        label: ref.label || '',
+      });
+      renderInspChips();
+      markThumbs();
+    }
+
+    function deselectRef(uri) {
+      beInspiration = beInspiration.filter(function (r) { return r.gcs_uri !== uri; });
+      renderInspChips();
+      markThumbs();
+    }
+
+    function toggleThumb(uri) {
+      if (inspHas(uri)) { deselectRef(uri); return; }
+      for (var i = 0; i < beLibrary.length; i++) {
+        if (beLibrary[i].gcs_uri === uri) { selectRef(beLibrary[i]); return; }
+      }
+    }
+
+    function renderInspChips() {
+      var wrap = document.getElementById('be-insp-chips');
+      if (!wrap) return;
+      if (!beInspiration.length) {
+        wrap.innerHTML = '<span class="be-muted">No references selected yet.</span>';
+        return;
+      }
+      wrap.innerHTML = beInspiration.map(function (r) {
+        var body = r.thumb_url
+          ? '<img src="' + esc(r.thumb_url) + '" alt="" />'
+          : '<span class="be-noimg">' + esc(r.source || 'ref') + '</span>';
+        return '<span class="be-chip" title="' + esc(r.gcs_uri) + '">' + body
+          + '<span class="be-chip-x" data-uri="' + esc(r.gcs_uri) + '" title="Remove">&times;</span></span>';
+      }).join('');
+    }
+
+    /* Re-apply the selected outline to whatever grid is currently rendered. */
+    function markThumbs() {
+      var grid = document.getElementById('be-thumbs');
+      if (!grid || !grid.querySelectorAll) return;
+      var nodes = grid.querySelectorAll('.be-thumb');
+      Array.prototype.forEach.call(nodes, function (n) {
+        var uri = n.getAttribute && n.getAttribute('data-uri');
+        if (!n.classList) return;
+        if (uri && inspHas(uri)) n.classList.add('selected'); else n.classList.remove('selected');
+      });
+    }
+
+    function renderThumbs(refs) {
+      var grid = document.getElementById('be-thumbs');
+      if (!grid) return;
+      if (!refs || !refs.length) { grid.innerHTML = ''; return; }
+      grid.innerHTML = refs.map(function (r) {
+        var sel = inspHas(r.gcs_uri) ? ' selected' : '';
+        var img = r.thumb_url ? '<img src="' + esc(r.thumb_url) + '" alt="" loading="lazy" />' : '';
+        var cap = r.label ? '<span class="be-cap">' + esc(r.label) + '</span>' : '';
+        return '<div class="be-thumb' + sel + '" data-uri="' + esc(r.gcs_uri) + '">'
+          + img + '<span class="be-tick">&#10003;</span>' + cap + '</div>';
+      }).join('');
+    }
+
+    function setLibStatus(msg) {
+      var el = document.getElementById('be-lib-status');
+      if (el) el.textContent = msg || '';
+    }
+
+    /* Fetch + render one library source (client | competitor). Best-effort: an empty or
+     * failed source shows a plain note rather than breaking the panel. */
+    async function loadLibrary(source) {
+      setLibStatus('Loading ' + (source === 'competitor' ? 'competitor' : 'your') + ' images…');
+      renderThumbs([]);
+      beLibrary = [];
+      try {
+        var refs = await store().references(source);
+        beLibrary = (refs || []).filter(function (r) { return r && r.gcs_uri; });
+        if (!beLibrary.length) {
+          setLibStatus(source === 'competitor'
+            ? 'No competitor images available for this client yet.'
+            : 'No creatives found in this client’s library yet.');
+        } else {
+          setLibStatus(beLibrary.length + ' image' + (beLibrary.length === 1 ? '' : 's') + ' — click to select.');
+        }
+        renderThumbs(beLibrary);
+      } catch (err) {
+        setLibStatus('Could not load images: ' + (err && err.message ? err.message : err));
+      }
+    }
+
+    function showInspBody(tab) {
+      var up = document.getElementById('be-insp-upload');
+      var lib = document.getElementById('be-insp-lib');
+      var isUpload = tab === 'upload';
+      if (up && up.style) up.style.display = isUpload ? '' : 'none';
+      if (lib && lib.style) lib.style.display = isUpload ? 'none' : '';
+      var tabsWrap = document.getElementById('be-insp-tabs');
+      if (tabsWrap && tabsWrap.querySelectorAll) {
+        var btns = tabsWrap.querySelectorAll('button');
+        Array.prototype.forEach.call(btns, function (b) {
+          var t = b.getAttribute && b.getAttribute('data-insp-tab');
+          if (!b.classList) return;
+          if (t === tab) b.classList.add('active'); else b.classList.remove('active');
+        });
+      }
+    }
+
+    function switchInspTab(tab) {
+      beInspTab = tab;
+      showInspBody(tab);
+      if (tab === 'client' || tab === 'competitor') return loadLibrary(tab);
+      return Promise.resolve();
+    }
+
+    /* Read one File to a data: URL, upload it, and select the stored reference. Only real
+     * png/jpeg/webp under the cap are sent; the backend content-addresses + dedupes. */
+    function handleFile(file) {
+      if (!file) return Promise.resolve();
+      var okType = /^image\/(png|jpe?g|webp)$/i.test(file.type || '');
+      if (!okType) { setUploadNote('Only PNG, JPG or WebP images are supported.'); return Promise.resolve(); }
+      if (file.size && file.size > INSP_MAX_BYTES) { setUploadNote(file.name + ' is larger than 8 MB.'); return Promise.resolve(); }
+      if (typeof FileReader === 'undefined') return Promise.resolve();
+      return new Promise(function (resolve) {
+        var reader = new FileReader();
+        reader.onload = async function () {
+          setUploadNote('Uploading ' + file.name + '…');
+          try {
+            var result = await store().upload({
+              contentType: file.type, filename: file.name, data: String(reader.result || ''),
+            });
+            if (!result || !result.gcs_uri) throw new Error((result && result.error) || 'upload failed');
+            selectRef({ gcs_uri: result.gcs_uri, thumb_url: result.thumb_url, source: 'upload', label: file.name });
+            setUploadNote('Added ' + file.name + '.');
+          } catch (err) {
+            setUploadNote('Upload failed: ' + (err && err.message ? err.message : err));
+          }
+          resolve();
+        };
+        reader.onerror = function () { setUploadNote('Could not read ' + file.name + '.'); resolve(); };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function setUploadNote(msg) {
+      var drop = document.getElementById('be-drop');
+      if (!drop) return;
+      var note = drop.querySelector ? drop.querySelector('.be-upload-note') : null;
+      if (!note && drop.insertAdjacentHTML) {
+        drop.insertAdjacentHTML('beforeend', '<div class="be-muted be-upload-note" style="margin-top:6px;"></div>');
+        note = drop.querySelector ? drop.querySelector('.be-upload-note') : null;
+      }
+      if (note) note.textContent = msg || '';
+    }
+
+    function handleFiles(list) {
+      if (!list) return;
+      Array.prototype.forEach.call(list, function (f) { handleFile(f); });
+    }
+
+    /* Seed the picker from a loaded revision's uris (no thumbs — they were saved as
+     * bare gs:// uris). Called on load so a re-save carries them through unchanged. */
+    function seedInspiration(uris) {
+      beInspiration = (Array.isArray(uris) ? uris : [])
+        .filter(function (u) { return typeof u === 'string' && u; })
+        .map(function (u) { return { gcs_uri: u, thumb_url: '', source: 'saved', label: '' }; });
+      renderInspChips();
+      markThumbs();
+    }
+
     /* ---- form population + reading ---- */
 
     function setAxis(axis, value) {
@@ -776,6 +1044,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       renderCopy(record.copy_blocks);
       var dir = document.getElementById('be-direction');
       if (dir) dir.value = record.creative_direction || '';
+      seedInspiration(record.inspiration_image_uris);
       var save = document.getElementById('be-save-btn');
       if (save) save.disabled = false;
     }
@@ -796,10 +1065,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       };
       var dirEl = document.getElementById('be-direction');
       rec.creative_direction = dirEl ? (dirEl.value || '') : (loaded.creative_direction || '');
-      // Inspiration references are carried from the loaded revision for now; the
-      // inspiration picker (upload + library) populates them in a follow-up.
-      rec.inspiration_image_uris = Array.isArray(loaded.inspiration_image_uris)
-        ? loaded.inspiration_image_uris : [];
+      // Inspiration references come from the picker's selection (uploads + library +
+      // whatever was seeded from the loaded revision), de-duplicated to bare gs:// uris.
+      rec.inspiration_image_uris = beInspiration.map(function (r) { return r.gcs_uri; });
       F10_BRIEF_AXES.forEach(function (a) {
         var sel = document.getElementById('be-axis-' + a.key);
         rec[a.key] = sel ? sel.value : loaded[a.key];
@@ -868,6 +1136,69 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
     }
 
+    /* Wire the inspiration picker's events once the panel exists. Delegated clicks so the
+     * dynamically rendered chips + thumbs need no per-node listeners. */
+    function wireInspiration() {
+      renderInspChips();
+
+      var tabs = document.getElementById('be-insp-tabs');
+      if (tabs && tabs.addEventListener) {
+        tabs.addEventListener('click', function (e) {
+          var t = e && e.target;
+          var tab = t && t.getAttribute && t.getAttribute('data-insp-tab');
+          if (!tab) return;
+          if (e.preventDefault) e.preventDefault();
+          switchInspTab(tab);
+        });
+      }
+
+      var chips = document.getElementById('be-insp-chips');
+      if (chips && chips.addEventListener) {
+        chips.addEventListener('click', function (e) {
+          var t = e && e.target;
+          var uri = t && t.getAttribute && t.getAttribute('data-uri');
+          if (uri) deselectRef(uri);
+        });
+      }
+
+      var thumbs = document.getElementById('be-thumbs');
+      if (thumbs && thumbs.addEventListener) {
+        thumbs.addEventListener('click', function (e) {
+          var node = e && e.target;
+          // walk up to the .be-thumb container (the tick/img/caption are children)
+          while (node && node !== thumbs && !(node.getAttribute && node.getAttribute('data-uri'))) {
+            node = node.parentNode;
+          }
+          var uri = node && node.getAttribute && node.getAttribute('data-uri');
+          if (uri) toggleThumb(uri);
+        });
+      }
+
+      var file = document.getElementById('be-file');
+      if (file && file.addEventListener) {
+        file.addEventListener('change', function (e) {
+          var target = (e && e.target) || file;
+          handleFiles(target.files);
+          if (target) target.value = ''; // allow re-selecting the same file
+        });
+      }
+
+      var drop = document.getElementById('be-drop');
+      if (drop && drop.addEventListener) {
+        drop.addEventListener('dragover', function (e) {
+          if (e && e.preventDefault) e.preventDefault();
+          if (drop.classList) drop.classList.add('be-dragover');
+        });
+        drop.addEventListener('dragleave', function () { if (drop.classList) drop.classList.remove('be-dragover'); });
+        drop.addEventListener('drop', function (e) {
+          if (e && e.preventDefault) e.preventDefault();
+          if (drop.classList) drop.classList.remove('be-dragover');
+          var dt = e && e.dataTransfer;
+          if (dt && dt.files) handleFiles(dt.files);
+        });
+      }
+    }
+
     /* ---- tab activation (single generic dispatcher) ---- */
 
     function activate() {
@@ -917,6 +1248,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (form && form.addEventListener) {
         form.addEventListener('submit', function (e) { if (e && e.preventDefault) e.preventDefault(); saveNewRevision(); });
       }
+      wireInspiration();
       var others = document.querySelectorAll ? document.querySelectorAll('#sidebar nav a') : [];
       Array.prototype.forEach.call(others, function (a) {
         if (a === beNavLink || !a.addEventListener) return;
@@ -988,7 +1320,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       getClient: function () { return beClient; },
       getLoaded: function () { return beLoadedRevision; },
       isBooted: function () { return beBooted; },
-      resetForTest: function () { beBooted = false; beLoadedRevision = null; },
+      // inspiration picker surface (US-Phase-1 part 2)
+      switchInspTab: switchInspTab,
+      loadLibrary: loadLibrary,
+      toggleThumb: toggleThumb,
+      selectRef: selectRef,
+      deselectRef: deselectRef,
+      handleFile: handleFile,
+      getInspiration: function () { return beInspiration.slice(); },
+      resetForTest: function () {
+        beBooted = false; beLoadedRevision = null;
+        beInspiration = []; beLibrary = []; beInspTab = 'upload';
+      },
     };
   })();
 }
