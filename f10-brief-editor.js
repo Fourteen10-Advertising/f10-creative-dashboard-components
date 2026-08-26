@@ -215,6 +215,10 @@ function f10BriefValidate(rec) {
     cta_type: axes.cta_type,
     format: axes.format,
     copy_blocks: copyBlocks,
+    creative_direction: typeof rec.creative_direction === 'string' ? rec.creative_direction : '',
+    inspiration_image_uris: Array.isArray(rec.inspiration_image_uris)
+      ? rec.inspiration_image_uris.filter(function (u) { return typeof u === 'string' && u; })
+      : [],
     evidence_source: typeof rec.evidence_source === 'string' ? rec.evidence_source : '',
     winning_values: (rec.winning_values && typeof rec.winning_values === 'object') ? rec.winning_values : {},
     gcs_uri: typeof rec.gcs_uri === 'string' ? rec.gcs_uri : '',
@@ -241,6 +245,8 @@ function f10BriefBuildDoc(record) {
       if (cb.slot_index !== undefined && cb.slot_index !== null) out.slot_index = cb.slot_index;
       return out;
     }),
+    creative_direction: record.creative_direction || '',
+    inspiration_image_uris: (record.inspiration_image_uris || []).map(String),
     provenance: {
       evidence_source: record.evidence_source || '',
       winning_values: record.winning_values || {},
@@ -287,6 +293,10 @@ function f10BriefFromDoc(doc) {
       if (cb.slot_index !== undefined && cb.slot_index !== null) out.slot_index = cb.slot_index;
       return out;
     }) : [],
+    creative_direction: typeof doc.creative_direction === 'string' ? doc.creative_direction : '',
+    inspiration_image_uris: Array.isArray(doc.inspiration_image_uris)
+      ? doc.inspiration_image_uris.filter(function (u) { return typeof u === 'string' && u; })
+      : [],
     evidence_source: prov.evidence_source || '',
     winning_values: (prov.winning_values && typeof prov.winning_values === 'object') ? prov.winning_values : {},
     gcs_uri: doc.gcs_uri || '',
@@ -712,6 +722,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '<form id="be-form" autocomplete="off">'
         + '<div class="be-grid">' + axisFields + '</div>'
         + '<div class="be-copy" id="be-copy"></div>'
+        + '<label class="be-field" style="margin-bottom:14px;"><span class="be-label">Creative direction '
+        + '<span style="font-weight:400;color:#666;">(optional — steers the picture, never the copy)</span></span>'
+        + '<textarea id="be-direction" placeholder="e.g. the people shown have a higher BMI / are plus-size, warm and authentic — or — minimal, one person talking to a doctor"></textarea></label>'
         + '<button type="submit" class="be-btn" id="be-save-btn" disabled>Save as new revision</button>'
         + '</form>'
         + '<div class="be-status" id="be-status"></div>'
@@ -761,6 +774,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function populateForm(record) {
       F10_BRIEF_AXES.forEach(function (a) { setAxis(a.key, record[a.key]); });
       renderCopy(record.copy_blocks);
+      var dir = document.getElementById('be-direction');
+      if (dir) dir.value = record.creative_direction || '';
       var save = document.getElementById('be-save-btn');
       if (save) save.disabled = false;
     }
@@ -779,6 +794,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         winning_values: loaded.winning_values || {},
         created_by: CFG.ACTOR ? String(CFG.ACTOR) : (loaded.created_by || ''),
       };
+      var dirEl = document.getElementById('be-direction');
+      rec.creative_direction = dirEl ? (dirEl.value || '') : (loaded.creative_direction || '');
+      // Inspiration references are carried from the loaded revision for now; the
+      // inspiration picker (upload + library) populates them in a follow-up.
+      rec.inspiration_image_uris = Array.isArray(loaded.inspiration_image_uris)
+        ? loaded.inspiration_image_uris : [];
       F10_BRIEF_AXES.forEach(function (a) {
         var sel = document.getElementById('be-axis-' + a.key);
         rec[a.key] = sel ? sel.value : loaded[a.key];
