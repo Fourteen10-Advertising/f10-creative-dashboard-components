@@ -131,6 +131,27 @@ async function runNode() {
     assert.ok(!BE.validate(sampleRecord()).error, 'a fully canonical record validates');
   });
 
+  await check('creative_direction + inspiration_image_uris round-trip through the doc (mirror to_dict)', async () => {
+    const rec = BE.validate(sampleRecord({
+      creative_direction: 'the people shown have a higher BMI, plus-size and warm',
+      inspiration_image_uris: ['gs://f10-creative-assets/served/meta/acct_1/a.png', '', 7],
+    })).record;
+    const doc = BE.buildDoc(rec);
+    // Persisted on the doc (free text + a cleaned string array), never as axes.
+    assert.strictEqual(doc.creative_direction, 'the people shown have a higher BMI, plus-size and warm');
+    assert.deepStrictEqual(doc.inspiration_image_uris, ['gs://f10-creative-assets/served/meta/acct_1/a.png']);
+    // They are NOT part of the canonical axis validation (free-form).
+    assert.ok(!BE.validate(sampleRecord({ creative_direction: 'anything at all' })).error);
+    // Round-trips back through fromDoc.
+    const back = BE.fromDoc(doc);
+    assert.strictEqual(back.creative_direction, doc.creative_direction);
+    assert.deepStrictEqual(back.inspiration_image_uris, doc.inspiration_image_uris);
+    // A brief with neither field defaults them cleanly (empty string + []).
+    const plain = BE.buildDoc(BE.validate(sampleRecord()).record);
+    assert.strictEqual(plain.creative_direction, '');
+    assert.deepStrictEqual(plain.inspiration_image_uris, []);
+  });
+
   await check('saveRevision() refuses a non-canonical axis with 400 and writes NOTHING (AC3)', async () => {
     const store = makeFakeStore();
     const out = await BE.saveRevision({
