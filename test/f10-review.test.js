@@ -1,23 +1,25 @@
 /**
- * US-007 - Interactive preview module (f10-review.js): probe-gated, live-path safe.
+ * US-007 - Interactive preview module (f10-review.js): discovery-gated, live-path safe.
  *
  * PART 1 (unit): loads the real f10-review.js into a vm sandbox with a tiny DOM stub and
  * a fetch stub / injectable store standing in for the Netlify bq function, and covers:
- *   - probe-gated registration: the Review tab appears only when the client has review
- *     data (winning-historical probe exists:true) AND bundles are configured; exists:false
- *     and probe errors both fail closed with zero DOM trace;
- *   - LIVE-PATH SAFETY: a dashboard with NO REVIEW config (every live client dashboard)
- *     injects nothing AND never even probes the network - strictly additive;
- *   - render: given faked winning-historical + generated-preview responses, each new ad
- *     renders beside the client's winners with the policy metric, the coherence flags and
- *     the so-what / now-what read.
+ *   - discovery-gated registration: the Review tab appears only when the backend
+ *     list-bundles discovery returns at least one bundle for the client; an empty
+ *     discovery and a discovery error both fail closed with zero DOM trace;
+ *   - LIVE-PATH SAFETY: with no BQ_FUNCTION endpoint AND no injected store the module
+ *     injects nothing AND never touches the network - strictly additive;
+ *   - render: given faked list-bundles + generated-preview + coherence responses, each
+ *     new ad renders with its preview image, coherence flags and held dimensions;
+ *   - the generation-date filter lists the distinct dates newest-first, defaults to the
+ *     most recent, and re-filters the visible bundles on change.
  *
  * PART 2 (live-path canary, functional DOM): boots the REAL base Meta engine (f10-weekly)
  * alongside the layout dispatcher (f10-layout) and the new module (f10-review), then
  * asserts every pre-existing tab still switches to exactly one visible panel after the
  * module registers, that the Review tab activates to exactly one panel through the single
- * generic dispatcher (two panels can never both be active), and that a dashboard WITHOUT a
- * REVIEW config boots with the base nav completely unchanged (no Review nav or panel).
+ * generic dispatcher (two panels can never both be active), and that a client whose
+ * discovery finds no bundles boots with the base nav completely unchanged (no Review nav
+ * or panel).
  *
  * Dependency-free (no jsdom): the DOM stubs implement just enough for the real activation
  * code to run unchanged. Run: node test/f10-review.test.js
@@ -41,44 +43,34 @@ function jsonResponse(payload) {
   return { ok: true, status: 200, json: async () => payload, text: async () => JSON.stringify(payload) };
 }
 
-/* A representative winning-historical payload: two winners with metric + one signed
- * image + one click-through fallback, and the composed comparison (so-what / now-what). */
-function sampleWinners() {
-  return {
-    client: 'moshy',
-    metric: 'cpa',
-    metric_policy: 'CPA is the default metric; ROAS only for PharmX and FastCover.',
-    revenue_eligible: false,
-    winners: [
-      { ad_id: '111', ad_name: 'Founder hero v3', is_active: true, metric_type: 'cpa', metric_value: 42, spend: 52000, conversions: 900, image_url: 'https://signed.example/win1.jpg', creative_link: null },
-      { ad_id: '222', ad_name: 'UGC testimonial', is_active: true, metric_type: 'cpa', metric_value: 51, spend: 21000, conversions: 300, image_url: null, creative_link: 'https://facebook.com/ad/222' },
-    ],
-    winning_components: [
-      { component: 'hook_type', component_value: 'Founder story', metric_type: 'cpa', cpa: 42, lift: 0.23, confidence_tier: 'high confidence', label: 'descriptive', asset_count: 34, spend: 52000 },
-    ],
-    comparison: {
-      metric: 'CPA',
-      top_winner: { ad_id: '111', ad_name: 'Founder hero v3', metric_value: 42 },
-      aligned_components: [{ component: 'hook_type', component_value: 'Founder story', lift: 0.23 }],
-      unproven_components: [{ component: 'format_canonical', component_value: 'Bold typographic' }],
-      coherence_flags: [],
-      held_dimensions: [],
-      so_what: 'This concept reuses 1 of the client\'s proven winning components (hook_type: Founder story).',
-      now_what: '1 dimension is unproven for this client (format_canonical: Bold typographic); hold it and test.',
-      summary: 'so what. now what.',
-    },
-  };
-}
-
-function sampleBundle() {
-  return {
+/* One discovered generated bundle, in the shape list-bundles returns (plus the fuller
+ * component metadata a test store may echo). `date` is the generation date the tab groups
+ * and filters on. */
+function sampleBundle(overrides) {
+  return Object.assign({
     bundle_id: 'brief_moshy_founder_ab12cd',
     platform: 'meta',
+    date: '2026-08-20',
     label: 'Founder story - bold typographic',
     components: { hook_type: 'Founder story', format_canonical: 'Bold typographic' },
     coherence_flags: ['visual_style held for review'],
     held_dimensions: ['visual_style_canonical'],
     new_ad: { headline: 'Meet the founder', body: 'Why we built this' },
+  }, overrides || {});
+}
+
+/* A representative coherence scorecard, per the roadmap #5 contract. */
+function scorecard(verdict, overall) {
+  return {
+    found: true,
+    overall_verdict: verdict,
+    overall_score: overall,
+    dimensions: {
+      client_fit: { score: 0.9, verdict: 'pass', reason: 'on-brief audience' },
+      component_fidelity: { score: 0.8, verdict: 'pass', reason: 'proven components', matched: 3, total: 4 },
+      brand_compliance: { score: 0.85, verdict: 'pass', reason: 'palette + logo ok' },
+    },
+    flags: [],
   };
 }
 
@@ -110,7 +102,8 @@ function makeTinyDom() {
   return { document, slots };
 }
 
-function makeUnitCtx(fetchImpl, reviewConfig) {
+function makeUnitCtx(fetchImpl, reviewConfig, opts) {
+  opts = opts || {};
   const { document, slots } = makeTinyDom();
   const window = {};
   window.F10A = { track() {} };
@@ -119,11 +112,13 @@ function makeUnitCtx(fetchImpl, reviewConfig) {
     F10A: window.F10A,
     PROJECT: 'mcc-poc-477801',
     DATASET: 'moshy_marts',
-    BQ_FUNCTION: 'https://fn.example/.netlify/functions/bq',
     fetch: fetchImpl,
     setTimeout, clearTimeout,
     _slots: slots,
   };
+  // Live-path safety is now "no endpoint AND no injected store". opts.noBqFunction omits
+  // BQ_FUNCTION so a test can exercise that no-op path.
+  if (!opts.noBqFunction) sandbox.BQ_FUNCTION = 'https://fn.example/.netlify/functions/bq';
   if (reviewConfig !== undefined) sandbox.REVIEW = reviewConfig;
   vm.createContext(sandbox);
   vm.runInContext(UTILS, sandbox, { filename: 'f10-utils.js' });
@@ -134,18 +129,18 @@ function makeUnitCtx(fetchImpl, reviewConfig) {
 async function runUnit() {
   console.log('US-007 Creative Review tab - unit');
 
-  // ── Probe gating: exists:true + bundles configured registers the nav link + panel. ──
-  await check('probe exists:true + bundles configured registers the Review nav link + panel', async () => {
-    let probeBody = null;
+  // ── Discovery gating: list-bundles returns >=1 bundle registers the nav link + panel. ──
+  await check('discovery returning >=1 bundle registers the Review nav link + panel', async () => {
+    let listBody = null;
     const ctx = makeUnitCtx(async (url, opts) => {
       const body = JSON.parse(opts.body);
-      if (body.probe) { probeBody = body; return jsonResponse({ exists: true }); }
+      if (body.action === 'list-bundles') { listBody = body; return jsonResponse({ bundles: [sampleBundle()] }); }
       return jsonResponse({});
-    }, { BUNDLES: [sampleBundle()] });
+    });
     await ctx.window.initReview();
-    assert.ok(probeBody, 'the data probe was called');
-    assert.strictEqual(probeBody.action, 'winning-historical', 'probe uses the winning-historical action');
-    assert.strictEqual(probeBody.client, 'moshy', 'probe scopes to the resolved client slug');
+    assert.ok(listBody, 'the list-bundles discovery was called');
+    assert.strictEqual(listBody.action, 'list-bundles', 'discovery uses the list-bundles action');
+    assert.strictEqual(listBody.client, 'moshy', 'discovery scopes to the resolved client slug');
     const nav = (ctx._slots['__nav'] && ctx._slots['__nav'].innerHTML) || '';
     const content = (ctx._slots['content'] && ctx._slots['content'].innerHTML) || '';
     assert.ok(/review-nav-link/.test(nav), 'Review nav link injected');
@@ -154,9 +149,9 @@ async function runUnit() {
     assert.ok(/class="tab-panel review-tab-panel"/.test(content), 'panel carries the shared tab-panel class');
   });
 
-  // ── Probe gating: exists:false leaves ZERO DOM trace (fail closed). ──
-  await check('probe exists:false injects no nav link and no panel (fail closed)', async () => {
-    const ctx = makeUnitCtx(async () => jsonResponse({ exists: false }), { BUNDLES: [sampleBundle()] });
+  // ── Discovery gating: an empty discovery leaves ZERO DOM trace (fail closed). ──
+  await check('discovery returning no bundles injects no nav link and no panel (fail closed)', async () => {
+    const ctx = makeUnitCtx(async () => jsonResponse({ bundles: [] }));
     await ctx.window.initReview();
     const nav = (ctx._slots['__nav'] && ctx._slots['__nav'].innerHTML) || '';
     const content = (ctx._slots['content'] && ctx._slots['content'].innerHTML) || '';
@@ -164,84 +159,110 @@ async function runUnit() {
     assert.ok(!/panel-review/.test(content), 'no Review panel');
   });
 
-  // ── Probe gating: a probe error fails closed (zero trace). ──
-  await check('a probe error fails closed (no nav link, no panel)', async () => {
-    const ctx = makeUnitCtx(async () => { throw new Error('endpoint 500'); }, { BUNDLES: [sampleBundle()] });
+  // ── Discovery gating: a discovery error fails closed (zero trace). ──
+  await check('a discovery error fails closed (no nav link, no panel)', async () => {
+    const ctx = makeUnitCtx(async () => { throw new Error('endpoint 500'); });
     await ctx.window.initReview();
     const nav = (ctx._slots['__nav'] && ctx._slots['__nav'].innerHTML) || '';
     const content = (ctx._slots['content'] && ctx._slots['content'].innerHTML) || '';
-    assert.ok(!/review-nav-link/.test(nav), 'no Review nav link on probe error');
-    assert.ok(!/panel-review/.test(content), 'no Review panel on probe error');
+    assert.ok(!/review-nav-link/.test(nav), 'no Review nav link on discovery error');
+    assert.ok(!/panel-review/.test(content), 'no Review panel on discovery error');
   });
 
-  // ── LIVE-PATH SAFETY: no REVIEW config => no probe, no DOM trace. ──
-  await check('no REVIEW config injects nothing AND never touches the network (live-path safe)', async () => {
+  // ── LIVE-PATH SAFETY: no BQ_FUNCTION AND no injected store => no network, no DOM. ──
+  await check('no BQ_FUNCTION and no injected store injects nothing and never touches the network', async () => {
     let fetched = 0;
-    const ctx = makeUnitCtx(async () => { fetched += 1; return jsonResponse({ exists: true }); } /* no reviewConfig */);
+    const ctx = makeUnitCtx(async () => { fetched += 1; return jsonResponse({ bundles: [sampleBundle()] }); }, undefined, { noBqFunction: true });
     await ctx.window.initReview();
-    assert.strictEqual(fetched, 0, 'the probe network call was never made without configured bundles');
+    assert.strictEqual(fetched, 0, 'the discovery network call was never made without an endpoint or store');
     const nav = (ctx._slots['__nav'] && ctx._slots['__nav'].innerHTML) || '';
     const content = (ctx._slots['content'] && ctx._slots['content'].innerHTML) || '';
-    assert.ok(!/review-nav-link/.test(nav), 'no Review nav link without a REVIEW config');
-    assert.ok(!/panel-review/.test(content), 'no Review panel without a REVIEW config');
+    assert.ok(!/review-nav-link/.test(nav), 'no Review nav link on the live path');
+    assert.ok(!/panel-review/.test(content), 'no Review panel on the live path');
   });
 
-  // ── LIVE-PATH SAFETY: REVIEW config with an EMPTY bundle list is still a no-op. ──
-  await check('REVIEW config with no bundles is a zero-trace no-op', async () => {
-    let fetched = 0;
-    const ctx = makeUnitCtx(async () => { fetched += 1; return jsonResponse({ exists: true }); }, { BUNDLES: [] });
+  // ── Discovery gating via an injected store: an empty list still means no tab. ──
+  await check('an injected store whose discovery returns no bundles registers no tab', async () => {
+    const ctx = makeUnitCtx(async () => jsonResponse({}));
+    ctx.window.f10Review.setStore({ async listBundles() { return { bundles: [] }; } });
     await ctx.window.initReview();
-    assert.strictEqual(fetched, 0, 'no probe with an empty bundle list');
-    const content = (ctx._slots['content'] && ctx._slots['content'].innerHTML) || '';
-    assert.ok(!/panel-review/.test(content), 'no Review panel with an empty bundle list');
+    const nav = (ctx._slots['__nav'] && ctx._slots['__nav'].innerHTML) || '';
+    assert.ok(!/review-nav-link/.test(nav), 'no Review nav link when discovery is empty');
   });
 
-  // ── Render: each new ad renders beside the client's winners with metric + flags. ──
-  await check('renders each new ad beside the client winners with metric, flags and the so-what/now-what', async () => {
-    const ctx = makeUnitCtx(async () => jsonResponse({}), { BUNDLES: [sampleBundle()] });
+  // ── Render: each new ad renders with its preview, coherence flags and held dimensions. ──
+  await check('renders each new ad with its preview image, coherence flags and held dimensions', async () => {
+    const ctx = makeUnitCtx(async () => jsonResponse({}));
     const previewUrl = 'https://signed.example/new-composite.png';
     ctx.window.f10Review.setStore({
-      async probe() { return true; },
-      async winners() { return sampleWinners(); },
+      async listBundles() { return { bundles: [sampleBundle()] }; },
       async preview() { return { url: previewUrl }; },
+      async coherence() { return scorecard('pass', 0.9); },
     });
     ctx.window.f10Review.setClient('moshy');
     await ctx.window.f10Review.load();
     const html = (ctx._slots['rev-body'] && ctx._slots['rev-body'].innerHTML) || '';
     // New generated ad preview image is shown.
     assert.ok(html.indexOf(previewUrl) !== -1, 'the new ad preview image (US-005) is rendered');
-    // Winners rendered with names, one signed image, one click-through fallback.
-    assert.ok(/Founder hero v3/.test(html), 'first winner name rendered');
-    assert.ok(html.indexOf('https://signed.example/win1.jpg') !== -1, 'winner signed image rendered');
-    assert.ok(html.indexOf('https://facebook.com/ad/222') !== -1, 'winner click-through fallback rendered when no signed image');
-    // Policy metric formatted (CPA), not invented.
-    assert.ok(/\$42 CPA/.test(html), 'first winner CPA metric formatted');
     // Coherence flags + held dimensions shown in context.
     assert.ok(/visual_style held for review/.test(html), 'coherence flag rendered');
     assert.ok(/visual_style_canonical/.test(html), 'held dimension rendered');
-    // Insight-ladder L4/L5 read surfaced verbatim from the action.
-    assert.ok(/So what/.test(html) && /proven winning component/.test(html), 'so-what surfaced');
-    assert.ok(/Now what/.test(html) && /unproven for this client/.test(html), 'now-what surfaced');
+    // A single discovered bundle renders the detail view, not a grid.
+    assert.ok(/rev-bundle"/.test(html) && !/rev-cards/.test(html), 'single bundle renders the detail view');
   });
 
-  // ── Render: ROAS-eligible client formats the winner metric as ROAS. ──
-  await check('a ROAS-eligible payload formats the winner metric as ROAS', async () => {
-    const ctx = makeUnitCtx(async () => jsonResponse({}), { BUNDLES: [sampleBundle()] });
+  // ── Render: a missing preview composite falls back to a labelled placeholder. ──
+  await check('a missing preview composite falls back to a labelled placeholder, never a broken img', async () => {
+    const ctx = makeUnitCtx(async () => jsonResponse({}));
     ctx.window.f10Review.setStore({
-      async probe() { return true; },
-      async winners() {
-        const p = sampleWinners();
-        p.metric = 'roas'; p.revenue_eligible = true;
-        p.winners = [{ ad_id: '9', ad_name: 'Revenue hero', metric_type: 'roas', metric_value: 3.5, spend: 1000, conversions: 40, image_url: null, creative_link: null }];
-        return p;
-      },
+      async listBundles() { return { bundles: [sampleBundle()] }; },
       async preview() { return { url: null, reason: 'not-found' }; },
+      async coherence() { return null; },
     });
-    ctx.window.f10Review.setClient('pharmx');
+    ctx.window.f10Review.setClient('moshy');
     await ctx.window.f10Review.load();
     const html = (ctx._slots['rev-body'] && ctx._slots['rev-body'].innerHTML) || '';
-    assert.ok(/3\.50x ROAS/.test(html), 'ROAS metric formatted');
-    assert.ok(/Preview not available/.test(html), 'missing composite falls back to a labelled placeholder, never a broken img');
+    assert.ok(/Preview not available/.test(html), 'missing composite falls back to a labelled placeholder');
+  });
+
+  // ── Generation-date filter: distinct dates newest-first, default most recent, re-filter. ──
+  await check('the generation-date filter lists distinct dates newest-first, defaults to the most recent, and re-filters on change', async () => {
+    const bundles = [
+      sampleBundle({ bundle_id: 'old_a', date: '2026-08-18', label: 'Old A' }),
+      sampleBundle({ bundle_id: 'new_a', date: '2026-08-20', label: 'New A' }),
+      sampleBundle({ bundle_id: 'new_b', date: '2026-08-20', label: 'New B' }),
+    ];
+    const ctx = makeUnitCtx(async () => jsonResponse({}));
+    const R = ctx.window.f10Review;
+    R.setStore({
+      async listBundles() { return { bundles: bundles }; },
+      async preview(client, id) { return { url: 'https://signed.example/' + id + '.png' }; },
+      async coherence() { return scorecard('pass', 0.9); },
+    });
+    R.setClient('moshy');
+    await R.load();
+
+    // Distinct dates, newest first (join-compare to avoid a cross-realm array mismatch).
+    assert.strictEqual(R.dates().join(','), '2026-08-20,2026-08-18', 'distinct dates listed newest-first');
+    // Defaults to the most recent date.
+    assert.strictEqual(R.getDate(), '2026-08-20', 'the filter defaults to the most recent generation date');
+    // The panel dropdown markup carries the Generation control.
+    const panel = R.panelMarkup();
+    assert.ok(/<select id="rev-date">/.test(panel), 'the panel renders the generation-date select');
+    assert.ok(/>Generation</.test(panel), 'the dropdown is labelled Generation');
+
+    // First render shows only the most recent date's two bundles (as a grid).
+    let html = (ctx._slots['rev-body'] && ctx._slots['rev-body'].innerHTML) || '';
+    assert.ok(/data-bundle-id="new_a"/.test(html) && /data-bundle-id="new_b"/.test(html), 'both newest bundles visible');
+    assert.ok(!/data-bundle-id="old_a"/.test(html), 'the older-date bundle is hidden by default');
+    assert.ok(/rev-cards/.test(html), 'the most recent date with two bundles renders the grid');
+
+    // Changing to the older date re-filters to that date's single bundle (detail view).
+    R.setDate('2026-08-18');
+    html = (ctx._slots['rev-body'] && ctx._slots['rev-body'].innerHTML) || '';
+    assert.ok(/data-bundle-id="old_a"/.test(html), 'the older-date bundle appears after the filter change');
+    assert.ok(!/data-bundle-id="new_a"/.test(html) && !/data-bundle-id="new_b"/.test(html), 'the newest-date bundles are hidden after the change');
+    assert.ok(!/rev-cards/.test(html) && /rev-bundle"/.test(html), 'a date with one bundle renders the detail view');
   });
 }
 
@@ -439,7 +460,7 @@ async function bootDashboard(reviewConfig, store) {
 
   sandbox.wireControls();               // base Meta: binds .nav-link -> selectTab
   if (store) sandbox.window.f10Review.setStore(store);
-  await sandbox.window.initReview();    // the NEW module: config + probe gate -> register via f10ActivateTab
+  await sandbox.window.initReview();    // the NEW module: discovery gate -> register via f10ActivateTab
 
   return { dom, document, sandbox, nav, content };
 }
@@ -448,16 +469,22 @@ function activePanels(document) {
   return document.querySelectorAll('.tab-panel').filter((p) => p.classList.contains('active'));
 }
 
+// A store whose discovery finds one bundle (registers the tab).
 const REVIEW_STORE = {
-  async probe() { return true; },
-  async winners() { return sampleWinners(); },
+  async listBundles() { return { bundles: [sampleBundle()] }; },
   async preview() { return { url: 'https://signed.example/new-composite.png' }; },
+  async coherence() { return null; },
+};
+
+// A store whose discovery finds NO bundles (a client with no generated creative).
+const EMPTY_STORE = {
+  async listBundles() { return { bundles: [] }; },
 };
 
 async function runCanary() {
   console.log('US-007 Creative Review tab - live-path canary + dispatcher');
 
-  const { document } = await bootDashboard({ BUNDLES: [sampleBundle()] }, REVIEW_STORE);
+  const { document } = await bootDashboard({}, REVIEW_STORE);
 
   await check('the new Review module registered (nav link + panel present)', async () => {
     assert.strictEqual(document.querySelectorAll('.review-nav-link').length, 1, 'exactly one Review nav link');
@@ -508,11 +535,11 @@ async function runCanary() {
     assert.ok(!document.getElementById('panel-review').classList.contains('active'), 'Review panel cleared');
   });
 
-  // LIVE-PATH: a dashboard with NO REVIEW config boots with the base nav UNCHANGED.
-  await check('a dashboard without a REVIEW config is completely unaffected (no Review nav or panel)', async () => {
-    const d2 = await bootDashboard(undefined, REVIEW_STORE);
-    assert.strictEqual(d2.document.querySelectorAll('.review-nav-link').length, 0, 'no Review nav link injected on a live client dashboard');
-    assert.strictEqual(d2.document.querySelectorAll('.review-tab-panel').length, 0, 'no Review panel injected on a live client dashboard');
+  // LIVE-PATH: a client whose discovery finds no bundles boots with the base nav UNCHANGED.
+  await check('a client with no discovered bundles is completely unaffected (no Review nav or panel)', async () => {
+    const d2 = await bootDashboard(undefined, EMPTY_STORE);
+    assert.strictEqual(d2.document.querySelectorAll('.review-nav-link').length, 0, 'no Review nav link injected when discovery is empty');
+    assert.strictEqual(d2.document.querySelectorAll('.review-tab-panel').length, 0, 'no Review panel injected when discovery is empty');
     // The base nav + its active summary panel are exactly as booted.
     assert.strictEqual(d2.document.querySelectorAll('.nav-link').length, 5, 'the five base nav links are untouched');
     const active = activePanels(d2.document);
