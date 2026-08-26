@@ -31,11 +31,15 @@
  * is still approvable - a scorecard miss never breaks the tab. A single visible bundle
  * renders the detail view (the new ad, its flags and its decision gate) instead of a grid.
  *
- * GENERATION-DATE FILTER: discovered bundles are grouped by the date they were generated.
- * A "Generation" dropdown inside the panel lists the distinct generation dates newest
- * first and defaults to the most recent, so the tab opens on the latest run. Changing it
- * re-filters the visible bundles (a date with one bundle shows the detail view, a date
- * with several shows the ranked grid) without a re-query.
+ * GENERATION-DATE FILTER (LAZY, PER-DATE LOAD): discovered bundles are grouped by the date
+ * they were generated. A "Generation" dropdown inside the panel lists the distinct generation
+ * dates newest first and defaults to the most recent, so the tab opens on the latest run.
+ * Discovery (list-bundles) enumerates every date up front, but the preview / coherence / status
+ * of a date's bundles are loaded ONLY when that date is first selected, not all of history on
+ * load. The most recent date loads on open; selecting an older date lazy-loads just that date's
+ * bundles (a brief loading state), and every loaded result is cached by bundle_id so switching
+ * back to an already-loaded date is instant and never re-fetches. A date with one bundle shows
+ * the detail view, a date with several shows the ranked grid.
  *
  * VISIBILITY IS DATA-DRIVEN AND LIVE-PATH SAFE - two gates, both fail closed:
  *   1. LIVE-PATH SAFETY. With no `BQ_FUNCTION` endpoint AND no injected store the module
@@ -93,7 +97,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     var rvBundles = null;    // discovered + normalised bundle list (from list-bundles; tests override via setBundles)
     var rvDate = '';         // selected generation-date filter (defaults to the most recent discovered date)
     var rvFeedback = null;   // injectable feedback client (US-009; tests override via setFeedbackClient)
-    var rvResults = [];      // last-loaded per-bundle results, so a decision can re-render in place
+    var rvResultsById = {};  // per-bundle loaded results keyed by bundle_id, so a selected date renders (and a decision re-renders) from cache
+    var rvLoadedDates = {};  // set of generation dates whose bundles have already been lazy-loaded, so switching back is instant
     var rvStatus = {};       // per-bundle approval state {state,comment,actor,updated_at}, read back + updated on decide
     var rvBusy = {};         // per-bundle in-flight guard so a double click cannot double-post
     var rvDecErr = {};       // per-bundle last decision error message, surfaced inline (never a silent failure)
@@ -195,12 +200,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
       out.sort(function (a, b) { return a < b ? 1 : (a > b ? -1 : 0); });
       return out;
-    }
-
-    /* The loaded per-bundle results whose bundle matches the selected generation date. */
-    function filteredResults(results) {
-      var list = Array.isArray(results) ? results : [];
-      return list.filter(function (r) { return bundleDate(r && r.bundle) === rvDate; });
     }
 
     /* ---- data store (injectable; default posts to the shared bq function) ---- */
@@ -619,13 +618,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (el) el.style.display = 'none';
     }
 
-    /* Render the review body for the CURRENTLY FILTERED set (the bundles matching the
-     * selected generation date). With MORE THAN ONE visible bundle the default view is the
-     * ranked scorecard GRID (roadmap #5); with a single visible bundle it is the detail
-     * view. Never a blank panel: an empty filtered set renders a small note. */
-    function renderBundles(results) {
-      rvResults = Array.isArray(results) ? results : [];
-      var visible = filteredResults(rvResults);
+    /* Render the review body for the CURRENTLY SELECTED generation date, from the per-bundle
+     * cache (rvResultsById). Collects the loaded results for the discovered bundles whose
+     * generation date matches rvDate, in discovery order (newest-first as list-bundles returns
+     * them). With MORE THAN ONE visible bundle the default view is the ranked scorecard GRID
+     * (roadmap #5); with a single visible bundle it is the detail view. Never a blank panel: a
+     * date with no visible bundles renders a small note. */
+    function renderCurrent() {
+      var bundles = getBundles();
+      var visible = [];
+      for (var i = 0; i < bundles.length; i++) {
+        if (bundleDate(bundles[i]) !== rvDate) continue;
+        var r = rvResultsById[bundleId(bundles[i])];
+        if (r) visible.push(r);
+      }
       var body = document.getElementById('rev-body');
       if (body) {
         body.innerHTML = visible.length
@@ -700,6 +706,28 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return getBundles();
     }
 
+    /* Lazy-load ONE generation date's bundles. Loads only the discovered bundles for `date`
+     * that are not already cached (rvResultsById), merges each result into the cache keyed by
+     * bundle_id, marks the date loaded, then renders the current view. A date with zero bundles
+     * (or one whose bundles are all already cached) still marks loaded and renders, so switching
+     * back to an already-loaded date is instant and never re-fetches. */
+    async function loadDate(date) {
+      var bundles = getBundles();
+      var pending = [];
+      for (var i = 0; i < bundles.length; i++) {
+        if (bundleDate(bundles[i]) !== date) continue;
+        if (!Object.prototype.hasOwnProperty.call(rvResultsById, bundleId(bundles[i]))) pending.push(bundles[i]);
+      }
+      if (pending.length) {
+        var loaded = await Promise.all(pending.map(loadBundle));
+        for (var j = 0; j < loaded.length; j++) {
+          rvResultsById[bundleId(loaded[j].bundle)] = loaded[j];
+        }
+      }
+      rvLoadedDates[date] = 1;
+      renderCurrent();
+    }
+
     async function loadReview() {
       showEl('rev-loading');
       hideEl('rev-body');
@@ -707,9 +735,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       try {
         if (!Array.isArray(rvBundles)) await discoverBundles();
         initDateFilter();
-        var bundles = getBundles();
-        var results = await Promise.all(bundles.map(loadBundle));
-        renderBundles(results);
+        await loadDate(rvDate);
       } catch (err) {
         renderError(err);
       }
@@ -717,10 +743,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     /* ---- decide (US-009): approve / decline a bundle via the US-008 write path ---- */
 
-    /* Re-render every loaded bundle from the cached results; each block reads the current
-     * rvStatus, so a decision reflects in the panel without a full reload. */
+    /* Re-render the CURRENT date's bundles from the cache; each block reads the current
+     * rvStatus, so a decision reflects in the panel without a full reload or a re-fetch. */
     function rerender() {
-      if (rvResults && rvResults.length) renderBundles(rvResults);
+      renderCurrent();
     }
 
     /* Record an approve/decline decision for one bundle. Posts the exact US-008 contract to
@@ -815,16 +841,27 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (sel.addEventListener) sel.addEventListener('change', onDateChange);
     }
 
-    /* The generation-date selection changed: re-filter the visible bundles and re-render. */
+    /* The generation-date selection changed: switch to that date, lazy-loading its bundles the
+     * first time it is selected. */
     function onDateChange(e) {
       var v = (e && e.target && e.target.value != null) ? e.target.value : rvDate;
-      setDate(v);
+      return setDate(v);
     }
 
-    function setDate(d) {
+    /* Select a generation date. The first time a date is chosen its bundles are lazy-loaded
+     * (show the loading state, then loadDate renders); a date already loaded renders instantly
+     * from the cache with no re-fetch. */
+    async function setDate(d) {
       rvDate = String(d == null ? '' : d);
       if (window.F10A) F10A.track('filter_changed', { filter: 'generation_date', value: rvDate });
-      rerender();
+      if (!rvLoadedDates[rvDate]) {
+        showEl('rev-loading');
+        hideEl('rev-body');
+        hideEl('rev-error');
+        await loadDate(rvDate);
+      } else {
+        renderCurrent();
+      }
     }
 
     /* ---- tab activation (via the single generic dispatcher) ---- */
@@ -980,7 +1017,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         rvNavLink.addEventListener('click', function (e) { if (e && e.preventDefault) e.preventDefault(); activate(); });
       }
       // Bind the approve/decline delegation ONCE on the stable rev-body container so it
-      // survives every re-render (renderBundles only swaps the container's innerHTML).
+      // survives every re-render (renderCurrent only swaps the container's innerHTML).
       var body = document.getElementById('rev-body');
       if (body && body.addEventListener) body.addEventListener('click', onDecisionClick);
       // Bind the deactivate handler to every OTHER existing nav anchor - generic, no
@@ -1044,9 +1081,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       activate: activate,
       deactivateOnOtherNav: deactivateOnOtherNav,
       load: loadReview,
+      loadDate: loadDate,
       loadBundle: loadBundle,
       discoverBundles: discoverBundles,
-      renderBundles: renderBundles,
+      renderCurrent: renderCurrent,
       renderError: renderError,
       bundleHtml: bundleHtml,
       newAdHtml: newAdHtml,
@@ -1084,7 +1122,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       getClient: function () { return rvClient; },
       isLoaded: function () { return rvLoaded; },
       _resetBooted: function () { rvBooted = false; rvLoaded = false; },
-      _resetState: function () { rvStatus = {}; rvBusy = {}; rvDecErr = {}; rvResults = []; rvDate = ''; },
+      _resetState: function () { rvStatus = {}; rvBusy = {}; rvDecErr = {}; rvResultsById = {}; rvLoadedDates = {}; rvDate = ''; },
     };
   })();
 }
