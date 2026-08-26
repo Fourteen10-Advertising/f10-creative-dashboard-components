@@ -1204,11 +1204,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var el = document.getElementById('be-status');
       if (!el) return;
       var id = (result && result.revision_id) || '';
-      var cli = 'hq secrets exec -- python -m f10_creative_pipeline.generate --revision ' + id;
+      // The generation command, run by an operator from the f10-creative-pipeline
+      // repo root. Mirrors the pipeline README's canonical run form: PYTHONPATH=src
+      // so the package imports, python3 (not python), the vault SAs via hq secrets
+      // exec, --from-revision (NOT --revision, which is not a real flag), and
+      // --brand-dir so the render is on-brand. --run --confirm actually spends;
+      // drop them for a dry-run cost estimate first.
+      var cli = 'PYTHONPATH=src hq secrets exec --company fourteen10 '
+        + '--only VERTEX_SA_JSON,GCS_SA_JSON,BIGQUERY_SA_JSON -- '
+        + 'python3 -m f10_creative_pipeline.generate '
+        + '--from-revision ' + id + ' --brand-dir <client brand kit> --run --confirm';
       el.innerHTML = '<div class="be-ok"><strong>Saved.</strong> New revision id: '
         + '<span class="be-revid" id="be-saved-id">' + esc(id) + '</span>'
-        + '<div class="be-next">Next step: an operator runs generation from the CLI against this revision '
-        + '(generation does not run from this app):<br><span class="be-cli">' + esc(cli) + '</span></div></div>';
+        + '<div class="be-next">Next step: an operator runs generation from the CLI against this revision, '
+        + 'from the f10-creative-pipeline repo root (generation does not run from this app). '
+        + 'Fill in --brand-dir with the client brand kit path:<br><span class="be-cli">' + esc(cli) + '</span></div></div>';
     }
 
     function renderStatusError(msg) {

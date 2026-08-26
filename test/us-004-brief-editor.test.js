@@ -396,7 +396,9 @@ async function runBrowser() {
     // AC4: the saved revision id + a clear CLI next step are shown.
     const status = ctx._slots['be-status'].innerHTML;
     assert.ok(status.indexOf(rec.revision_id) !== -1, 'the new revision id is shown');
-    assert.ok(/generate --revision/.test(status), 'the CLI generation next step is shown');
+    assert.ok(/generate --from-revision/.test(status), 'the CLI generation next step is shown');
+    assert.ok(!/generate --revision\b/.test(status), 'uses --from-revision, not the non-existent --revision flag');
+    assert.ok(/python3 -m f10_creative_pipeline\.generate/.test(status), 'uses python3, not python');
     assert.ok(/generation does not run from this app/i.test(status), 'it is clear generation is not run from the app');
   });
 
