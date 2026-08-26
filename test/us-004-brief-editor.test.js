@@ -427,6 +427,99 @@ async function runBrowser() {
     const ctx2 = makeBrowserCtx({ ENDPOINT: '/api/brief' });
     assert.strictEqual(ctx2.window.f10BriefEditor.endpoint(), '/api/brief', 'explicit config wins');
   });
+
+  // ── Inspiration picker: the panel carries the upload zone + library tabs. ──
+  await check('the panel renders the inspiration picker (chips, tabs, upload zone, thumbs grid)', async () => {
+    const ctx = makeBrowserCtx();
+    const html = ctx.window.f10BriefEditor.panelMarkup();
+    assert.ok(/id="be-insp-chips"/.test(html), 'selected-references row is present');
+    assert.ok(/data-insp-tab="upload"/.test(html), 'Upload tab is present');
+    assert.ok(/data-insp-tab="client"/.test(html), 'Your-library tab is present');
+    assert.ok(/data-insp-tab="competitor"/.test(html), 'Competitors tab is present');
+    assert.ok(/id="be-file"/.test(html) && /type="file"/.test(html), 'a file input backs the drop zone');
+    assert.ok(/id="be-thumbs"/.test(html), 'a library grid container is present');
+  });
+
+  // ── Inspiration picker: pick from a library, it lands in inspiration_image_uris. ──
+  await check('selecting a library image adds it to the saved inspiration_image_uris; deselect removes it', async () => {
+    const ctx = makeBrowserCtx();
+    const uri = 'gs://f10-creative-assets/served/meta/acct_1/a.png';
+    let sawSource = '';
+    ctx.window.f10BriefEditor.setStore({
+      async probe() { return true; },
+      async load() {},
+      async save() {},
+      async references(source) {
+        sawSource = source;
+        return [{ gcs_uri: uri, thumb_url: 'https://signed/thumb', source: 'client', label: 'ad1' }];
+      },
+    });
+    await ctx.window.initBriefEditor();
+    await ctx.window.f10BriefEditor.switchInspTab('client');
+    assert.strictEqual(sawSource, 'client', 'the client tab loads the client source');
+    ctx.window.f10BriefEditor.toggleThumb(uri);
+    // getInspiration()/readForm() return arrays from the module's vm realm; Array.from
+    // re-homes them to this realm so deepStrictEqual compares contents, not prototypes.
+    assert.deepStrictEqual(
+      Array.from(ctx.window.f10BriefEditor.getInspiration(), (r) => r.gcs_uri), [uri],
+      'the picked image is selected',
+    );
+    assert.deepStrictEqual(Array.from(ctx.window.f10BriefEditor.readForm().inspiration_image_uris), [uri],
+      'a save would carry the picked image');
+    ctx.window.f10BriefEditor.toggleThumb(uri); // toggle off
+    assert.strictEqual(ctx.window.f10BriefEditor.getInspiration().length, 0, 'deselect clears it');
+  });
+
+  // ── Inspiration picker: an uploaded image is stored + selected. ──
+  await check('an uploaded file is sent to the upload endpoint and its stored uri is selected', async () => {
+    const ctx = makeBrowserCtx();
+    // A minimal FileReader shim (Node has no DOM FileReader).
+    ctx.FileReader = function () {
+      this.readAsDataURL = function () { this.result = 'data:image/png;base64,aGVsbG8='; this.onload(); };
+    };
+    const stored = 'gs://f10-creative-assets/inspiration/moshy/deadbeef.png';
+    let uploadedCT = '';
+    ctx.window.f10BriefEditor.setStore({
+      async probe() { return true; }, async load() {}, async save() {},
+      async upload(payload) { uploadedCT = payload.contentType; return { ok: true, gcs_uri: stored, thumb_url: 'https://signed/up' }; },
+    });
+    await ctx.window.initBriefEditor();
+    await ctx.window.f10BriefEditor.handleFile({ name: 'hero.png', type: 'image/png', size: 1234 });
+    assert.strictEqual(uploadedCT, 'image/png', 'the file content type is forwarded');
+    assert.deepStrictEqual(
+      Array.from(ctx.window.f10BriefEditor.getInspiration(), (r) => r.gcs_uri), [stored],
+      'the stored uri is selected after upload',
+    );
+  });
+
+  // ── Inspiration picker: a loaded revision seeds the picker and carries through save. ──
+  await check('loaded inspiration_image_uris seed the picker and survive a re-save', async () => {
+    const ctx = makeBrowserCtx();
+    const seedUri = 'gs://f10-creative-assets/inspiration/moshy/seed.png';
+    const saved = [];
+    ctx.window.f10BriefEditor.setStore({
+      async probe() { return true; },
+      async load() {
+        return {
+          schema: 'brief_revision', revision_id: 'rev_seed', client: 'moshy',
+          visual_style: 'minimal-clean', hook_type: 'question', message_angle: 'price-value',
+          cta_type: 'learn-more', format: 'static-photo', copy_blocks: [],
+          creative_direction: 'higher BMI subjects', inspiration_image_uris: [seedUri],
+        };
+      },
+      async save(rec) { saved.push(rec); return { ok: true, revision_id: rec.revision_id }; },
+    });
+    await ctx.window.initBriefEditor();
+    await ctx.window.f10BriefEditor.loadRevisionById('rev_seed');
+    assert.deepStrictEqual(
+      Array.from(ctx.window.f10BriefEditor.getInspiration(), (r) => r.gcs_uri), [seedUri],
+      'the loaded reference seeds the picker',
+    );
+    await ctx.window.f10BriefEditor.saveNewRevision();
+    assert.strictEqual(saved.length, 1);
+    assert.deepStrictEqual(Array.from(saved[0].inspiration_image_uris), [seedUri], 'the reference carries through the save');
+    assert.strictEqual(saved[0].creative_direction, 'higher BMI subjects', 'creative direction carries too');
+  });
 }
 
 (async () => {
