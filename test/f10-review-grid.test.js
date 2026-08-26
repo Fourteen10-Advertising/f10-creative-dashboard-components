@@ -2,10 +2,11 @@
  * Roadmap #5 - Scored batch review: the Creative Review tab as a RANKED GRID of scorecards
  * (f10-review.js).
  *
- * Extends the US-007 / US-009 Creative Review module: when more than one bundle is under
- * review the DEFAULT view is a ranked grid of cards, best-first, each carrying its coherence
- * scorecard. For each bundle the module fetches a scorecard from the backend via a new store
- * method `coherence(client, bundleId, platform)` that posts { action:'coherence', client,
+ * Extends the US-007 / US-009 Creative Review module: when more than one bundle is visible
+ * the DEFAULT view is a ranked grid of cards, best-first, each carrying its coherence
+ * scorecard. Bundles are auto-discovered through the store's list-bundles method. For each
+ * bundle the module fetches a scorecard from the backend via a store method
+ * `coherence(client, bundleId, platform)` that posts { action:'coherence', client,
  * bundleId, platform } to BQ_FUNCTION, and consumes this response contract (fail-closed on any
  * error -> unscored):
  *   { found:bool,
@@ -17,16 +18,15 @@
  *     flags:[string] }
  *
  * Fully offline and dependency-free (no jsdom): the real f10-review.js is loaded into a vm
- * sandbox with a tiny DOM stub, and BOTH the winners/preview/coherence store and the feedback
- * client are injected fakes. Covers:
+ * sandbox with a tiny DOM stub, and BOTH the discovery/preview/coherence store and the
+ * feedback client are injected fakes. Covers:
  *   - the default store's coherence method posts the exact request contract;
  *   - the grid renders N cards sorted by (pass, overall_score desc), unscored last, with a
  *     rank / among-N indicator;
  *   - a card shows the three dimension scores + flags + verdict when the store returns a
  *     scorecard, and renders "not scored" when found:false OR on a coherence fetch error;
  *   - approve / decline + persisted-state still work per card through the existing feedback seam;
- *   - the single-bundle winners comparison (US-006) stays reachable by expanding a card;
- *   - a single bundle still renders the original detail view (not a grid).
+ *   - a single visible bundle renders the detail view (not a grid).
  *
  * Run: node test/f10-review-grid.test.js
  */
@@ -66,21 +66,12 @@ function scorecard(verdict, overall, opts) {
   };
 }
 
-function sampleWinners() {
+/* Four bundles: makes the sort observable (pass-high, pass-low, flag-high, unscored).
+ * All share one generation date so the grid shows them together; the date-filter
+ * behaviour is covered in f10-review.test.js. */
+function bundle(id, label, date) {
   return {
-    client: 'moshy',
-    metric: 'cpa',
-    winners: [
-      { ad_id: '111', ad_name: 'Founder hero v3', metric_type: 'cpa', metric_value: 42, spend: 52000, conversions: 900, image_url: 'https://signed.example/win1.jpg', creative_link: null },
-    ],
-    comparison: { so_what: 'reuses a proven winner', now_what: 'hold one unproven dimension' },
-  };
-}
-
-/* Four bundles: makes the sort observable (pass-high, pass-low, flag-high, unscored). */
-function bundle(id, label) {
-  return {
-    bundle_id: id, platform: 'meta', label: label || id,
+    bundle_id: id, platform: 'meta', label: label || id, date: date || '2026-08-20',
     components: { hook_type: 'Founder story' },
     coherence_flags: ['visual_style held for review'],
     held_dimensions: ['visual_style_canonical'],
@@ -89,15 +80,14 @@ function bundle(id, label) {
 }
 
 /* Build a store whose coherence() serves a per-bundle map, and records every coherence
- * request so the exact posted contract can be asserted. `cohThrows` forces a fetch error. */
+ * request so the exact posted contract can be asserted. `cohThrows` forces a fetch error.
+ * The list-bundles discovery is wired per-boot in bootGrid. */
 function makeStore(scoreMap, opts) {
   opts = opts || {};
   const coherenceCalls = [];
   return {
     coherenceCalls,
     store: {
-      async probe() { return true; },
-      async winners() { return sampleWinners(); },
       async preview(client, id) { return { url: 'https://signed.example/' + id + '.png' }; },
       async coherence(client, id, platform) {
         coherenceCalls.push({ client, id, platform });
@@ -178,11 +168,13 @@ function makeCtx(reviewConfig, fetchImpl) {
   return sandbox;
 }
 
-/* Boot a loaded grid for the given bundles + injected store/feedback fakes. */
+/* Boot a loaded grid for the given bundles + injected store/feedback fakes. The bundles
+ * are served through the store's list-bundles discovery, exactly as production loads them. */
 async function bootGrid(bundles, storeObj, feedbackFake) {
-  const cfg = { CLIENT: 'moshy', ACTOR: 'zac@f10', BUNDLES: bundles };
+  const cfg = { CLIENT: 'moshy', ACTOR: 'zac@f10' };
   const ctx = makeCtx(cfg);
   const R = ctx.window.f10Review;
+  storeObj.listBundles = async () => ({ bundles: bundles });
   R.setStore(storeObj);
   if (feedbackFake) R.setFeedbackClient(feedbackFake.client);
   R.setClient('moshy');
@@ -323,44 +315,36 @@ async function run() {
     assert.ok(/off-brand tone/.test(body2()), 'the persisted decline reason is read back into the grid');
   });
 
-  // ── The single-bundle winners comparison (US-006) stays reachable by expanding a card. ──
-  await check('expanding a card reveals the US-006 winners comparison (so-what / now-what) inline', async () => {
-    const st = makeStore({ b1: scorecard('pass', 0.9), b2: scorecard('flag', 0.5) });
-    const { R, body } = await bootGrid([bundle('b1'), bundle('b2')], st.store, makeFeedbackFake());
-    let html = body();
-    // Collapsed by default: the winners comparison is not in the DOM yet.
-    assert.ok(!/Founder hero v3/.test(html), 'winners are not shown until a card is expanded');
-    assert.ok(/data-rev-action="expand"/.test(html), 'each card has an expand control');
-    // Expand via the delegated click handler.
-    const target = { getAttribute(k) { return k === 'data-rev-action' ? 'expand' : (k === 'data-bundle-id' ? 'b1' : null); }, parentNode: null };
-    R.onDecisionClick({ target, preventDefault() {} });
-    html = body();
-    assert.ok(/Founder hero v3/.test(html), 'the winning historical ad appears when expanded');
-    assert.ok(/\$42 CPA/.test(html), 'the winner policy metric is shown in the expanded detail');
-    assert.ok(/So what/.test(html) && /Now what/.test(html), 'the so-what / now-what comparison is reachable');
-    // Collapsing hides it again.
-    R.collapse('b1');
-    assert.ok(!/Founder hero v3/.test(body()), 'collapsing hides the winners comparison again');
-  });
-
-  // ── A single bundle still renders the original detail view, not a grid. ──
-  await check('a single bundle renders the original detail view (not a grid)', async () => {
+  // ── A single visible bundle still renders the detail view, not a grid. ──
+  await check('a single bundle renders the detail view (not a grid)', async () => {
     const st = makeStore({ only: scorecard('pass', 0.9) });
     const { body } = await bootGrid([bundle('only', 'Solo concept')], st.store, makeFeedbackFake());
     const html = body();
     assert.ok(!/rev-cards/.test(html), 'no grid container for a single bundle');
     assert.ok(/rev-bundle"/.test(html), 'the single-bundle detail block is rendered');
-    assert.ok(/Founder hero v3/.test(html), 'winners are shown inline in the single-bundle detail view');
+    assert.ok(/data-bundle-id="only"/.test(html), 'the discovered bundle is rendered in the detail view');
+    assert.ok(/visual_style held for review/.test(html), 'the bundle coherence flags render in the detail view');
   });
 
-  // ── Live-path safety unchanged: no REVIEW config still injects nothing and never posts. ──
-  await check('live-path safety preserved: no REVIEW config injects nothing and never posts a coherence request', async () => {
+  // ── Live-path safety: no BQ_FUNCTION AND no injected store injects nothing and never posts. ──
+  await check('live-path safety preserved: no endpoint and no store injects nothing and never posts', async () => {
     let fetched = 0;
-    const ctx = makeCtx(undefined, async () => { fetched += 1; return jsonResponse({ exists: true }); });
-    await ctx.window.initReview();
-    assert.strictEqual(fetched, 0, 'no probe and no coherence call without a REVIEW config');
-    const nav = (ctx._slots['__nav'] && ctx._slots['__nav'].innerHTML) || '';
-    assert.ok(!/review-nav-link/.test(nav), 'no Review nav link on a live client dashboard');
+    const { document, slots } = makeTinyDom();
+    const window = {}; window.F10A = { track() {} };
+    const sandbox = {
+      window, document, console, F10A: window.F10A,
+      PROJECT: 'mcc-poc-477801', DATASET: 'moshy_marts',
+      fetch: async () => { fetched += 1; return jsonResponse({ bundles: [bundle('b1')] }); },
+      setTimeout, clearTimeout, _slots: slots,
+    };
+    // No BQ_FUNCTION and no REVIEW config at all.
+    vm.createContext(sandbox);
+    vm.runInContext(UTILS, sandbox, { filename: 'f10-utils.js' });
+    vm.runInContext(REVIEW, sandbox, { filename: 'f10-review.js' });
+    await sandbox.window.initReview();
+    assert.strictEqual(fetched, 0, 'no discovery and no coherence call without an endpoint or store');
+    const nav = (slots['__nav'] && slots['__nav'].innerHTML) || '';
+    assert.ok(!/review-nav-link/.test(nav), 'no Review nav link on the live path');
   });
 }
 

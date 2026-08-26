@@ -41,33 +41,23 @@ function jsonResponse(payload) {
   return { ok: true, status: 200, json: async () => payload, text: async () => JSON.stringify(payload) };
 }
 
-/* A minimal winners payload; the decision gate does not depend on its shape. */
-function sampleWinners() {
-  return {
-    client: 'moshy',
-    metric: 'cpa',
-    winners: [
-      { ad_id: '111', ad_name: 'Founder hero v3', metric_type: 'cpa', metric_value: 42, spend: 52000, conversions: 900, image_url: 'https://signed.example/win1.jpg', creative_link: null },
-    ],
-    comparison: { so_what: 'reuses a proven winner', now_what: 'hold one unproven dimension' },
-  };
-}
-
 function sampleBundle() {
   return {
     bundle_id: 'brief_moshy_founder_ab12cd',
     platform: 'meta',
+    date: '2026-08-20',
     label: 'Founder story - bold typographic',
     components: { hook_type: 'Founder story' },
     new_ad: { headline: 'Meet the founder' },
   };
 }
 
-/* The reader/writer store standing in for winners/preview (US-006 / US-005). */
+/* The discovery/preview store standing in for list-bundles + generated-preview: it
+ * discovers the one sample bundle and signs its preview. The decision gate does not
+ * depend on the preview shape. */
 function reviewStore() {
   return {
-    async probe() { return true; },
-    async winners() { return sampleWinners(); },
+    async listBundles() { return { bundles: [sampleBundle()] }; },
     async preview() { return { url: 'https://signed.example/new-composite.png' }; },
   };
 }
@@ -358,26 +348,25 @@ async function run() {
     assert.ok(!/re-?prompt/i.test(decision) || /no .*re-?prompt|re-?prompt (step|loop)/i.test(decision), 'no re-prompt affordance beyond the explanatory note');
   });
 
-  // ── Live-path safety is unchanged: a dashboard with no REVIEW config injects nothing. ──
-  await check('live-path safety preserved: no REVIEW config still injects nothing and never posts', async () => {
+  // ── Live-path safety is unchanged: no BQ_FUNCTION AND no injected store injects nothing. ──
+  await check('live-path safety preserved: no endpoint and no store still injects nothing and never posts', async () => {
     let fetched = 0;
     const { document, slots } = makeTinyDom();
     const window = {}; window.F10A = { track() {} };
     const sandbox = {
       window, document, console, F10A: window.F10A,
       PROJECT: 'mcc-poc-477801', DATASET: 'moshy_marts',
-      BQ_FUNCTION: 'https://fn.example/.netlify/functions/bq',
-      fetch: async () => { fetched += 1; return jsonResponse({ exists: true }); },
+      fetch: async () => { fetched += 1; return jsonResponse({ bundles: [sampleBundle()] }); },
       setTimeout, clearTimeout, _slots: slots,
     };
-    // No REVIEW config at all.
+    // No BQ_FUNCTION and no REVIEW config at all.
     vm.createContext(sandbox);
     vm.runInContext(UTILS, sandbox, { filename: 'f10-utils.js' });
     vm.runInContext(REVIEW, sandbox, { filename: 'f10-review.js' });
     await sandbox.window.initReview();
-    assert.strictEqual(fetched, 0, 'no probe and no feedback call without a REVIEW config');
+    assert.strictEqual(fetched, 0, 'no discovery and no feedback call without an endpoint or store');
     const nav = (slots['__nav'] && slots['__nav'].innerHTML) || '';
-    assert.ok(!/review-nav-link/.test(nav), 'no Review nav link on a live client dashboard');
+    assert.ok(!/review-nav-link/.test(nav), 'no Review nav link on the live path');
   });
 }
 

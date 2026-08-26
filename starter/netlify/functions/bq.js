@@ -181,6 +181,18 @@ exports.handler = async function (event) {
     return queryWinningHistorical(body, credentials, cors);
   }
 
+  // ── List generated bundles for a client (creative-pipeline auto-discovery) ──
+  // The Creative Review tab is no longer driven by a hardcoded config list: it asks
+  // this action which generated bundles exist for the client, newest first, and
+  // reviews those. Reads the shared bundle manifest (all_clients.creative_manifest),
+  // one row per generated component, grouped to one row per brief_id (the bundle id).
+  // Scoped by client with a bound @client param, same maximumBytesBilled / jobTimeoutMs
+  // guardrails as every query here, and FAILS CLOSED to an empty list (never a 500)
+  // when the manifest does not exist yet.
+  if (body.action === 'list-bundles') {
+    return queryListBundles(body, credentials, cors);
+  }
+
   const { query } = body;
   if (!query || typeof query !== 'string') {
     return {
@@ -1904,6 +1916,102 @@ async function queryWinningHistorical(body, credentials, cors) {
       });
     }
     console.error('Winning-historical query error:', err);
+    return json(500, { error: err.message });
+  }
+}
+
+/* ── List generated bundles for a client (creative-pipeline auto-discovery) ────
+ *
+ * The Creative Review surface calls this to DISCOVER which generated bundles exist
+ * for a client instead of carrying a hardcoded list. One read over the shared bundle
+ * manifest `mcc-poc-477801.all_clients.creative_manifest` (one row per generated
+ * component), grouped to one row per brief_id (the bundle id), newest first.
+ *
+ * SCOPE: filtered by @client (a bound query parameter, so no injection surface) and
+ * to rows that carry a brief_id. Same maximumBytesBilled / jobTimeoutMs guardrails as
+ * every query. FAILS CLOSED: a client whose manifest does not exist yet returns a
+ * clean empty list (via isTableNotFound), never a 500, so the tab simply hides.
+ *
+ * The status column on this manifest is `fetch_status` (the same column the `media`
+ * and winning-historical image reads use); n_fetched counts the fetched components.
+ *
+ *   { action:'list-bundles', client:'mosh' }
+ *     -> { bundles:[ { bundle_id, platform, date:'YYYY-MM-DD', generated_at,
+ *                      n_fetched, n_components } ... ] }
+ */
+async function queryListBundles(body, credentials, cors) {
+  const json = (statusCode, payload) => ({
+    statusCode,
+    headers: { ...cors, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  // Reuse the creative-pipeline client scope key (lowercased, [a-z0-9_]). Empty ⇒ 400.
+  const client = winningClientKey(body.client);
+  if (!client) {
+    return json(400, { error: 'Missing or invalid "client" field for list-bundles action.' });
+  }
+
+  const PROJECT = 'mcc-poc-477801';
+  const LOCATION = 'australia-southeast1';
+  const MANIFEST_TABLE = `\`${PROJECT}.all_clients.creative_manifest\``;
+
+  // A BigQuery DATE / TIMESTAMP may arrive as a plain string or a { value } wrapper;
+  // reduce either to an ISO 'YYYY-MM-DD' date string (the grouping key the UI filters on).
+  const isoDate = (v) => {
+    if (v == null) return '';
+    if (typeof v === 'object' && v.value !== undefined) v = v.value;
+    return String(v).slice(0, 10);
+  };
+  const rawVal = (v) => {
+    if (v == null) return null;
+    if (typeof v === 'object' && v.value !== undefined) return v.value;
+    return v;
+  };
+  const intVal = (v) => {
+    const n = Number(rawVal(v));
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  try {
+    const bq = new BigQuery({ projectId: PROJECT, credentials, location: LOCATION });
+    const listSql = `
+      SELECT
+        brief_id                                 AS bundle_id,
+        ANY_VALUE(platform)                      AS platform,
+        DATE(MAX(fetched_at))                    AS generated_date,
+        MAX(fetched_at)                          AS generated_at,
+        COUNTIF(fetch_status = 'fetched')        AS n_fetched,
+        COUNT(*)                                 AS n_components
+      FROM ${MANIFEST_TABLE}
+      WHERE client = @client AND brief_id IS NOT NULL
+      GROUP BY brief_id
+      ORDER BY MAX(fetched_at) DESC`;
+
+    const [rows] = await bq.query({
+      query: listSql,
+      params: { client },
+      types: { client: 'STRING' },
+      location: LOCATION,
+      useLegacySql: false,
+      maximumBytesBilled: MAX_BYTES_BILLED,
+      jobTimeoutMs: TIMEOUT_MS,
+    });
+
+    const bundles = rows.map((r) => ({
+      bundle_id: String(r.bundle_id),
+      platform: r.platform === 'tiktok' ? 'tiktok' : 'meta',
+      date: isoDate(r.generated_date),
+      generated_at: rawVal(r.generated_at),
+      n_fetched: intVal(r.n_fetched),
+      n_components: intVal(r.n_components),
+    }));
+
+    return json(200, { client, bundles });
+  } catch (err) {
+    // A client whose bundle manifest does not exist yet is a clean empty list, not a 500.
+    if (isTableNotFound(err)) return json(200, { client, bundles: [] });
+    console.error('List-bundles query error:', err);
     return json(500, { error: err.message });
   }
 }

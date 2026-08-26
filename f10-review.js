@@ -1,22 +1,26 @@
 /**
- * f10-review.js - F10 Creative Review tab (probe-gated, live-path safe, US-007;
+ * f10-review.js - F10 Creative Review tab (discovery-gated, live-path safe, US-007;
  *                 approve/decline gate + approval state, US-009;
- *                 scored batch review / ranked grid, roadmap #5)
+ *                 scored batch review / ranked grid, roadmap #5;
+ *                 auto-discovered bundles + generation-date filter)
  * Load via: <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@TAG/f10-review.js"></script>
  *
  * WHAT IT SHOWS: the interactive preview surface for the creative pipeline. For each
- * newly GENERATED ad (a "bundle" under review) it renders that ad next to the client's
- * WINNING historical ads and their policy metric, plus the concept-in-context read, so
- * an F10 reviewer can judge a new concept against what already works for the client
- * without waiting on a static report. Every winner + metric + comparison comes from the
- * US-006 `winning-historical` bq action (strictly per-client); the new ad's own preview
- * image comes from the US-005 `generated-preview` action. The bundle's coherence flags
- * and held dimensions ride alongside so the reviewer sees any held dimensions in context.
+ * newly GENERATED ad (a "bundle" under review) it renders that ad with its coherence
+ * scorecard, so an F10 reviewer can triage a whole batch of new concepts at a glance
+ * without waiting on a static report. The new ad's own preview image comes from the
+ * US-005 `generated-preview` action; the bundle's coherence flags and held dimensions
+ * ride alongside so the reviewer sees any held dimensions in context.
  *
- * SCORED BATCH REVIEW - RANKED GRID (roadmap #5): when more than one bundle is under
- * review the DEFAULT view is a ranked GRID of scorecard cards, best-first, so a whole
- * batch is triaged at a glance instead of one ad at a time. Each card fetches its
- * coherence scorecard from the backend via the store's `coherence` action
+ * AUTO-DISCOVERED BUNDLES: the review list is NOT a hardcoded config array. On load the
+ * module asks the backend `list-bundles` action which generated bundles exist for this
+ * client (from the shared creative_manifest), newest first, and reviews those. So a new
+ * operator run shows up on the tab with no dashboard edit.
+ *
+ * SCORED BATCH REVIEW - RANKED GRID (roadmap #5): when more than one bundle is visible
+ * the DEFAULT view is a ranked GRID of scorecard cards, best-first, so a whole batch is
+ * triaged at a glance instead of one ad at a time. Each card fetches its coherence
+ * scorecard from the backend via the store's `coherence` action
  * ({ found, overall_verdict, overall_score, dimensions:{client_fit, component_fidelity,
  * brand_compliance}, flags }) and shows the composite thumbnail, the three dimension
  * scores with pass/flag chips, the flags, the overall verdict badge + score, and the same
@@ -24,23 +28,25 @@
  * first, then by overall_score desc, with unscored (found:false) bundles last; a small
  * rank / among-N indicator rides on each card. The scorecard fetch FAILS CLOSED: any
  * error (or a store with no `coherence` method) renders a clean "not scored yet" card that
- * is still approvable - a scorecard miss never breaks the tab. The single-bundle detail
- * (new ad vs the client's winners, so-what / now-what) stays reachable by expanding a card,
- * and remains the default view when exactly one bundle is under review.
+ * is still approvable - a scorecard miss never breaks the tab. A single visible bundle
+ * renders the detail view (the new ad, its flags and its decision gate) instead of a grid.
+ *
+ * GENERATION-DATE FILTER: discovered bundles are grouped by the date they were generated.
+ * A "Generation" dropdown inside the panel lists the distinct generation dates newest
+ * first and defaults to the most recent, so the tab opens on the latest run. Changing it
+ * re-filters the visible bundles (a date with one bundle shows the detail view, a date
+ * with several shows the ranked grid) without a re-query.
  *
  * VISIBILITY IS DATA-DRIVEN AND LIVE-PATH SAFE - two gates, both fail closed:
- *   1. CONFIG GATE (live-path safety). The module reads its bundles-under-review from
- *      the optional `REVIEW` config block (or an injected store). A dashboard that
- *      carries NO `REVIEW` config - which is every live client growth/creative
- *      dashboard today - short-circuits to a silent no-op: no probe, no network, no nav
- *      link, no panel, ZERO DOM trace. This is what keeps the module STRICTLY ADDITIVE:
- *      an existing dashboard cannot be altered by a module it never configures.
- *   2. DATA PROBE GATE (US-007 AC1). Even with bundles configured, the module first runs
- *      the cheap `winning-historical` existence probe. Only when the client actually has
- *      review data does it inject its "Creative Review" nav section, "Review" nav link
- *      and panel. A client with no review data, or ANY probe error (endpoint down, mart
- *      not built), shows NO tab and leaves zero trace - it fails closed, never a broken
- *      or empty tab.
+ *   1. LIVE-PATH SAFETY. With no `BQ_FUNCTION` endpoint AND no injected store the module
+ *      short-circuits to a silent no-op: no discovery call, no network, no nav link, no
+ *      panel, ZERO DOM trace. This keeps the module STRICTLY ADDITIVE on a host that has
+ *      not wired the backend.
+ *   2. DISCOVERY GATE (US-007 AC1). The module asks `list-bundles` which bundles exist for
+ *      this client. Only when at least one bundle is discovered does it inject its
+ *      "Creative Review" nav section, "Review" nav link and panel. A client with no
+ *      generated bundles, or ANY discovery error (endpoint down, table not built), shows
+ *      NO tab and leaves zero trace - it fails closed, never a broken or empty tab.
  *
  * TAB ACTIVATION: selecting the tab goes through the single generic dispatcher
  * f10ActivateTab() (f10-layout.js), which clears EVERY nav link and EVERY panel before
@@ -48,7 +54,7 @@
  * adding it required editing no existing module and two panels can never show at once.
  *
  * DISPATCH: f10-layout.js calls window.initReview() at the tail of renderLayout() (the
- * same unconditional, probe-decides pattern as initComponents). The module ALSO
+ * same unconditional, discovery-decides pattern as initComponents). The module ALSO
  * self-boots on DOMContentLoaded behind an idempotent guard, so a dashboard pinned to an
  * older f10-layout.js tag still gets the tab. Both paths call the same idempotent
  * initReview().
@@ -63,24 +69,13 @@
  * designer pass in Figma after approval, decided in interview.
  *
  * CONFIG (optional): REVIEW is only defined on the F10-internal review surface; live
- * client dashboards never define it.
+ * client dashboards never define it. The bundle list is auto-discovered, so REVIEW only
+ * carries optional overrides.
  *   const REVIEW = {
  *     CLIENT: 'moshy',          // optional; override the f10 client slug when DATASET
  *                               // does not follow the {client}_marts / {client}_clean convention
  *     ACTOR: 'zac@f10',         // optional; who is recording the decision. Behind the F10 gate
  *                               // the endpoint stamps the authenticated actor, so this is optional.
- *     LIMIT: 5,                 // optional; winners per bundle to request (server caps at 25)
- *     BUNDLES: [                // the generated ads to review, from the operator's run
- *       {
- *         bundle_id: 'brief_moshy_founder_ab12cd',
- *         platform: 'meta',                       // optional; defaults to meta
- *         label: 'Founder story - bold typographic', // optional display label
- *         components: { hook_type: 'Founder story', format_canonical: 'UGC video' },
- *         coherence_flags: ['visual_style held for review'],
- *         held_dimensions: ['visual_style_canonical'],
- *         new_ad: { headline: '...', body: '...' } // optional copy metadata
- *       }
- *     ]
  *   };
  */
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
@@ -95,13 +90,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     var rvLoaded = false;    // bundle data loaded lazily on first activation
     var rvNavLink = null;    // the injected nav-link element (bound once)
     var rvStore = null;      // injectable data store (tests override via setStore)
-    var rvBundles = null;    // injectable bundle list (tests override via setBundles)
+    var rvBundles = null;    // discovered + normalised bundle list (from list-bundles; tests override via setBundles)
+    var rvDate = '';         // selected generation-date filter (defaults to the most recent discovered date)
     var rvFeedback = null;   // injectable feedback client (US-009; tests override via setFeedbackClient)
     var rvResults = [];      // last-loaded per-bundle results, so a decision can re-render in place
     var rvStatus = {};       // per-bundle approval state {state,comment,actor,updated_at}, read back + updated on decide
     var rvBusy = {};         // per-bundle in-flight guard so a double click cannot double-post
     var rvDecErr = {};       // per-bundle last decision error message, surfaced inline (never a silent failure)
-    var rvExpanded = {};     // per-bundle expand state in the ranked grid (winners + comparison detail shown inline)
 
     /* ---- small local helpers ---- */
 
@@ -118,21 +113,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (typeof v === 'object' && v.value !== undefined) v = v.value;
       var n = Number(v);
       return isFinite(n) ? n : null;
-    }
-
-    /* The winner's graded metric, formatted by the policy metric_type the action set
-     * (never chosen here). ROAS clients read the roas value; every other (lead-gen)
-     * client reads CPA. Never invents a number. */
-    function fmtMetric(w) {
-      var type = w && w.metric_type;
-      var v = num(w && w.metric_value);
-      if (type === 'roas') return v == null ? 'n/a' : v.toFixed(2) + 'x ROAS';
-      return v == null ? 'n/a' : '$' + v.toLocaleString(undefined, { maximumFractionDigits: 0 }) + ' CPA';
-    }
-
-    function fmtInt(v) {
-      var n = num(v);
-      return n == null ? '0' : Math.round(n).toLocaleString();
     }
 
     /* A coherence flag / held dimension may be a plain string or a small object
@@ -161,12 +141,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return raw.replace(/[^a-z0-9_]/gi, '');
     }
 
-    /* The bundles-under-review for this client. Tests inject via setBundles; production
-     * reads REVIEW.BUNDLES. An empty list is the live-path-safety short-circuit: with no
-     * bundles there is nothing to review, so the module never probes and never registers. */
+    /* The auto-discovered bundles-under-review for this client, populated from the backend
+     * `list-bundles` action during load (discoverBundles) and normalised into the render
+     * shape below. Tests inject via setBundles. An empty list is the discovery gate: with
+     * no discovered bundles there is nothing to review, so the module never registers. */
     function getBundles() {
-      var list = rvBundles || (Array.isArray(CFG.BUNDLES) ? CFG.BUNDLES : []);
-      return Array.isArray(list) ? list.filter(function (b) { return b && (b.bundle_id || b.bundleId); }) : [];
+      var list = Array.isArray(rvBundles) ? rvBundles : [];
+      return list.filter(function (b) { return b && (b.bundle_id || b.bundleId); });
     }
 
     function bundleId(b) {
@@ -176,13 +157,58 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return (b && b.platform === 'tiktok') ? 'tiktok' : 'meta';
     }
 
+    /* The generation date a bundle belongs to (the list-bundles `date`, an ISO
+     * 'YYYY-MM-DD' string). Missing dates normalise to '' so they group together. */
+    function bundleDate(b) {
+      return (b && b.date != null && b.date !== '') ? String(b.date) : '';
+    }
+
+    /* Normalise one discovered bundle into the shape the render path expects. Backend
+     * entries carry { bundle_id, platform, date, generated_at }; injected test bundles may
+     * carry the fuller config shape (label, components, coherence_flags, new_ad). All
+     * original fields are preserved; bundle_id / platform / date are always present. A
+     * bundle with no usable id is dropped (returns null). */
+    function normalizeDiscovered(b) {
+      if (!b || typeof b !== 'object') return null;
+      var id = b.bundle_id || b.bundleId;
+      if (!id) return null;
+      var out = {};
+      for (var k in b) { if (Object.prototype.hasOwnProperty.call(b, k)) out[k] = b[k]; }
+      out.bundle_id = String(id);
+      out.platform = (b.platform === 'tiktok') ? 'tiktok' : 'meta';
+      out.date = (b.date != null && b.date !== '') ? String(b.date)
+        : (b.generated_date != null && b.generated_date !== '' ? String(b.generated_date)
+          : (b.generated_at != null && b.generated_at !== '' ? String(b.generated_at).slice(0, 10) : ''));
+      return out;
+    }
+
+    /* The distinct generation dates across the discovered bundles, newest first. ISO
+     * 'YYYY-MM-DD' strings sort lexicographically in chronological order, so a descending
+     * string sort puts the most recent date first; bundles with no date ('') sort last. */
+    function distinctDates() {
+      var list = getBundles();
+      var seen = {};
+      var out = [];
+      for (var i = 0; i < list.length; i++) {
+        var d = bundleDate(list[i]);
+        if (!Object.prototype.hasOwnProperty.call(seen, d)) { seen[d] = 1; out.push(d); }
+      }
+      out.sort(function (a, b) { return a < b ? 1 : (a > b ? -1 : 0); });
+      return out;
+    }
+
+    /* The loaded per-bundle results whose bundle matches the selected generation date. */
+    function filteredResults(results) {
+      var list = Array.isArray(results) ? results : [];
+      return list.filter(function (r) { return bundleDate(r && r.bundle) === rvDate; });
+    }
+
     /* ---- data store (injectable; default posts to the shared bq function) ---- */
 
     /* The default store posts { action, ... } to BQ_FUNCTION, mirroring runQuery's
      * fetch convention, and fails closed on a non-ok response. Overridable for tests
-     * and for a future backend wiring via setStore. Four reads:
-     *   probe(client)                     -> boolean  (winning-historical { probe:true })
-     *   winners(client, bundle)           -> payload  (winning-historical join, US-006)
+     * and for a future backend wiring via setStore. Three reads:
+     *   listBundles(client)               -> { bundles:[...] } (list-bundles discovery)
      *   preview(client, bundleId, plat)   -> { url }  (generated-preview, US-005)
      *   coherence(client, bundleId, plat) -> scorecard (coherence action, roadmap #5)
      *
@@ -207,18 +233,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return res.json();
       }
       return {
-        async probe(client) {
-          var r = await call({ action: 'winning-historical', client: client, probe: true });
-          return !!(r && r.exists);
-        },
-        async winners(client, bundle) {
-          return call({
-            action: 'winning-historical',
-            client: client,
-            bundle: bundle,
-            newAd: (bundle && bundle.new_ad) || null,
-            limit: CFG.LIMIT || 5,
-          });
+        async listBundles(client) {
+          return call({ action: 'list-bundles', client: client });
         },
         async preview(client, id, platform) {
           return call({ action: 'generated-preview', client: client, bundleId: id, platform: platform });
@@ -400,38 +416,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '</div>';
     }
 
-    /* One winning historical ad: its signed preview image (or a click-through link when
-     * the asset was never fetched), name, policy metric, spend and conversions. */
-    function winnerHtml(w) {
-      var img;
-      if (w.image_url) {
-        img = '<img class="rev-img" src="' + esc(w.image_url) + '" alt="Winning ad preview" loading="lazy" />';
-      } else if (w.creative_link) {
-        img = '<a class="rev-img rev-img-link" href="' + esc(w.creative_link) + '" target="_blank" rel="noopener">View on Meta</a>';
-      } else {
-        img = '<div class="rev-img rev-img-empty">No preview</div>';
-      }
-      var name = w.ad_name != null && w.ad_name !== '' ? w.ad_name : String(w.ad_id || '');
-      return '<div class="rev-winner">'
-        + img
-        + '<div class="rev-winner-name" title="' + esc(name) + '">' + esc(name) + '</div>'
-        + '<div class="rev-metric">' + esc(fmtMetric(w)) + '</div>'
-        + '<div class="rev-sub">' + esc(fmtInt(w.conversions)) + ' conv'
-        + (num(w.spend) != null ? ' &middot; $' + fmtInt(w.spend) + ' spend' : '') + '</div>'
-        + '</div>';
-    }
-
-    /* The insight-ladder L4/L5 read the US-006 action already composed: so-what (the
-     * concept reuses proven winners) and now-what (unproven dimensions to hold and test).
-     * Rendered verbatim off the action's comparison block so the UI never re-derives it. */
-    function comparisonHtml(cmp) {
-      if (!cmp) return '';
-      var so = cmp.so_what ? '<div class="rev-sowhat"><strong>So what:</strong> ' + esc(cmp.so_what) + '</div>' : '';
-      var now = cmp.now_what ? '<div class="rev-nowhat"><strong>Now what:</strong> ' + esc(cmp.now_what) + '</div>' : '';
-      if (!so && !now) return '';
-      return '<div class="rev-compare">' + so + now + '</div>';
-    }
-
     /* The per-bundle approve/decline gate (US-009). A coarse concept-level decision: approve
      * sets the bundle's approved flag (recorded via the US-008 write path) or decline records
      * a reason and marks the ad not-servable. The current state (approved / declined / pending)
@@ -479,18 +463,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '</div>';
     }
 
-    /* The shared new-ad-vs-winners detail body (the US-006 comparison surface): the coherence
-     * flags / held dimensions row, the new ad beside the client's winners, and the
-     * so-what / now-what read. Reused by the single-bundle detail view AND by an expanded
-     * grid card, so the winners comparison is never lost. Coherence flags come from BOTH the
-     * bundle config and the action's echoed comparison so a held dimension shows even if only
-     * one side carried it. */
-    function detailBodyHtml(bundle, payload, previewUrl, previewReason) {
-      var winners = (payload && Array.isArray(payload.winners)) ? payload.winners : [];
-      var cmp = payload && payload.comparison;
-
-      var cohFlags = (bundle && bundle.coherence_flags) || (cmp && cmp.coherence_flags) || [];
-      var held = (bundle && bundle.held_dimensions) || (cmp && cmp.held_dimensions) || [];
+    /* The shared new-ad detail body: the coherence flags / held dimensions row and the new
+     * generated ad (its preview, components and copy). Coherence flags and held dimensions
+     * come from the bundle itself. */
+    function detailBodyHtml(bundle, previewUrl, previewReason) {
+      var cohFlags = (bundle && bundle.coherence_flags) || [];
+      var held = (bundle && bundle.held_dimensions) || [];
       var flagsRow = '<div class="rev-flags">'
         + '<span class="rev-flags-label">Coherence flags:</span> '
         + flagBadges(cohFlags, 'rev-flag', 'none')
@@ -498,32 +476,22 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + flagBadges(held, 'rev-held', 'none')
         + '</div>';
 
-      var winnersInner = winners.length
-        ? winners.map(winnerHtml).join('')
-        : '<div class="rev-muted">No winning historical ads for this client yet.</div>';
-
       return flagsRow
         + '<div class="rev-grid">'
         + newAdHtml(bundle, previewUrl, previewReason)
-        + '<div class="rev-winners"><div class="rev-col-head">Client winners</div>'
-        + '<div class="rev-winners-list">' + winnersInner + '</div></div>'
-        + '</div>'
-        + comparisonHtml(cmp);
+        + '</div>';
     }
 
     /* One bundle-under-review block for the single-bundle detail view: the head + the shared
      * detail body + the approve/decline gate. */
-    function bundleHtml(bundle, payload, previewUrl, previewReason) {
+    function bundleHtml(bundle, previewUrl, previewReason) {
       var id = bundleId(bundle);
       var label = (bundle && bundle.label) ? bundle.label : id;
-      var metricNote = (payload && payload.metric)
-        ? '<span class="rev-metric-note">Metric: ' + esc(String(payload.metric).toUpperCase()) + '</span>'
-        : '';
 
       return '<div class="rev-bundle" data-bundle-id="' + esc(id) + '">'
         + '<div class="rev-bundle-head"><span class="rev-bundle-title">' + esc(label) + '</span>'
-        + '<span class="rev-bundle-id">' + esc(id) + '</span>' + metricNote + '</div>'
-        + detailBodyHtml(bundle, payload, previewUrl, previewReason)
+        + '<span class="rev-bundle-id">' + esc(id) + '</span></div>'
+        + detailBodyHtml(bundle, previewUrl, previewReason)
         + decisionHtml(bundle)
         + '</div>';
     }
@@ -594,21 +562,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '</div>';
     }
 
-    /* The expandable detail inside a grid card: the US-006 winners comparison, or the
-     * per-bundle load error when the winners fetch failed (the scorecard card still stands). */
-    function cardDetailHtml(r) {
-      if (r && r.error) {
-        return '<div class="rev-err">Could not load the winners comparison: ' + esc(r.error) + '</div>';
-      }
-      var metricNote = (r && r.payload && r.payload.metric)
-        ? '<div class="rev-metric-note rev-card-metric">Metric: ' + esc(String(r.payload.metric).toUpperCase()) + '</div>'
-        : '';
-      return metricNote + detailBodyHtml(r.bundle, r.payload, r.previewUrl, r.previewReason);
-    }
-
     /* One ranked grid card: rank / among-N indicator, composite thumbnail, label, the
-     * coherence scorecard, the approve/decline gate + persisted state, and an expand control
-     * that reveals the winners comparison inline (so US-006 is never lost). */
+     * coherence scorecard, and the approve/decline gate + persisted state. */
     function cardHtml(r, rank, total) {
       var bundle = r.bundle;
       var id = bundleId(bundle);
@@ -624,12 +579,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         : '<div class="rev-img rev-card-thumb rev-img-empty">Preview not available'
           + (r.previewReason ? ' <span class="rev-muted">(' + esc(r.previewReason) + ')</span>' : '') + '</div>';
 
-      var expanded = !!rvExpanded[id];
-      var expandBtn = '<button type="button" class="rev-btn rev-expand" data-rev-action="expand" data-bundle-id="' + esc(id) + '"'
-        + ' aria-expanded="' + (expanded ? 'true' : 'false') + '">'
-        + (expanded ? 'Hide winners &amp; comparison' : 'View winners &amp; comparison') + '</button>';
-      var detail = expanded ? '<div class="rev-card-detail">' + cardDetailHtml(r) + '</div>' : '';
-
       return '<div class="rev-card' + (scored ? '' : ' rev-card-unscored') + '" data-bundle-id="' + esc(id) + '">'
         + '<div class="rev-card-head">' + rankBadge
         + '<span class="rev-card-title" title="' + esc(label) + '">' + esc(label) + '</span>'
@@ -638,8 +587,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '<div class="rev-card-thumb-wrap">' + thumb + '</div>'
         + scorecardHtml(r.coherence)
         + decisionHtml(bundle)
-        + '<div class="rev-card-foot">' + expandBtn + '</div>'
-        + detail
         + '</div>';
     }
 
@@ -655,16 +602,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return '<div class="rev-cards">' + cards.join('') + '</div>';
     }
 
-    /* The single-bundle detail view (the original stacked layout): each bundle's new ad
-     * beside the client's winners, the comparison, and the decision gate. */
+    /* The single-bundle detail view (the original stacked layout): each bundle's new ad,
+     * its flags and the decision gate. */
     function detailHtml(results) {
       return results.map(function (r) {
-        if (r.error) {
-          return '<div class="rev-bundle rev-bundle-error"><div class="rev-bundle-head">'
-            + '<span class="rev-bundle-title">' + esc(r.label || bundleId(r.bundle)) + '</span></div>'
-            + '<div class="rev-err">Could not load this bundle: ' + esc(r.error) + '</div></div>';
-        }
-        return bundleHtml(r.bundle, r.payload, r.previewUrl, r.previewReason);
+        return bundleHtml(r.bundle, r.previewUrl, r.previewReason);
       }).join('');
     }
 
@@ -677,18 +619,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (el) el.style.display = 'none';
     }
 
-    /* Render the review body. With MORE THAN ONE bundle under review the default view is the
-     * ranked scorecard GRID (roadmap #5); with a single bundle it is the original detail view.
-     * A single bundle's read failure degrades to a per-bundle error card (detail) or an
-     * unscored card whose expanded detail carries the error (grid), never a blank panel: the
-     * reviewer still sees the rest. */
+    /* Render the review body for the CURRENTLY FILTERED set (the bundles matching the
+     * selected generation date). With MORE THAN ONE visible bundle the default view is the
+     * ranked scorecard GRID (roadmap #5); with a single visible bundle it is the detail
+     * view. Never a blank panel: an empty filtered set renders a small note. */
     function renderBundles(results) {
       rvResults = Array.isArray(results) ? results : [];
+      var visible = filteredResults(rvResults);
       var body = document.getElementById('rev-body');
       if (body) {
-        body.innerHTML = (getBundles().length > 1)
-          ? gridHtml(rvResults)
-          : detailHtml(rvResults);
+        body.innerHTML = visible.length
+          ? ((visible.length > 1) ? gridHtml(visible) : detailHtml(visible))
+          : '<div class="rev-muted">No bundles for this generation date.</div>';
       }
       hideEl('rev-loading');
       hideEl('rev-error');
@@ -710,14 +652,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
     }
 
-    /* For one bundle, fetch the winners join (US-006) and the new ad's preview image
-     * (US-005) in parallel. Each side is independently caught: a preview miss still shows
-     * the winners, and a winners failure marks just this bundle as errored. */
+    /* For one bundle, fetch the new ad's preview image (US-005) and its coherence scorecard
+     * (roadmap #5) in parallel, and read back the persisted decision. Each side is
+     * independently caught, so a preview or scorecard miss still leaves a full card
+     * standing; a scorecard miss resolves to an unscored card. */
     async function loadBundle(bundle) {
       var id = bundleId(bundle);
       var label = (bundle && bundle.label) ? bundle.label : id;
       var st = store();
-      var payloadP = st.winners(rvClient, bundle);
       var previewP = st.preview(rvClient, id, bundlePlatform(bundle)).catch(function () { return null; });
       // The coherence scorecard for the ranked grid (roadmap #5), fetched in parallel and
       // FAIL-CLOSED: fetchCoherence never rejects, so a scorecard miss resolves to an unscored
@@ -732,24 +674,30 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         ? { state: normState(persisted.state), comment: persisted.comment || '', actor: persisted.actor || '', updated_at: persisted.updated_at || '' }
         : { state: 'pending', comment: '', actor: '', updated_at: '' };
       rvDecErr[id] = '';
-      // Preview and coherence resolve independently of the winners join, so a winners failure
-      // still leaves a full scorecard card (thumbnail + score) standing in the grid; only the
-      // expandable winners comparison carries the per-bundle error.
       var preview = await previewP;
       var coherence = await coherenceP;
-      var base = {
+      return {
         bundle: bundle,
         label: label,
         previewUrl: (preview && preview.url) || null,
         previewReason: (preview && !preview.url) ? (preview.reason || '') : '',
         coherence: coherence,
       };
-      try {
-        base.payload = await payloadP;
-      } catch (err) {
-        base.error = (err && err.message) ? err.message : String(err);
+    }
+
+    /* Discover the client's generated bundles from the store's list-bundles action and
+     * normalise them into the render shape. A store with no listBundles method leaves any
+     * already-injected list in place (setBundles). Populates rvBundles. */
+    async function discoverBundles() {
+      var st = store();
+      if (st && typeof st.listBundles === 'function') {
+        var r = await st.listBundles(rvClient);
+        var raw = (r && Array.isArray(r.bundles)) ? r.bundles : (Array.isArray(r) ? r : []);
+        rvBundles = raw.map(normalizeDiscovered).filter(function (b) { return !!b; });
+      } else if (!Array.isArray(rvBundles)) {
+        rvBundles = [];
       }
-      return base;
+      return getBundles();
     }
 
     async function loadReview() {
@@ -757,6 +705,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       hideEl('rev-body');
       hideEl('rev-error');
       try {
+        if (!Array.isArray(rvBundles)) await discoverBundles();
+        initDateFilter();
         var bundles = getBundles();
         var results = await Promise.all(bundles.map(loadBundle));
         renderBundles(results);
@@ -817,19 +767,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return rvStatus[id];
     }
 
-    /* Toggle a grid card's expanded winners-comparison detail. Re-renders from the cached
-     * results so the winners comparison (US-006) stays reachable from the ranked grid. */
-    function toggleExpand(id) {
-      id = String(id || '');
-      if (!id) return;
-      rvExpanded[id] = !rvExpanded[id];
-      rerender();
-    }
-
-    /* Delegated click handling for the approve/decline controls AND the grid expand control.
-     * Bound ONCE on the stable rev-body container (survives re-renders), so no per-render
-     * rebinding. Walks up from the click target to the nearest [data-rev-action] control and
-     * reads the sibling comment. */
+    /* Delegated click handling for the approve/decline controls. Bound ONCE on the stable
+     * rev-body container (survives re-renders), so no per-render rebinding. Walks up from
+     * the click target to the nearest [data-rev-action] control and reads the sibling
+     * comment. */
     function onDecisionClick(e) {
       var el = e && (e.target || e.srcElement);
       var action = null, id = null;
@@ -847,9 +788,43 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       } else if (action === 'decline') {
         var box = document.getElementById('rev-comment-' + id);
         submitDecision(id, 'declined', box ? box.value : null);
-      } else if (action === 'expand') {
-        toggleExpand(id);
       }
+    }
+
+    /* ---- generation-date filter ---- */
+
+    /* Populate the generation dropdown with the distinct discovered dates (newest first)
+     * and default the selection to the most recent, then bind the change listener. Mirrors
+     * f10-weekly's initGroupFilters pattern. Called once during load, after discovery, so
+     * the select DOM element (built in panelMarkup) already exists. Defensive for the
+     * minimal DOM stubs used in tests: it still sets the default rvDate, and only touches
+     * the select when createElement / appendChild are available. */
+    function initDateFilter() {
+      var dates = distinctDates();
+      if (!rvDate && dates.length) rvDate = dates[0];   // default to the most recent date
+      var sel = document.getElementById('rev-date');
+      if (!sel || typeof document.createElement !== 'function' || typeof sel.appendChild !== 'function') return;
+      sel.innerHTML = '';
+      dates.forEach(function (d) {
+        var o = document.createElement('option');
+        o.value = d;
+        o.textContent = d || 'All';
+        if (d === rvDate) o.selected = true;
+        sel.appendChild(o);
+      });
+      if (sel.addEventListener) sel.addEventListener('change', onDateChange);
+    }
+
+    /* The generation-date selection changed: re-filter the visible bundles and re-render. */
+    function onDateChange(e) {
+      var v = (e && e.target && e.target.value != null) ? e.target.value : rvDate;
+      setDate(v);
+    }
+
+    function setDate(d) {
+      rvDate = String(d == null ? '' : d);
+      if (window.F10A) F10A.track('filter_changed', { filter: 'generation_date', value: rvDate });
+      rerender();
     }
 
     /* ---- tab activation (via the single generic dispatcher) ---- */
@@ -914,15 +889,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '#panel-review .rev-v{font-weight:600;text-align:right;}'
         + '#panel-review .rev-copy{margin-top:10px;font-size:12px;color:#444;}'
         + '#panel-review .rev-copy-line{margin:2px 0;}'
-        + '#panel-review .rev-winners-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:12px;}'
-        + '#panel-review .rev-winner{font-size:12px;}'
-        + '#panel-review .rev-winner .rev-img{max-width:100%;min-height:90px;}'
-        + '#panel-review .rev-winner-name{font-weight:600;margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}'
-        + '#panel-review .rev-metric{color:#1c6b34;font-weight:700;margin-top:2px;}'
-        + '#panel-review .rev-sub{color:#777;}'
-        + '#panel-review .rev-compare{margin-top:14px;background:rgba(0,0,0,0.03);border-left:3px solid var(--brand,#7a1f2b);'
-        + 'padding:10px 14px;border-radius:4px;font-size:13px;line-height:1.5;}'
-        + '#panel-review .rev-nowhat{margin-top:6px;}'
         + '#panel-review .rev-muted{color:#999;}'
         + '#panel-review .rev-bundle-error{border-color:#e3a9b6;}'
         + '#panel-review .rev-err,#panel-review .rev-error-detail{color:#a3243c;font-size:12px;margin-top:6px;word-break:break-word;}'
@@ -976,20 +942,24 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '#panel-review .rev-scorecard-flags{font-size:12px;color:#8a5a00;margin:0;padding-left:18px;}'
         + '#panel-review .rev-scorecard-flags-none{padding-left:0;color:#999;}'
         + '#panel-review .rev-scorecard-note{font-size:12px;margin-top:6px;}'
-        + '#panel-review .rev-card-foot{margin-top:auto;padding-top:10px;}'
-        + '#panel-review .rev-expand{width:100%;}'
-        + '#panel-review .rev-card-detail{margin-top:12px;padding-top:12px;border-top:1px solid rgba(0,0,0,0.08);}'
-        + '#panel-review .rev-card-metric{font-size:12px;color:#555;margin:0 0 8px;}'
+        // ---- generation-date filter ----
+        + '#panel-review .rev-controls{display:flex;flex-wrap:wrap;gap:14px;margin:0 0 16px;}'
+        + '#panel-review .rev-controls .ctrl{display:flex;flex-direction:column;gap:4px;}'
+        + '#panel-review .rev-controls label{font-size:11px;text-transform:uppercase;letter-spacing:0.04em;color:#777;font-weight:700;}'
+        + '#panel-review .rev-controls select{font:inherit;font-size:13px;padding:6px 10px;border:1px solid rgba(0,0,0,0.15);border-radius:6px;background:#fff;}'
         + '</style>'
-        + '<div class="rev-insight"><strong>Creative Review:</strong> a batch of generated ads is triaged as a '
-        + 'ranked grid of scorecards, best-first - each card carries its coherence scorecard (an overall pass / flag '
-        + 'verdict and score, plus client-fit, component-fidelity and brand-compliance dimensions), so the strongest '
-        + 'concepts surface at a glance and unscored bundles fall to the end. Expand any card to see the ad next to '
-        + 'this client\'s winning historical ads and their metric, with the so-what / now-what read that compares the '
-        + 'concept to what already works. '
+        + '<div class="rev-insight"><strong>Creative Review:</strong> the generated ads for this client are '
+        + 'auto-discovered and triaged as a ranked grid of scorecards, best-first - each card carries its coherence '
+        + 'scorecard (an overall pass / flag verdict and score, plus client-fit, component-fidelity and '
+        + 'brand-compliance dimensions), so the strongest concepts surface at a glance and unscored bundles fall to '
+        + 'the end. Use the Generation dropdown to switch between generation runs; it opens on the most recent. '
         + 'Each ad has a coarse approve / decline gate: approve marks the bundle servable, decline records a reason '
         + 'and marks it not-servable. Refinement then happens with the designer in Figma after approval - there is no '
         + 'regenerate or re-prompt loop here.</div>'
+        + '<div class="rev-controls">'
+        + '<div class="ctrl"><label for="rev-date">Generation</label>'
+        + '<select id="rev-date"></select></div>'
+        + '</div>'
         + '<div id="rev-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>'
         + '<div id="rev-error" class="rev-error" style="display:none;"></div>'
         + '<div id="rev-body" style="display:none;"></div>'
@@ -997,7 +967,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /* Inject the nav section + link and the panel, then wire activation through the
-     * generic dispatcher. Only ever called once per boot, after a passing probe. */
+     * generic dispatcher. Only ever called once per boot, after discovery finds bundles. */
     function registerTab() {
       var nav = document.querySelector('#sidebar nav');
       var content = document.getElementById('content');
@@ -1025,26 +995,26 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     /* ---- boot ----
      * Called by the one-line addition to the tail of renderLayout() in f10-layout.js and
      * (idempotently) on DOMContentLoaded. Two gates, both fail closed:
-     *   - live-path safety: no client, no BQ endpoint, or NO configured bundles => silent
-     *     no-op, zero DOM trace, no network (this is what protects live dashboards);
-     *   - data probe: only when the client actually has review data is the tab injected;
-     *     any probe error fails closed (no tab, no empty state). */
+     *   - live-path safety: no client, or NO BQ endpoint AND no injected store => silent
+     *     no-op, zero DOM trace, no network (this is what protects a host with no backend);
+     *   - discovery: the module asks list-bundles which bundles exist for this client and
+     *     only injects the tab when at least one is discovered; a discovery error fails
+     *     closed (no tab, no empty state). */
     async function initReview() {
       if (rvBooted) return;
       rvBooted = true;
       rvClient = clientKey();
       if (!rvClient) return;                       // no client -> silent no-op
       if (typeof BQ_FUNCTION === 'undefined' || !BQ_FUNCTION) {
-        if (!rvStore) return;                      // no endpoint and no injected store -> no-op
+        if (!rvStore) return;                      // no endpoint and no injected store -> no-op, zero trace
       }
-      if (!getBundles().length) return;            // no bundles to review -> live-path-safe no-op (no probe)
       try {
-        var ok = await store().probe(rvClient);
-        if (ok === true) registerTab();
+        var list = await discoverBundles();
+        if (list && list.length >= 1) registerTab();
       } catch (err) {
         // Fail closed: log once, no tab, no empty state.
         if (window.console && console.warn) {
-          console.warn('Creative Review visibility probe error:', err && err.message ? err.message : err);
+          console.warn('Creative Review discovery error:', err && err.message ? err.message : err);
         }
       }
     }
@@ -1066,7 +1036,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     })();
 
     /* Test surface (US-007): expose the internals so the acceptance test can exercise
-     * registration, probe gating, activation and render without a full dashboard boot.
+     * discovery, registration, activation and render without a full dashboard boot.
      * Production paths do not read these. */
     window.f10Review = {
       initReview: initReview,
@@ -1075,31 +1045,29 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       deactivateOnOtherNav: deactivateOnOtherNav,
       load: loadReview,
       loadBundle: loadBundle,
+      discoverBundles: discoverBundles,
       renderBundles: renderBundles,
       renderError: renderError,
       bundleHtml: bundleHtml,
       newAdHtml: newAdHtml,
-      winnerHtml: winnerHtml,
-      comparisonHtml: comparisonHtml,
       panelMarkup: panelMarkup,
       navLinkHtml: navLinkHtml,
       clientKey: clientKey,
       getBundles: getBundles,
-      fmtMetric: fmtMetric,
       flagText: flagText,
       // Scored batch review / ranked grid (roadmap #5)
       scorecardHtml: scorecardHtml,
       cardHtml: cardHtml,
       gridHtml: gridHtml,
       detailHtml: detailHtml,
-      detailBodyHtml: detailBodyHtml,
       sortForGrid: sortForGrid,
       isScored: isScored,
       fetchCoherence: fetchCoherence,
-      toggleExpand: toggleExpand,
-      expand: function (id) { rvExpanded[String(id || '')] = true; rerender(); },
-      collapse: function (id) { rvExpanded[String(id || '')] = false; rerender(); },
-      isExpanded: function (id) { return !!rvExpanded[String(id || '')]; },
+      // Generation-date filter
+      dates: distinctDates,
+      getDate: function () { return rvDate; },
+      setDate: setDate,
+      onDateChange: onDateChange,
       // US-009 approve/decline surface
       decisionHtml: decisionHtml,
       submitDecision: submitDecision,
@@ -1110,13 +1078,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       isBusy: function (id) { return !!rvBusy[id]; },
       decisionError: function (id) { return rvDecErr[id] || ''; },
       setStore: function (s) { rvStore = s; },
-      setBundles: function (b) { rvBundles = b; },
+      setBundles: function (b) { rvBundles = Array.isArray(b) ? b.map(normalizeDiscovered).filter(function (x) { return !!x; }) : b; },
       setFeedbackClient: function (fc) { rvFeedback = fc; },
       setClient: function (c) { rvClient = c; },
       getClient: function () { return rvClient; },
       isLoaded: function () { return rvLoaded; },
       _resetBooted: function () { rvBooted = false; rvLoaded = false; },
-      _resetState: function () { rvStatus = {}; rvBusy = {}; rvDecErr = {}; rvResults = []; rvExpanded = {}; },
+      _resetState: function () { rvStatus = {}; rvBusy = {}; rvDecErr = {}; rvResults = []; rvDate = ''; },
     };
   })();
 }

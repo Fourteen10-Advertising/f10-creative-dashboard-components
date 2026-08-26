@@ -17,7 +17,7 @@ A dashboard is now just a config block plus script tags: the markup, styling, an
 | `f10-competitors.js` | Competitor Ad Library tab (probe-driven: appears automatically when the client has competitor rows in `all_clients_adlib`): groups a client's tracked competitor Meta ads by competitor in the F10 card layout, with Status / Timeframe / Competitor filters, per-competitor pagination (20/page), and a metadata + on-demand creatives split that fetches only the visible page's signed media. Reuses `f10MediaMarkup` from `f10-preview.js` |
 | `f10-components.js` | Component Scale tab (probe-driven: appears automatically when the client has a `{client}_marts.component_performance` mart): grades the five creative components (hook, format, CTA, message angle, visual style) against the client's own baseline, with lift, evidence count, confidence tier, the verbatim descriptive caveat, and a co-occurrence mark; plus the cross-client whitespace lane as a separate, clearly-labelled hypotheses section. Adds `f10ActivateTab()` (in `f10-layout.js`) as the single generic tab dispatcher (see [Component Scale](#component-scale)) |
 | `f10-brief-editor.js` | Brief Editor tab (probe-driven: appears only when the client has a saved brief revision to edit): a canonical-constrained editor for the F10 internal review app. Loads a brief revision and saves a NEW one via the US-003 persistence contract (GCS `brief-revisions/{client}/{id}.json` + a `brief_revisions` BigQuery row). The five creative axes (visual style, hook, message angle, CTA, format) are dropdowns locked to the canonical vocabularies, so a non-canonical value can never be saved; copy is free text. Dual-mode: the same file exports the persistence core behind an injectable writer seam for the brief backend (see [Brief editor](#brief-editor)) |
-| `f10-review.js` | Creative Review tab (probe-gated AND live-path safe: appears only on the F10-internal review surface that carries a `REVIEW` config AND has review data). When more than one bundle is under review the default view is a **ranked grid of scorecards**, best-first (roadmap #5): each card fetches its coherence scorecard from the `coherence` action and shows the composite thumbnail, the three dimension scores (client-fit / component-fidelity / brand-compliance) with pass/flag chips, the flags, and an overall verdict badge + score. Expanding a card reveals that ad next to the client's winning historical ads and their policy metric (from the US-006 `winning-historical` action), the new ad's own preview image (from the US-005 `generated-preview` action), and the so-what / now-what read. Each ad also has a coarse **approve / decline** gate (US-009) that records the decision via the US-008 feedback write path and shows the persisted approved / declined / pending state on reload. Strictly additive: a dashboard with no `REVIEW` config never probes and injects nothing (see [Creative review](#creative-review)) |
+| `f10-review.js` | Creative Review tab (discovery-gated AND live-path safe: on boot it asks the backend `list-bundles` action which generated bundles exist for this client and registers the tab only when at least one is discovered). Bundles are **auto-discovered**, not configured. A **Generation** date dropdown groups the discovered bundles by generation date and defaults to the most recent; when a date has more than one bundle the view is a **ranked grid of scorecards**, best-first (roadmap #5): each card shows the composite thumbnail (from the US-005 `generated-preview` action), the ad's coherence scorecard from the `coherence` action (an overall verdict badge + score, plus client-fit / component-fidelity / brand-compliance dimensions with pass/flag chips) and its flags. A date with a single bundle shows the detail view (the ad, its copy, its coherence flags). Each ad also has a coarse **approve / decline** gate (US-009) that records the decision via the US-008 feedback write path and shows the persisted approved / declined / pending state on reload. Strictly additive: with no `BQ_FUNCTION` endpoint and no injected store it is a silent no-op (no network, no tab, zero DOM); a dashboard that has `BQ_FUNCTION` issues one `list-bundles` call on boot and shows the tab only if the client has generated bundles (see [Creative review](#creative-review)) |
 
 ## How to use in a dashboard
 
@@ -159,6 +159,23 @@ Note: this action follows the productization dataset convention (`creative_repor
 in `{client}_reporting`); the live growth dashboards currently keep `creative_reporting`
 inside `{client}_marts`, so reconcile the dataset location at live verification.
 
+### List generated bundles for a client (`list-bundles` action)
+
+The Creative Review tab is no longer driven by a hardcoded config list: it asks this
+action which generated bundles exist for the client, newest first, and reviews those.
+`{ action:'list-bundles', client }` reads the shared bundle manifest
+`mcc-poc-477801.all_clients.creative_manifest` (one row per generated component),
+groups it to one row per `brief_id` (the bundle id), and returns
+`{ client, bundles:[ { bundle_id, platform, date:'YYYY-MM-DD', generated_at, n_fetched, n_components } ] }`
+ordered newest-first by `MAX(fetched_at)`.
+
+Scope is `WHERE client=@client AND brief_id IS NOT NULL`, with the client passed as a
+BOUND query parameter (no injection surface), and the read carries the same
+`maximumBytesBilled` / `jobTimeoutMs` guardrails as every other action. It FAILS
+CLOSED: a client whose manifest table does not exist yet returns a clean empty
+`{ bundles: [] }` (200, never a 500), so the tab simply hides. Regression coverage
+lives in `test/review-list-bundles.test.js`.
+
 ## Config reference
 
 | Global | Required | Purpose |
@@ -173,7 +190,7 @@ inside `{client}_marts`, so reconcile the dataset location at live verification.
 | `CREATIVE_SCORE_CONFIG` | no | Creative Score weights, maturity target, per-rate quality ceilings and band cutoffs (see [Creative Score column](#creative-score-column)) |
 | `COMPETITORS` | no | Optional Competitor Ad Library overrides — the tab itself is automatic (see below) |
 | `COMPONENTS` | no | Optional Component Scale overrides; the tab itself is automatic (see [Component Scale](#component-scale)) |
-| `REVIEW` | no | F10-internal Creative Review surface only: the bundles-under-review plus optional overrides. **Absent on every live client dashboard**, which is what keeps the review tab strictly additive (see [Creative review](#creative-review)) |
+| `REVIEW` | no | F10-internal Creative Review surface only. The bundle list is now **auto-discovered** via the `list-bundles` action, so this block no longer carries `BUNDLES` or `LIMIT` and is effectively optional/empty; it holds only optional overrides (`CLIENT` slug override, `ACTOR`, `FEEDBACK_FUNCTION`). Live client dashboards never define it (see [Creative review](#creative-review)) |
 
 ## Competitor Ad Library
 
@@ -293,52 +310,43 @@ const BRIEF_EDITOR = {
 
 ## Creative review
 
-`f10-review.js` adds a **Creative Review** tab for the F10-internal review surface. A batch of generated ads is triaged as a **ranked grid of scorecard cards, best-first** (roadmap #5), so a reviewer sees the strongest concepts at a glance instead of reading a static report or scrolling one ad at a time. Each card carries the ad's **coherence scorecard** and its approve / decline gate; expanding a card drops down the full single-bundle detail - the new ad next to the client's winning historical ads and their metric, the bundle's coherence flags and held dimensions, and the so-what / now-what read that compares the concept to what already works. With a single bundle under review the detail view is shown directly (no grid).
+`f10-review.js` adds a **Creative Review** tab for the F10-internal review surface. The generated ads for a client are **auto-discovered** (see the gates below), and a batch is triaged as a **ranked grid of scorecard cards, best-first** (roadmap #5), so a reviewer sees the strongest concepts at a glance instead of reading a static report or scrolling one ad at a time. Each card carries the generated ad's composite preview, its **coherence scorecard** and flags, and its approve / decline gate. A **Generation** date dropdown groups the discovered bundles by the date they were generated and defaults to the most recent, so the tab opens on the latest run; the grid-vs-detail view then renders only the selected date's bundles (a date with several bundles shows the grid, a date with one shows the single-bundle detail view directly).
 
-**Data sources (all already merged).** Each card's coherence scorecard comes from the `coherence` action (see [Scored batch review — ranked scorecard grid](#scored-batch-review--ranked-scorecard-grid-roadmap-5) below for the request/response contract). Winners, metrics and the comparison come from the US-006 [`winning-historical`](#new-ad-vs-winning-historical-join-winning-historical-action) action (strictly per-client: only `{client}_marts` and `{client}_reporting` are read, and the metric follows the revenue-gating policy - CPA default, ROAS only for PharmX and FastCover). The new ad's composed preview image comes from the US-005 [`generated-preview`](#generated-ad-preview-resolver-generated-preview-action) action. A winner with no fetched asset falls back to its click-through link, and a missing new-ad composite falls back to a labelled placeholder, so nothing renders as a broken image.
+**Data sources (all already merged).** The bundle list is discovered from the [`list-bundles`](#list-generated-bundles-for-a-client-list-bundles-action) action (newest-first, grouped by `brief_id` over the shared `creative_manifest`). Each card's coherence scorecard comes from the `coherence` action (see [Scored batch review - ranked scorecard grid](#scored-batch-review--ranked-scorecard-grid-roadmap-5) below for the request/response contract). The new ad's composed preview image comes from the US-005 [`generated-preview`](#generated-ad-preview-resolver-generated-preview-action) action. A missing new-ad composite falls back to a labelled placeholder, so nothing renders as a broken image.
 
-**Probe-gated AND live-path safe - two gates, both fail closed.** This module feeds the same shared framework that renders live client dashboards, so it is strictly additive:
+**Discovery-gated AND live-path safe - two gates, both fail closed.** This module feeds the same shared framework that renders live client dashboards, so it is strictly additive:
 
-1. **Config gate (live-path safety).** The bundles-under-review come from the optional `REVIEW` config block. A dashboard that carries **no `REVIEW` config** - which is every live client dashboard - short-circuits to a silent no-op: no probe, no network call, no nav link, no panel, zero DOM trace. An existing dashboard cannot be altered by a module it never configures.
-2. **Data probe gate.** Even with bundles configured, the module first runs the cheap `winning-historical` existence probe. Only when the client actually has review data is the **Creative Review** nav section, nav link and panel injected. A client with no review data, or any probe error (endpoint down, mart not built), shows **no tab** and leaves zero trace.
+1. **Live-path safety.** With **no `BQ_FUNCTION` endpoint AND no injected store** the module short-circuits to a silent no-op: no discovery call, no network, no nav link, no panel, zero DOM trace. An existing dashboard cannot be altered by a module that has no backend to reach.
+2. **Discovery gate.** On boot the module calls the `list-bundles` action to discover which generated bundles exist for this client. Only when **at least one bundle is discovered** is the **Creative Review** nav section, nav link and panel injected. Zero bundles, or any discovery error (endpoint down, manifest not built), shows **no tab** and leaves zero trace. A dashboard that has `BQ_FUNCTION` therefore issues exactly one `list-bundles` call on boot and shows the tab only if the client has generated bundles.
 
-**Single generic dispatcher.** Tab activation goes through the same `f10ActivateTab()` dispatcher as every other module (see [Generic tab dispatcher](#generic-tab-dispatcher)): it clears every nav link and every `.tab-panel` before activating the selected pair, so two panels can never both be active and no existing module needed editing. `f10-layout.js` calls `initReview()` at the tail of `renderLayout()` (the same probe-decides pattern as `initComponents()`), and the module also self-boots on `DOMContentLoaded` behind an idempotent guard, so a dashboard pinned to an older `f10-layout.js` tag still gets the tab.
+**Single generic dispatcher.** Tab activation goes through the same `f10ActivateTab()` dispatcher as every other module (see [Generic tab dispatcher](#generic-tab-dispatcher)): it clears every nav link and every `.tab-panel` before activating the selected pair, so two panels can never both be active and no existing module needed editing. `f10-layout.js` calls `initReview()` at the tail of `renderLayout()` (the same discovery-decides pattern as `initComponents()`), and the module also self-boots on `DOMContentLoaded` behind an idempotent guard, so a dashboard pinned to an older `f10-layout.js` tag still gets the tab.
 
-**Live-path release discipline (`livePathWatch`).** Because a bad framework release can blank-screen live dashboards, a framework tag bump follows the [release process](#release-process): after tagging, **purge and verify the jsDelivr tag**, then load a known-good existing client dashboard (for example `matilda` or `stake`) on the new tag and confirm it still renders before bumping other dashboards. The code-level invariant behind that canary - that a dashboard without a `REVIEW` config injects nothing and the base nav is unchanged - is asserted in `test/f10-review.test.js`.
+**Live-path release discipline (`livePathWatch`).** Because a bad framework release can blank-screen live dashboards, a framework tag bump follows the [release process](#release-process): after tagging, **purge and verify the jsDelivr tag**, then load a known-good existing client dashboard (for example `matilda` or `stake`) on the new tag and confirm it still renders before bumping other dashboards. The code-level invariant behind that canary - that a dashboard with no `BQ_FUNCTION` and no injected store makes no network call and injects nothing, and that a discovery finding no bundles leaves the base nav unchanged - is asserted in `test/f10-review.test.js`.
 
-Config (F10-internal review surface only; all optional except providing at least one bundle):
+Config (F10-internal review surface only; the whole block is optional - the bundle list is auto-discovered, so on a standard review surface `REVIEW` can be omitted entirely):
 
 ```js
+// The bundle list is auto-discovered via `list-bundles`, so REVIEW no longer carries
+// BUNDLES or LIMIT. The block exists only for these optional overrides:
 const REVIEW = {
-  CLIENT: 'moshy',            // optional f10 client slug override when DATASET doesn't follow {client}_marts / {client}_clean
-  LIMIT: 5,                   // optional winners per bundle to request (server caps at 25)
-  BUNDLES: [                  // the generated ads to review, from the operator's generation run
-    {
-      bundle_id: 'brief_moshy_founder_ab12cd',
-      platform: 'meta',                          // optional; defaults to meta
-      label: 'Founder story - bold typographic', // optional display label
-      components: { hook_type: 'Founder story', format_canonical: 'UGC video' },
-      coherence_flags: ['visual_style held for review'],
-      held_dimensions: ['visual_style_canonical'],
-      new_ad: { headline: '...', body: '...' }   // optional copy metadata
-    }
-  ]
+  CLIENT: 'moshy',            // optional; override the f10 client slug when DATASET doesn't follow {client}_marts / {client}_clean
+  ACTOR: 'zac@f10',           // optional; who is recording the decision (behind the F10 gate the endpoint stamps the authenticated actor, so this is optional)
+  FEEDBACK_FUNCTION: '/.netlify/functions/feedback', // optional; feedback write/read endpoint override
 };
 ```
 
-Regression coverage (registration, probe gating, live-path safety, the single-dispatcher activation and new-vs-winners render) lives in `test/f10-review.test.js`.
+Regression coverage (discovery-gated registration, the empty-discovery and discovery-error fail-closed paths, live-path safety, the generation-date filter, and the single-dispatcher activation) lives in `test/f10-review.test.js`.
 
 ### Scored batch review — ranked scorecard grid (roadmap #5)
 
-When **more than one** bundle is under review, the tab defaults to a **ranked grid of cards**, best-first, so a whole batch is triaged at a glance. Each card carries:
+When the selected generation date has **more than one** bundle, the tab defaults to a **ranked grid of cards**, best-first, so a whole batch is triaged at a glance. Each card carries:
 
 - the **composite thumbnail** (the US-005 `generated-preview` path);
 - the **label** and a small **rank / among-N** indicator;
-- the **coherence scorecard**: an overall **verdict badge (pass / flag) + score**, plus the three dimensions — **client fit**, **component fidelity** (shown as `matched / total`), and **brand compliance** — each with its own pass/flag chip, and the **flags** list;
-- the existing **Approve / Decline** controls and persisted state;
-- an **expand** control that drops down the single-bundle detail (the ad next to the client's winners, so-what / now-what) so the US-006 comparison is never lost.
+- the **coherence scorecard**: an overall **verdict badge (pass / flag) + score**, plus the three dimensions - **client fit**, **component fidelity** (shown as `matched / total`), and **brand compliance** - each with its own pass/flag chip, and the **flags** list;
+- the **Approve / Decline** controls and persisted state.
 
-**Sort order.** Cards with `found && overall_verdict === 'pass'` come first, ordered by `overall_score` descending; scored-but-flagged cards follow (also by score descending); **unscored bundles (`found: false`) always sort last**. A single bundle under review skips the grid and renders the detail view directly.
+**Sort order.** Cards with `found && overall_verdict === 'pass'` come first, ordered by `overall_score` descending; scored-but-flagged cards follow (also by score descending); **unscored bundles (`found: false`) always sort last**. A generation date with a single visible bundle skips the grid and renders the detail view directly.
 
 **Scorecard fetch — a new `coherence` action.** For each bundle the module calls the store's `coherence(client, bundleId, platform)` method, which POSTs the following to `BQ_FUNCTION` (the same fetch convention as every other action — the app injects `Authorization` via its fetch shim; the module just POSTs):
 
@@ -360,9 +368,9 @@ When **more than one** bundle is under review, the tab defaults to a **ranked gr
 }
 ```
 
-**Fail-closed (never breaks the tab).** Any coherence failure — a `found: false` response, a rejected/`!ok` fetch, a malformed shape, or a store with no `coherence` method — renders a clean **"not scored yet"** card that is **still approvable**. The scorecard fetch runs in parallel with the winners join, so even a winners failure still leaves a full scorecard card standing in the grid (only the expandable comparison carries the per-bundle error). Live-path safety is unchanged: a dashboard with no `REVIEW` config still injects nothing and never posts a `coherence` request.
+**Fail-closed (never breaks the tab).** Any coherence failure - a `found: false` response, a rejected/`!ok` fetch, a malformed shape, or a store with no `coherence` method - renders a clean **"not scored yet"** card that is **still approvable**. The scorecard fetch runs in parallel with the preview fetch, so even a preview miss still leaves a full scorecard card standing in the grid. Live-path safety is unchanged: a dashboard with no `BQ_FUNCTION` endpoint and no injected store never discovers, never registers the tab, and never posts a `coherence` request.
 
-Regression coverage (the `coherence` request contract, the ranked sort, the dimension/flags/verdict render, the unscored + fetch-error fallback, per-card approve/decline + reload, and the expand-to-comparison path) lives in `test/f10-review-grid.test.js`.
+Regression coverage (auto-discovery through the store's `list-bundles` method, the `coherence` request contract, the ranked sort, the dimension/flags/verdict render, the unscored + fetch-error fallback, per-card approve/decline + reload, and the single-bundle detail view) lives in `test/f10-review-grid.test.js`.
 
 ### Approve / decline gate and approval state (US-009)
 
@@ -376,9 +384,9 @@ Each ad in the review panel carries a coarse **concept-level decision**: an **Ap
 - **Actor** comes from `REVIEW.ACTOR` (or an `F10_ACTOR` global) when set; behind the F10 company-access gate the endpoint stamps the authenticated actor from its header, so the client need not know it.
 - **Read-back** requests the persisted `status.json` shape for the bundle; a miss (no decision yet) or a read path that is **not deployed yet** degrades to **Pending** rather than throwing.
 
-> **Deploy follow-up (not done in this change).** The `feedback` endpoint runs on GCP compute and is **not deployed yet**; this story builds the UI to call it and to read the state back behind the seam. Until the endpoint (and a status read path) are live, a real decision cannot be persisted end-to-end, so the surface shows Pending and fails closed. Live client dashboards are unaffected either way (the whole tab is behind the `REVIEW` config gate and the probe).
+> **Deploy follow-up (not done in this change).** The `feedback` endpoint runs on GCP compute and is **not deployed yet**; this story builds the UI to call it and to read the state back behind the seam. Until the endpoint (and a status read path) are live, a real decision cannot be persisted end-to-end, so the surface shows Pending and fails closed. Live client dashboards are unaffected either way (the whole tab is behind the discovery gate - a client with no generated bundles gets no tab).
 
-**Live-path safety is unchanged.** The decision gate adds no new code path to a live client dashboard: with no `REVIEW` config the module still injects nothing and never calls the feedback endpoint. Approve/decline markup, the three states, the persisted-state reload, the exact US-008 contract, an inline write-failure surface, and the no-regenerate rule are covered in `test/f10-review-feedback.test.js`.
+**Live-path safety is unchanged.** The decision gate adds no new code path to a live client dashboard: with no `BQ_FUNCTION` endpoint and no injected store the module still injects nothing and never calls the feedback endpoint, and a client with no discovered bundles never gets the tab. Approve/decline markup, the three states, the persisted-state reload, the exact US-008 contract, an inline write-failure surface, and the no-regenerate rule are covered in `test/f10-review-feedback.test.js`.
 
 ## Target metric (CPA vs ROAS)
 
