@@ -629,7 +629,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     var beStore = null;       // injectable brief store (tests override via setStore)
     var beInspiration = [];   // selected inspiration refs: [{gcs_uri, thumb_url, source, label}]
     var beInspTab = 'upload'; // active inspiration picker tab: upload | client | competitor
-    var beLibrary = [];       // the last-loaded library grid (for toggle lookups)
+    var beRefIndex = {};      // gcs_uri -> ref object, populated as thumbs render (toggle lookup)
+    var beClientPage = { offset: 0, hasMore: false, loading: false }; // client-library paging cursor
+    var beCompState = {};     // page_id -> { offset, hasMore, total, name } for competitor drill-in
+    var CLIENT_PAGE_SIZE = 10;    // client library loads 10 ads per page (spend-ranked)
+    var COMPETITOR_PAGE_SIZE = 5; // competitors show + page 5 images at a time
     var INSP_MAX_BYTES = 8 * 1024 * 1024; // client-side mirror of the backend 8 MB cap
 
     function esc(s) {
@@ -682,9 +686,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         async probe(client) { var r = await call('probe', { client: client }); return !!(r && r.has_data); },
         async load(revisionId) { var r = await call('load', { revisionId: revisionId }); return r && r.revision; },
         async save(record) { return call('save', { revision: record }); },
-        async references(source) {
-          var r = await callAt(bqEndpoint(), { action: 'list-references', client: beClient, source: source });
-          return (r && r.references) || [];
+        async references(params) {
+          // params: {source, limit?, offset?, competitor?, per_competitor?}. Returns the
+          // full response (references+has_more, or grouped competitors) — callers read
+          // the shape they asked for.
+          var p = (typeof params === 'string') ? { source: params } : (params || {});
+          return callAt(bqEndpoint(), Object.assign({ action: 'list-references', client: beClient }, p));
         },
         async upload(payload) {
           return callAt(uploadEndpoint(), Object.assign({ action: 'upload', client: beClient }, payload || {}));
@@ -753,13 +760,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '#panel-brief-editor .be-cli{font-family:monospace;background:rgba(0,0,0,0.05);padding:2px 5px;border-radius:3px;word-break:break-all;}'
         + '#panel-brief-editor .be-insp{margin:0 0 16px;}'
         + '#panel-brief-editor .be-muted{color:#888;font-size:12px;}'
-        + '#panel-brief-editor .be-chips{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 10px;min-height:8px;}'
-        + '#panel-brief-editor .be-chip{position:relative;width:56px;height:56px;border-radius:6px;overflow:hidden;'
+        + '#panel-brief-editor .be-chips{display:flex;flex-wrap:wrap;gap:10px;margin:8px 0 12px;min-height:8px;}'
+        + '#panel-brief-editor .be-chip{position:relative;width:96px;height:96px;border-radius:8px;overflow:hidden;'
         + 'border:1px solid rgba(0,0,0,0.15);background:#f4f4f4;display:inline-flex;align-items:center;justify-content:center;}'
         + '#panel-brief-editor .be-chip img{width:100%;height:100%;object-fit:cover;display:block;}'
         + '#panel-brief-editor .be-noimg{font-size:9px;color:#777;text-align:center;padding:2px;text-transform:uppercase;}'
-        + '#panel-brief-editor .be-chip-x{position:absolute;top:1px;right:2px;width:16px;height:16px;line-height:15px;'
-        + 'text-align:center;border-radius:50%;background:rgba(0,0,0,0.65);color:#fff;font-size:12px;cursor:pointer;}'
+        + '#panel-brief-editor .be-chip-x{position:absolute;top:2px;right:3px;width:20px;height:20px;line-height:19px;'
+        + 'text-align:center;border-radius:50%;background:rgba(0,0,0,0.65);color:#fff;font-size:14px;cursor:pointer;}'
         + '#panel-brief-editor .be-insp-tabs{display:flex;gap:6px;margin:4px 0 10px;}'
         + '#panel-brief-editor .be-insp-tabs button{font:inherit;font-size:12px;padding:6px 12px;border:1px solid rgba(0,0,0,0.2);'
         + 'background:#fff;border-radius:16px;cursor:pointer;color:#444;}'
@@ -768,16 +775,26 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + 'color:#666;font-size:13px;background:rgba(0,0,0,0.015);}'
         + '#panel-brief-editor .be-drop.be-dragover{border-color:var(--brand,#7a1f2b);background:rgba(122,31,43,0.06);color:#333;}'
         + '#panel-brief-editor .be-link{color:var(--brand,#7a1f2b);text-decoration:underline;cursor:pointer;font-weight:600;}'
-        + '#panel-brief-editor .be-thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:8px;margin-top:10px;}'
-        + '#panel-brief-editor .be-thumb{position:relative;aspect-ratio:1/1;border-radius:6px;overflow:hidden;cursor:pointer;'
-        + 'border:2px solid transparent;background:#f4f4f4;}'
+        + '#panel-brief-editor .be-thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-top:10px;}'
+        + '#panel-brief-editor .be-thumb{position:relative;aspect-ratio:1/1;border-radius:8px;overflow:hidden;cursor:pointer;'
+        + 'border:3px solid transparent;background:#f4f4f4;}'
         + '#panel-brief-editor .be-thumb img{width:100%;height:100%;object-fit:cover;display:block;}'
         + '#panel-brief-editor .be-thumb.selected{border-color:var(--brand,#7a1f2b);}'
-        + '#panel-brief-editor .be-thumb .be-tick{position:absolute;top:3px;right:4px;width:18px;height:18px;line-height:17px;'
-        + 'text-align:center;border-radius:50%;background:var(--brand,#7a1f2b);color:#fff;font-size:12px;display:none;}'
+        + '#panel-brief-editor .be-thumb .be-tick{position:absolute;top:5px;right:6px;width:22px;height:22px;line-height:21px;'
+        + 'text-align:center;border-radius:50%;background:var(--brand,#7a1f2b);color:#fff;font-size:13px;display:none;}'
         + '#panel-brief-editor .be-thumb.selected .be-tick{display:block;}'
-        + '#panel-brief-editor .be-thumb .be-cap{position:absolute;left:0;right:0;bottom:0;font-size:9px;line-height:1.2;padding:2px 3px;'
+        + '#panel-brief-editor .be-thumb .be-cap{position:absolute;left:0;right:0;bottom:0;font-size:10px;line-height:1.2;padding:3px 4px;'
         + 'background:rgba(0,0,0,0.55);color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}'
+        // competitor groups
+        + '#panel-brief-editor .be-comp-group{margin:0 0 18px;}'
+        + '#panel-brief-editor .be-comp-head{display:flex;align-items:baseline;gap:8px;margin:0 0 8px;}'
+        + '#panel-brief-editor .be-comp-name{font-weight:700;font-size:14px;}'
+        + '#panel-brief-editor .be-comp-tier{font-size:11px;color:#fff;background:var(--brand,#7a1f2b);border-radius:10px;padding:1px 8px;}'
+        + '#panel-brief-editor .be-comp-meta{font-size:11px;color:#888;}'
+        + '#panel-brief-editor .be-comp-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;}'
+        + '#panel-brief-editor .be-more{margin-top:10px;font:inherit;font-size:12px;padding:7px 14px;border:1px solid rgba(0,0,0,0.2);'
+        + 'background:#fff;border-radius:6px;cursor:pointer;color:#444;}'
+        + '#panel-brief-editor .be-more[disabled]{opacity:0.5;cursor:default;}'
         + '</style>'
         + '<div class="be-insight"><strong>Brief editor:</strong> steer generation before it spends. '
         + 'Load a saved brief revision, adjust the five creative axes (dropdowns are locked to the canonical '
@@ -809,9 +826,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '<label class="be-link">browse<input type="file" id="be-file" accept="image/png,image/jpeg,image/webp" multiple style="display:none;" /></label>'
         + '<div class="be-muted" style="margin-top:6px;">PNG, JPG or WebP · up to 8&nbsp;MB each</div></div>'
         + '</div>'
-        + '<div class="be-insp-body" id="be-insp-lib" style="display:none;">'
-        + '<div class="be-muted" id="be-lib-status">Pick a tab to load images.</div>'
+        + '<div class="be-insp-body" id="be-insp-client" style="display:none;">'
+        + '<div class="be-muted" id="be-client-status">Loading your top-spend ads…</div>'
         + '<div class="be-thumbs" id="be-thumbs"></div>'
+        + '<button type="button" class="be-more" id="be-client-more" style="display:none;">Load more</button>'
+        + '</div>'
+        + '<div class="be-insp-body" id="be-insp-competitor" style="display:none;">'
+        + '<div class="be-muted" id="be-comp-status">Loading competitors…</div>'
+        + '<div id="be-comp-groups"></div>'
         + '</div>'
         + '</div>'
         + '<button type="submit" class="be-btn" id="be-save-btn" disabled>Save as new revision</button>'
@@ -878,11 +900,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       markThumbs();
     }
 
+    function indexRefs(refs) {
+      (refs || []).forEach(function (r) { if (r && r.gcs_uri) beRefIndex[r.gcs_uri] = r; });
+    }
+
     function toggleThumb(uri) {
       if (inspHas(uri)) { deselectRef(uri); return; }
-      for (var i = 0; i < beLibrary.length; i++) {
-        if (beLibrary[i].gcs_uri === uri) { selectRef(beLibrary[i]); return; }
-      }
+      if (beRefIndex[uri]) selectRef(beRefIndex[uri]);
     }
 
     function renderInspChips() {
@@ -901,11 +925,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }).join('');
     }
 
-    /* Re-apply the selected outline to whatever grid is currently rendered. */
+    /* One thumb's HTML. Bigger previews (see .be-thumb CSS); caption optional. */
+    function thumbHtml(r) {
+      var sel = inspHas(r.gcs_uri) ? ' selected' : '';
+      var img = r.thumb_url ? '<img src="' + esc(r.thumb_url) + '" alt="" loading="lazy" />' : '';
+      var cap = r.label ? '<span class="be-cap">' + esc(r.label) + '</span>' : '';
+      return '<div class="be-thumb' + sel + '" data-uri="' + esc(r.gcs_uri) + '">'
+        + img + '<span class="be-tick">&#10003;</span>' + cap + '</div>';
+    }
+
+    /* Re-apply the selected outline across EVERY rendered thumb (client grid +
+     * every competitor row), so a chip removal reflects wherever the image shows. */
     function markThumbs() {
-      var grid = document.getElementById('be-thumbs');
-      if (!grid || !grid.querySelectorAll) return;
-      var nodes = grid.querySelectorAll('.be-thumb');
+      var panel = document.getElementById('panel-brief-editor');
+      if (!panel || !panel.querySelectorAll) return;
+      var nodes = panel.querySelectorAll('.be-thumb');
       Array.prototype.forEach.call(nodes, function (n) {
         var uri = n.getAttribute && n.getAttribute('data-uri');
         if (!n.classList) return;
@@ -913,52 +947,131 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
-    function renderThumbs(refs) {
-      var grid = document.getElementById('be-thumbs');
-      if (!grid) return;
-      if (!refs || !refs.length) { grid.innerHTML = ''; return; }
-      grid.innerHTML = refs.map(function (r) {
-        var sel = inspHas(r.gcs_uri) ? ' selected' : '';
-        var img = r.thumb_url ? '<img src="' + esc(r.thumb_url) + '" alt="" loading="lazy" />' : '';
-        var cap = r.label ? '<span class="be-cap">' + esc(r.label) + '</span>' : '';
-        return '<div class="be-thumb' + sel + '" data-uri="' + esc(r.gcs_uri) + '">'
-          + img + '<span class="be-tick">&#10003;</span>' + cap + '</div>';
-      }).join('');
+    function setClientStatus(msg) {
+      var el = document.getElementById('be-client-status');
+      if (el) el.textContent = msg || '';
     }
-
-    function setLibStatus(msg) {
-      var el = document.getElementById('be-lib-status');
+    function setCompStatus(msg) {
+      var el = document.getElementById('be-comp-status');
       if (el) el.textContent = msg || '';
     }
 
-    /* Fetch + render one library source (client | competitor). Best-effort: an empty or
-     * failed source shows a plain note rather than breaking the panel. */
-    async function loadLibrary(source) {
-      setLibStatus('Loading ' + (source === 'competitor' ? 'competitor' : 'your') + ' images…');
-      renderThumbs([]);
-      beLibrary = [];
+    /* ---- client library: spend-ranked, paginated 10 at a time ---- */
+    async function loadClient(reset) {
+      if (beClientPage.loading) return;
+      if (reset) {
+        beClientPage = { offset: 0, hasMore: false, loading: true };
+        var grid0 = document.getElementById('be-thumbs');
+        if (grid0) grid0.innerHTML = '';
+      } else {
+        beClientPage.loading = true;
+      }
+      var more = document.getElementById('be-client-more');
+      if (more && more.style) more.style.display = 'none';
+      setClientStatus(beClientPage.offset ? 'Loading more…' : 'Loading your top-spend ads…');
       try {
-        var refs = await store().references(source);
-        beLibrary = (refs || []).filter(function (r) { return r && r.gcs_uri; });
-        if (!beLibrary.length) {
-          setLibStatus(source === 'competitor'
-            ? 'No competitor images available for this client yet.'
-            : 'No creatives found in this client’s library yet.');
-        } else {
-          setLibStatus(beLibrary.length + ' image' + (beLibrary.length === 1 ? '' : 's') + ' — click to select.');
+        var resp = await store().references({
+          source: 'client', limit: CLIENT_PAGE_SIZE, offset: beClientPage.offset,
+        });
+        var refs = (resp && resp.references) || [];
+        indexRefs(refs);
+        var grid = document.getElementById('be-thumbs');
+        if (grid && grid.insertAdjacentHTML) {
+          grid.insertAdjacentHTML('beforeend', refs.map(thumbHtml).join(''));
         }
-        renderThumbs(beLibrary);
+        beClientPage.offset += refs.length;
+        beClientPage.hasMore = !!(resp && resp.has_more);
+        if (!beClientPage.offset) {
+          setClientStatus('No creatives found in this client’s library yet.');
+        } else {
+          setClientStatus(beClientPage.offset + ' ad' + (beClientPage.offset === 1 ? '' : 's')
+            + ' (highest spend first) — click to select.');
+        }
+        if (more && more.style) more.style.display = beClientPage.hasMore ? '' : 'none';
       } catch (err) {
-        setLibStatus('Could not load images: ' + (err && err.message ? err.message : err));
+        setClientStatus('Could not load your library: ' + (err && err.message ? err.message : err));
+      } finally {
+        beClientPage.loading = false;
+      }
+    }
+
+    /* ---- competitor library: grouped per competitor, ranked, paginated ---- */
+    function compGroupHtml(g) {
+      var meta = (g.total || 0) + ' ad' + (g.total === 1 ? '' : 's');
+      var tier = g.tier ? '<span class="be-comp-tier">' + esc(g.tier) + '</span>' : '';
+      var thumbs = (g.images || []).map(thumbHtml).join('');
+      var shown = (g.images || []).length;
+      var moreBtn = (g.total > shown)
+        ? '<button type="button" class="be-more" data-comp-more="' + esc(g.page_id) + '">More from ' + esc(g.name) + '</button>'
+        : '';
+      return '<div class="be-comp-group" data-comp="' + esc(g.page_id) + '">'
+        + '<div class="be-comp-head"><span class="be-comp-name">' + esc(g.name) + '</span>'
+        + tier + '<span class="be-comp-meta">' + esc(meta) + '</span></div>'
+        + '<div class="be-comp-row" data-comp-row="' + esc(g.page_id) + '">' + thumbs + '</div>'
+        + moreBtn + '</div>';
+    }
+
+    async function loadCompetitors() {
+      if (Object.keys(beCompState).length) return; // already loaded this session
+      setCompStatus('Loading competitors…');
+      var wrap = document.getElementById('be-comp-groups');
+      try {
+        var resp = await store().references({ source: 'competitor', per_competitor: COMPETITOR_PAGE_SIZE });
+        var groups = (resp && resp.competitors) || [];
+        if (!groups.length) {
+          setCompStatus('No competitor images available for this client yet.');
+          if (wrap) wrap.innerHTML = '';
+          return;
+        }
+        groups.forEach(function (g) {
+          indexRefs(g.images);
+          beCompState[String(g.page_id)] = {
+            offset: (g.images || []).length, hasMore: (g.total || 0) > (g.images || []).length,
+            total: g.total || 0, name: g.name,
+          };
+        });
+        if (wrap) wrap.innerHTML = groups.map(compGroupHtml).join('');
+        setCompStatus(groups.length + ' competitor' + (groups.length === 1 ? '' : 's')
+          + ' — ranked by how established they are. Click any image to select.');
+      } catch (err) {
+        setCompStatus('Could not load competitors: ' + (err && err.message ? err.message : err));
+      }
+    }
+
+    async function loadCompetitorMore(pageId) {
+      var st = beCompState[String(pageId)];
+      if (!st || st.loading || !st.hasMore) return;
+      st.loading = true;
+      try {
+        var resp = await store().references({
+          source: 'competitor', competitor: String(pageId),
+          limit: COMPETITOR_PAGE_SIZE, offset: st.offset,
+        });
+        var refs = (resp && resp.references) || [];
+        indexRefs(refs);
+        var row = null;
+        var groups = document.getElementById('be-comp-groups');
+        if (groups && groups.querySelector) row = groups.querySelector('[data-comp-row="' + pageId + '"]');
+        if (row && row.insertAdjacentHTML) row.insertAdjacentHTML('beforeend', refs.map(thumbHtml).join(''));
+        st.offset += refs.length;
+        st.hasMore = !!(resp && resp.has_more);
+        if (!st.hasMore && groups && groups.querySelector) {
+          var btn = groups.querySelector('[data-comp-more="' + pageId + '"]');
+          if (btn && btn.parentNode && btn.parentNode.removeChild) btn.parentNode.removeChild(btn);
+        }
+      } catch (err) {
+        // leave the row as-is; a transient failure just means no more appended
+      } finally {
+        st.loading = false;
       }
     }
 
     function showInspBody(tab) {
-      var up = document.getElementById('be-insp-upload');
-      var lib = document.getElementById('be-insp-lib');
-      var isUpload = tab === 'upload';
-      if (up && up.style) up.style.display = isUpload ? '' : 'none';
-      if (lib && lib.style) lib.style.display = isUpload ? 'none' : '';
+      var bodies = { upload: 'be-insp-upload', client: 'be-insp-client', competitor: 'be-insp-competitor' };
+      Object.keys(bodies).forEach(function (k) {
+        var el = document.getElementById(bodies[k]);
+        if (el && el.style) el.style.display = (k === tab) ? '' : 'none';
+      });
       var tabsWrap = document.getElementById('be-insp-tabs');
       if (tabsWrap && tabsWrap.querySelectorAll) {
         var btns = tabsWrap.querySelectorAll('button');
@@ -973,7 +1086,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function switchInspTab(tab) {
       beInspTab = tab;
       showInspBody(tab);
-      if (tab === 'client' || tab === 'competitor') return loadLibrary(tab);
+      // Lazy-load once per session; re-selecting a tab just re-shows what's there.
+      if (tab === 'client') return beClientPage.offset === 0 ? loadClient(true) : Promise.resolve();
+      if (tab === 'competitor') return loadCompetitors();
       return Promise.resolve();
     }
 
@@ -1161,16 +1276,33 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         });
       }
 
-      var thumbs = document.getElementById('be-thumbs');
-      if (thumbs && thumbs.addEventListener) {
-        thumbs.addEventListener('click', function (e) {
-          var node = e && e.target;
-          // walk up to the .be-thumb container (the tick/img/caption are children)
-          while (node && node !== thumbs && !(node.getAttribute && node.getAttribute('data-uri'))) {
-            node = node.parentNode;
+      // One delegated handler for the whole picker body: thumb select/deselect
+      // across the client grid AND every competitor row, plus the "load more" and
+      // per-competitor "more" buttons — all rendered dynamically.
+      function closestWithAttr(node, attr, stopAt) {
+        while (node && node !== stopAt) {
+          if (node.getAttribute && node.getAttribute(attr) != null) return node;
+          node = node.parentNode;
+        }
+        return null;
+      }
+      var insp = document.getElementById('be-insp');
+      if (insp && insp.addEventListener) {
+        insp.addEventListener('click', function (e) {
+          var t = e && e.target;
+          if (!t) return;
+          var moreComp = closestWithAttr(t, 'data-comp-more', insp);
+          if (moreComp) { if (e.preventDefault) e.preventDefault(); loadCompetitorMore(moreComp.getAttribute('data-comp-more')); return; }
+          if (t.getAttribute && t.getAttribute('id') === 'be-client-more') {
+            if (e.preventDefault) e.preventDefault(); loadClient(false); return;
           }
-          var uri = node && node.getAttribute && node.getAttribute('data-uri');
-          if (uri) toggleThumb(uri);
+          var thumb = closestWithAttr(t, 'data-uri', insp);
+          // Only .be-thumb carries data-uri here that should toggle; the chip-x
+          // (also data-uri) is handled by the chips listener above, and its node
+          // is inside #be-insp-chips, not a .be-thumb — guard on the class.
+          if (thumb && thumb.classList && thumb.classList.contains && thumb.classList.contains('be-thumb')) {
+            toggleThumb(thumb.getAttribute('data-uri'));
+          }
         });
       }
 
@@ -1322,15 +1454,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       isBooted: function () { return beBooted; },
       // inspiration picker surface (US-Phase-1 part 2)
       switchInspTab: switchInspTab,
-      loadLibrary: loadLibrary,
+      loadClient: loadClient,
+      loadCompetitors: loadCompetitors,
+      loadCompetitorMore: loadCompetitorMore,
       toggleThumb: toggleThumb,
       selectRef: selectRef,
       deselectRef: deselectRef,
       handleFile: handleFile,
       getInspiration: function () { return beInspiration.slice(); },
+      getClientPage: function () { return { offset: beClientPage.offset, hasMore: beClientPage.hasMore }; },
+      getCompState: function () { return JSON.parse(JSON.stringify(beCompState)); },
       resetForTest: function () {
         beBooted = false; beLoadedRevision = null;
-        beInspiration = []; beLibrary = []; beInspTab = 'upload';
+        beInspiration = []; beRefIndex = {}; beInspTab = 'upload';
+        beClientPage = { offset: 0, hasMore: false, loading: false }; beCompState = {};
       },
     };
   })();
