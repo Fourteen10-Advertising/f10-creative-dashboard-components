@@ -429,7 +429,7 @@ async function runBrowser() {
   });
 
   // ── Inspiration picker: the panel carries the upload zone + library tabs. ──
-  await check('the panel renders the inspiration picker (chips, tabs, upload zone, thumbs grid)', async () => {
+  await check('the panel renders the inspiration picker (chips, tabs, upload zone, client + competitor panes)', async () => {
     const ctx = makeBrowserCtx();
     const html = ctx.window.f10BriefEditor.panelMarkup();
     assert.ok(/id="be-insp-chips"/.test(html), 'selected-references row is present');
@@ -437,37 +437,79 @@ async function runBrowser() {
     assert.ok(/data-insp-tab="client"/.test(html), 'Your-library tab is present');
     assert.ok(/data-insp-tab="competitor"/.test(html), 'Competitors tab is present');
     assert.ok(/id="be-file"/.test(html) && /type="file"/.test(html), 'a file input backs the drop zone');
-    assert.ok(/id="be-thumbs"/.test(html), 'a library grid container is present');
+    assert.ok(/id="be-thumbs"/.test(html), 'the client grid container is present');
+    assert.ok(/id="be-client-more"/.test(html), 'the client "load more" control is present');
+    assert.ok(/id="be-comp-groups"/.test(html), 'the competitor groups container is present');
   });
 
-  // ── Inspiration picker: pick from a library, it lands in inspiration_image_uris. ──
-  await check('selecting a library image adds it to the saved inspiration_image_uris; deselect removes it', async () => {
+  // ── Client library: spend-ranked, paginated by 10, select carries through. ──
+  await check('client library paginates by 10 (load more advances the offset) and selection carries through', async () => {
     const ctx = makeBrowserCtx();
-    const uri = 'gs://f10-creative-assets/served/meta/acct_1/a.png';
-    let sawSource = '';
+    const calls = [];
+    const page = (off) => Array.from({ length: 10 }, (_, i) => ({
+      gcs_uri: `gs://f10-creative-assets/served/meta/acct_1/a${off + i}.png`,
+      thumb_url: 'https://signed/t', source: 'client', label: `ad${off + i}`,
+    }));
     ctx.window.f10BriefEditor.setStore({
-      async probe() { return true; },
-      async load() {},
-      async save() {},
-      async references(source) {
-        sawSource = source;
-        return [{ gcs_uri: uri, thumb_url: 'https://signed/thumb', source: 'client', label: 'ad1' }];
+      async probe() { return true; }, async load() {}, async save() {},
+      async references(p) {
+        calls.push(p);
+        return { source: 'client', references: page(p.offset || 0), has_more: (p.offset || 0) < 10 };
       },
     });
     await ctx.window.initBriefEditor();
     await ctx.window.f10BriefEditor.switchInspTab('client');
-    assert.strictEqual(sawSource, 'client', 'the client tab loads the client source');
-    ctx.window.f10BriefEditor.toggleThumb(uri);
-    // getInspiration()/readForm() return arrays from the module's vm realm; Array.from
-    // re-homes them to this realm so deepStrictEqual compares contents, not prototypes.
+    assert.strictEqual(calls[0].source, 'client', 'client tab loads the client source');
+    assert.strictEqual(calls[0].limit, 10, 'requests a page of 10');
+    assert.strictEqual(ctx.window.f10BriefEditor.getClientPage().offset, 10, 'offset advanced to 10');
+    assert.strictEqual(ctx.window.f10BriefEditor.getClientPage().hasMore, true, 'more pages remain');
+    // Load the next page → offset 20, has_more now false.
+    await ctx.window.f10BriefEditor.loadClient(false);
+    assert.strictEqual(calls[1].offset, 10, 'second page requested at offset 10');
+    assert.strictEqual(ctx.window.f10BriefEditor.getClientPage().offset, 20, 'offset advanced to 20');
+    assert.strictEqual(ctx.window.f10BriefEditor.getClientPage().hasMore, false, 'no more pages');
+    // A picked image from either page carries through a save.
+    ctx.window.f10BriefEditor.toggleThumb('gs://f10-creative-assets/served/meta/acct_1/a15.png');
     assert.deepStrictEqual(
-      Array.from(ctx.window.f10BriefEditor.getInspiration(), (r) => r.gcs_uri), [uri],
-      'the picked image is selected',
-    );
-    assert.deepStrictEqual(Array.from(ctx.window.f10BriefEditor.readForm().inspiration_image_uris), [uri],
-      'a save would carry the picked image');
-    ctx.window.f10BriefEditor.toggleThumb(uri); // toggle off
-    assert.strictEqual(ctx.window.f10BriefEditor.getInspiration().length, 0, 'deselect clears it');
+      Array.from(ctx.window.f10BriefEditor.readForm().inspiration_image_uris),
+      ['gs://f10-creative-assets/served/meta/acct_1/a15.png'], 'the picked ad carries through');
+  });
+
+  // ── Competitor library: grouped, ranked, each paginates independently. ──
+  await check('competitor library groups by competitor and each competitor pages 5 more at a time', async () => {
+    const ctx = makeBrowserCtx();
+    const drill = [];
+    ctx.window.f10BriefEditor.setStore({
+      async probe() { return true; }, async load() {}, async save() {},
+      async references(p) {
+        if (p.competitor) {
+          drill.push(p);
+          return { source: 'competitor', competitor: p.competitor,
+            references: [{ gcs_uri: `gs://adlib/${p.competitor}/x${p.offset}.jpg`, thumb_url: 't', source: 'competitor', label: 'Juniper' }],
+            has_more: false };
+        }
+        return { source: 'competitor', per_competitor: 5, competitors: [
+          { page_id: '106', name: 'Juniper', tier: 'Leading', score: 81.8, total: 8,
+            images: [{ gcs_uri: 'gs://adlib/106/a.jpg', thumb_url: 't', source: 'competitor', label: 'Juniper' }] },
+          { page_id: '722', name: 'OneMRI', tier: 'Advanced', score: 64.8, total: 1,
+            images: [{ gcs_uri: 'gs://adlib/722/a.jpg', thumb_url: 't', source: 'competitor', label: 'OneMRI' }] },
+        ] };
+      },
+    });
+    await ctx.window.initBriefEditor();
+    await ctx.window.f10BriefEditor.switchInspTab('competitor');
+    const st = ctx.window.f10BriefEditor.getCompState();
+    assert.deepStrictEqual(Object.keys(st).sort(), ['106', '722'], 'both competitors grouped');
+    assert.strictEqual(st['106'].hasMore, true, 'Juniper (8 total, 1 shown) has more');
+    assert.strictEqual(st['722'].hasMore, false, 'OneMRI (1 total, 1 shown) does not');
+    // Selecting a competitor image carries through.
+    ctx.window.f10BriefEditor.toggleThumb('gs://adlib/106/a.jpg');
+    assert.deepStrictEqual(Array.from(ctx.window.f10BriefEditor.getInspiration(), (r) => r.gcs_uri), ['gs://adlib/106/a.jpg']);
+    // Paging one competitor requests only that competitor at its current offset.
+    await ctx.window.f10BriefEditor.loadCompetitorMore('106');
+    assert.strictEqual(drill[0].competitor, '106', 'drill-in scoped to the one competitor');
+    assert.strictEqual(drill[0].offset, 1, 'drill-in starts at the shown count');
+    assert.strictEqual(ctx.window.f10BriefEditor.getCompState()['106'].hasMore, false, 'no more after the last page');
   });
 
   // ── Inspiration picker: an uploaded image is stored + selected. ──
