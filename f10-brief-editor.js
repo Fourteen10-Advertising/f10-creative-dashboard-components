@@ -14,14 +14,16 @@
  *       gs://f10-creative-assets/brief-revisions/{client}/{revision_id}.json
  *   - a registry row in BigQuery
  *       mcc-poc-477801.creative_pipeline.brief_revisions
- * carrying the five canonical axes (visual_style, hook_type, message_angle, cta_type,
- * format), the copy blocks as free text, and provenance (client, evidence source,
+ * carrying the canonical axes (visual_style, hook_type, message_angle, cta_type),
+ * the copy blocks as free text, and provenance (client, evidence source,
  * winning values, revision id). The axis vocabularies below MIRROR brief.py /
  * brief_revision.schema.json EXACTLY - they are not invented here. A save both validates
  * the axes against the canonical vocabulary and writes the doc + row so a future
- * generation run reproduces the equivalent in-code brief.
+ * generation run reproduces the equivalent in-code brief. US-004 retired the dead
+ * format axis; the brief_revisions.format column is kept for backward compatibility
+ * but format is no longer edited here and no longer drives generation.
  *
- * NEVER NON-CANONICAL (AC3): the five axes are edited through <select> dropdowns whose
+ * NEVER NON-CANONICAL (AC3): the editable axes are edited through <select> dropdowns whose
  * options are exactly the canonical enums, so a free-text axis value is not reachable in
  * the UI. The save path validates a second time (defence in depth) and rejects any axis
  * value outside its vocabulary before anything is written.
@@ -69,9 +71,15 @@
 
 /* The canonical vocabularies. These MIRROR the python source of truth EXACTLY:
  * brief.CANONICAL_VISUAL_STYLES / CANONICAL_HOOK_TYPES / CANONICAL_MESSAGE_ANGLES /
- * CANONICAL_CTA_TYPES / CANONICAL_FORMATS and brief_revision.schema.json enums. A test
- * asserts they stay in lockstep. Do not add or reorder values here without changing the
- * schema; the whole point of the editor is that it cannot emit a non-canonical value. */
+ * CANONICAL_CTA_TYPES and brief_revision.schema.json enums. A test asserts they stay
+ * in lockstep. Do not add or reorder values here without changing the schema; the
+ * whole point of the editor is that it cannot emit a non-canonical value.
+ *
+ * US-004 retired the dead format axis: photo versus illustration is a visual_style
+ * concept and every ad is static for now, so format is no longer an editable axis
+ * here and has no canonical vocabulary. The brief_revisions.format BigQuery column
+ * and the stored field are retained for backward compatibility (see the MERGE SQL
+ * and buildDoc/buildRow/fromDoc below), and any stored value is ignored gracefully. */
 var F10_BRIEF_CANONICAL = {
   visual_style: [
     'minimal-clean', 'bold-graphic', 'warm-natural', 'aspirational-premium',
@@ -92,18 +100,16 @@ var F10_BRIEF_CANONICAL = {
     'shop-now', 'learn-more', 'sign-up', 'book', 'download', 'subscribe',
     'contact', 'none',
   ],
-  format: [
-    'static-photo', 'static-illustration',
-  ],
 };
 
-/* The five editable axes, in render order, with human-readable labels. */
+/* The editable axes, in render order, with human-readable labels. The dead format
+ * axis (US-004) is intentionally absent, so no Format dropdown is rendered and
+ * format does not drive save, load, or generation. */
 var F10_BRIEF_AXES = [
   { key: 'visual_style', label: 'Visual style' },
   { key: 'hook_type', label: 'Hook type' },
   { key: 'message_angle', label: 'Message angle' },
   { key: 'cta_type', label: 'CTA type' },
-  { key: 'format', label: 'Format' },
 ];
 
 var F10_BRIEF_SCHEMA = 'brief_revision';
@@ -213,7 +219,11 @@ function f10BriefValidate(rec) {
     hook_type: axes.hook_type,
     message_angle: axes.message_angle,
     cta_type: axes.cta_type,
-    format: axes.format,
+    // Dead axis (US-004): format is no longer an editable axis, so it is not in the
+    // validated axes loop above. Any stored value is preserved verbatim into the
+    // backward-compatible field / BigQuery column and ignored gracefully; a new
+    // revision simply carries an empty format.
+    format: typeof rec.format === 'string' ? rec.format : '',
     copy_blocks: copyBlocks,
     creative_direction: typeof rec.creative_direction === 'string' ? rec.creative_direction : '',
     inspiration_image_uris: Array.isArray(rec.inspiration_image_uris)
@@ -636,6 +646,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     var COMPETITOR_PAGE_SIZE = 5; // competitors show + page 5 images at a time
     var INSP_MAX_BYTES = 8 * 1024 * 1024; // client-side mirror of the backend 8 MB cap
 
+    /* Compile / review / tweak / submit surface (US-009). Compile resolves the full
+     * brief x variant matrix x size set into a NO-SPEND plan (per-variant resolved
+     * prompts, copy, inspiration + warnings, sizes, cost estimate) via POST /compile
+     * (US-007). The operator edits the resolved prompts + copy inline; those edits are
+     * exactly what get submitted. Submit (POST /submit, US-008) starts async generation
+     * and returns a job id; /status is polled for progress + asset URIs as they land.
+     * When the estimate exceeds the remaining cap, Submit is disabled with a clear
+     * message (the server also rejects an over-cap submit 402, so this is defence in
+     * depth, not the only guard). */
+    var beCompiled = null;        // last /compile response (resolved variants + cost)
+    var beCompiledEdits = null;   // operator overrides: { 'p:vi:pi': text, 'c:vi:ci': text }
+    var beVariantMatrix = null;   // optional variant config passed through compile + submit
+    var beRemainingCap = null;    // optional remaining spend cap (omitted -> backend default)
+    var beJobId = null;           // the running generation job id (submit -> status polling)
+    var bePollTimer = null;       // status poll timer handle
+    var POLL_MS = 2500;           // status poll interval
+
     function esc(s) {
       if (s == null) return '';
       return String(s)
@@ -696,6 +723,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         async upload(payload) {
           return callAt(uploadEndpoint(), Object.assign({ action: 'upload', client: beClient }, payload || {}));
         },
+        // Compile / submit / status (US-009). Compile + submit POST the full brief
+        // context to their own routes (no `action` field; the routes are dedicated);
+        // status POSTs { jobId } to /status. Client is stamped so the backend scope
+        // check matches, exactly like references + upload.
+        async compile(payload) {
+          return callAt(compileEndpoint(), Object.assign({ client: beClient }, payload || {}));
+        },
+        async submit(payload) {
+          return callAt(submitEndpoint(), Object.assign({ client: beClient }, payload || {}));
+        },
+        async status(payload) {
+          var p = payload || {};
+          return callAt(statusEndpoint(), { client: beClient, jobId: p.jobId || p.job_id || '' });
+        },
       };
     }
 
@@ -710,15 +751,34 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (typeof window.UPLOAD_FUNCTION !== 'undefined' && window.UPLOAD_FUNCTION) return String(window.UPLOAD_FUNCTION);
       return bqEndpoint().replace(/\/bq(\/)?$/, '/upload');
     }
+    /* The compile / submit / status endpoints (US-007/US-008), each derived off the
+     * same BACKEND as the brief endpoint by swapping the trailing /brief. Explicit
+     * window overrides win, mirroring the BQ_FUNCTION / UPLOAD_FUNCTION convention. */
+    function compileEndpoint() {
+      if (typeof window.COMPILE_FUNCTION !== 'undefined' && window.COMPILE_FUNCTION) return String(window.COMPILE_FUNCTION);
+      return endpoint().replace(/\/brief(\/)?$/, '/compile');
+    }
+    function submitEndpoint() {
+      if (typeof window.SUBMIT_FUNCTION !== 'undefined' && window.SUBMIT_FUNCTION) return String(window.SUBMIT_FUNCTION);
+      return endpoint().replace(/\/brief(\/)?$/, '/submit');
+    }
+    function statusEndpoint() {
+      if (typeof window.STATUS_FUNCTION !== 'undefined' && window.STATUS_FUNCTION) return String(window.STATUS_FUNCTION);
+      return endpoint().replace(/\/brief(\/)?$/, '/status');
+    }
 
     function store() {
       var s = beStore || defaultStore();
-      // The picker's two calls are optional on an injected store; back them with the
-      // default network store so a test store that only stubs probe/load/save still works.
-      if (!s.references || !s.upload) {
+      // The picker + compile/submit calls are optional on an injected store; back any
+      // that are missing with the default network store so a test store that only stubs
+      // probe/load/save still works. A test that exercises compile/submit stubs those.
+      if (!s.references || !s.upload || !s.compile || !s.submit || !s.status) {
         var net = defaultStore();
         if (!s.references) s.references = net.references;
         if (!s.upload) s.upload = net.upload;
+        if (!s.compile) s.compile = net.compile;
+        if (!s.submit) s.submit = net.submit;
+        if (!s.status) s.status = net.status;
       }
       return s;
     }
@@ -795,6 +855,31 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '#panel-brief-editor .be-more{margin-top:10px;font:inherit;font-size:12px;padding:7px 14px;border:1px solid rgba(0,0,0,0.2);'
         + 'background:#fff;border-radius:6px;cursor:pointer;color:#444;}'
         + '#panel-brief-editor .be-more[disabled]{opacity:0.5;cursor:default;}'
+        // compile / review / submit surface (US-009)
+        + '#panel-brief-editor .be-compile-bar{margin:18px 0 8px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;}'
+        + '#panel-brief-editor .be-compiled{margin:0;}'
+        + '#panel-brief-editor .be-compile-head{margin:8px 0 12px;font-size:14px;}'
+        + '#panel-brief-editor .be-compile-warn{background:#fff6e5;border:1px solid #f0d8a8;color:#8a5a00;'
+        + 'padding:10px 12px;border-radius:6px;margin:0 0 12px;font-size:13px;line-height:1.5;}'
+        + '#panel-brief-editor .be-compile-meta{display:flex;flex-wrap:wrap;gap:18px;font-size:13px;margin:0 0 14px;}'
+        + '#panel-brief-editor .be-cost{font-variant-numeric:tabular-nums;}'
+        + '#panel-brief-editor .be-variant{border:1px solid rgba(0,0,0,0.12);border-radius:8px;padding:14px;'
+        + 'margin:0 0 14px;background:rgba(0,0,0,0.015);}'
+        + '#panel-brief-editor .be-variant-head{margin:0 0 10px;}'
+        + '#panel-brief-editor .be-variant-id{font-family:monospace;font-size:11px;margin-left:6px;color:#777;}'
+        + '#panel-brief-editor .be-compile-insps{margin-top:8px;display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start;}'
+        + '#panel-brief-editor .be-compile-insp{width:104px;border:1px solid rgba(0,0,0,0.15);border-radius:6px;padding:5px;'
+        + 'background:#f4f4f4;font-size:9px;color:#666;word-break:break-all;}'
+        + '#panel-brief-editor .be-compile-insp img{width:100%;height:74px;object-fit:cover;border-radius:4px;display:block;margin-bottom:3px;}'
+        + '#panel-brief-editor .be-insp-warn{display:block;color:#a3243c;margin-top:3px;line-height:1.3;}'
+        + '#panel-brief-editor .be-submit-bar{margin:14px 0;display:flex;gap:12px;align-items:center;flex-wrap:wrap;}'
+        + '#panel-brief-editor .be-submit-note{font-size:12px;color:#555;}'
+        + '#panel-brief-editor .be-submit-note.be-over{color:#a3243c;font-weight:600;}'
+        + '#panel-brief-editor .be-progress{margin:10px 0;font-size:13px;}'
+        + '#panel-brief-editor .be-prog-head{margin:0 0 8px;}'
+        + '#panel-brief-editor .be-results{display:flex;flex-direction:column;gap:6px;margin-top:8px;}'
+        + '#panel-brief-editor .be-result a{color:var(--brand,#7a1f2b);word-break:break-all;text-decoration:none;}'
+        + '#panel-brief-editor .be-result a:hover{text-decoration:underline;}'
         + '</style>'
         + '<div class="be-insight"><strong>Brief editor:</strong> steer generation before it spends. '
         + 'Load a saved brief revision, adjust the five creative axes (dropdowns are locked to the canonical '
@@ -838,6 +923,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '</div>'
         + '<button type="submit" class="be-btn" id="be-save-btn" disabled>Save as new revision</button>'
         + '</form>'
+        + '<div class="be-compile-bar">'
+        + '<button type="button" class="be-btn" id="be-compile-btn">Compile brief</button>'
+        + '<span class="be-muted">Resolve the exact prompts, copy and cost with no spend before generating.</span>'
+        + '</div>'
+        + '<div class="be-compiled" id="be-compiled"></div>'
+        + '<div class="be-submit-bar" id="be-submit-bar" style="display:none;">'
+        + '<button type="button" class="be-btn" id="be-submit-btn">Submit and generate</button>'
+        + '<span class="be-submit-note" id="be-submit-note"></span>'
+        + '</div>'
+        + '<div class="be-progress" id="be-progress"></div>'
         + '<div class="be-status" id="be-status"></div>'
         + '</div>';
     }
@@ -1183,6 +1278,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // Inspiration references come from the picker's selection (uploads + library +
       // whatever was seeded from the loaded revision), de-duplicated to bare gs:// uris.
       rec.inspiration_image_uris = beInspiration.map(function (r) { return r.gcs_uri; });
+      // Dead axis (US-004): format is not an editable dropdown, so it is not read from
+      // the form. A loaded revision's stored format rides along unchanged into the new
+      // revision for backward compatibility; it never drives generation.
+      rec.format = typeof loaded.format === 'string' ? loaded.format : '';
       F10_BRIEF_AXES.forEach(function (a) {
         var sel = document.getElementById('be-axis-' + a.key);
         rec[a.key] = sel ? sel.value : loaded[a.key];
@@ -1258,6 +1357,298 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         renderStatusError('Failed to save revision: ' + (err && err.message ? err.message : err));
       } finally {
         if (save) save.disabled = false;
+      }
+    }
+
+    /* ---- compile / review / tweak / submit (US-009) ---- */
+
+    function fmtUsd(v) {
+      var n = Number(v);
+      if (!isFinite(n)) n = 0;
+      return n.toFixed(2);
+    }
+
+    /* "1080x1080, 1080x1350, 1080x1920" from an array of [w, h] pairs. */
+    function sizesLabel(sizes) {
+      return (Array.isArray(sizes) ? sizes : []).map(function (s) {
+        return Array.isArray(s) ? (s[0] + 'x' + s[1]) : String(s);
+      }).join(', ');
+    }
+
+    /* The last path segment of a gs:// uri, for a compact inspiration label. */
+    function shortUri(uri) {
+      var s = String(uri || '');
+      var slash = s.lastIndexOf('/');
+      return slash >= 0 ? s.slice(slash + 1) : s;
+    }
+
+    /* A thumb_url for an inspiration uri if the picker already has one (operator picked
+     * it or it was indexed from a library), else '' so compile falls back to a label. */
+    function inspThumbFor(uri) {
+      for (var i = 0; i < beInspiration.length; i++) {
+        if (beInspiration[i].gcs_uri === uri && beInspiration[i].thumb_url) return beInspiration[i].thumb_url;
+      }
+      return (beRefIndex[uri] && beRefIndex[uri].thumb_url) ? beRefIndex[uri].thumb_url : '';
+    }
+
+    /* The shared compile/submit request seed: same inputs for both, so the backend
+     * re-resolves identical briefs on submit and overlays the operator's edits by
+     * brief_id. Revision id comes from a loaded revision (or the load-id field). */
+    function buildCompileRequest() {
+      var loaded = beLoadedRevision || {};
+      var dirEl = document.getElementById('be-direction');
+      var req = {
+        client: loaded.client || beClient,
+        creativeDirection: dirEl ? (dirEl.value || '') : (loaded.creative_direction || ''),
+        baseInspirationImageUris: beInspiration.map(function (r) { return r.gcs_uri; }),
+        variantMatrix: beVariantMatrix || {},
+      };
+      if (beRemainingCap != null) req.remainingCapUsd = beRemainingCap;
+      var loadId = document.getElementById('be-load-id');
+      var rid = loaded.revision_id || (loadId ? loadId.value : '') || '';
+      if (rid) req.revisionId = rid;
+      return req;
+    }
+
+    /* Record an operator edit to a resolved prompt or copy block. Keyed by variant +
+     * index so readCompiledBrief() overlays it onto the compiled brief at submit time.
+     * This is exactly what the delegated textarea `input` handler calls, so a DOM edit
+     * and a test edit take the identical path. */
+    function applyCompiledEdit(kind, variantIdx, idx, text) {
+      if (!beCompiledEdits) beCompiledEdits = {};
+      var prefix = (kind === 'prompt') ? 'p' : 'c';
+      beCompiledEdits[prefix + ':' + (variantIdx | 0) + ':' + (idx | 0)] = String(text == null ? '' : text);
+    }
+
+    /* The approved compiled brief to submit: the compiled variants with every operator
+     * edit overlaid, plus the size set. brief_id is carried so the backend matches each
+     * approved variant to its re-resolved brief (US-008 _apply_approved_edits). */
+    function readCompiledBrief() {
+      if (!beCompiled || !Array.isArray(beCompiled.variants)) return null;
+      var edits = beCompiledEdits || {};
+      var variants = beCompiled.variants.map(function (v, vi) {
+        var prompts = (v.prompts || []).map(function (p, pi) {
+          var k = 'p:' + vi + ':' + pi;
+          return { component_role: p.component_role, prompt: (k in edits) ? edits[k] : (p.prompt || '') };
+        });
+        var copy = (v.copy || []).map(function (cb, ci) {
+          var k = 'c:' + vi + ':' + ci;
+          var out = { role: cb.role, text: (k in edits) ? edits[k] : (cb.text || '') };
+          if (cb.slot_index !== undefined && cb.slot_index !== null) out.slot_index = cb.slot_index;
+          return out;
+        });
+        var out = { prompts: prompts, copy: copy };
+        if (v.brief_id) out.brief_id = v.brief_id;
+        return out;
+      });
+      return { variants: variants, sizes: beCompiled.sizes || [] };
+    }
+
+    /* One inspiration cell: a real thumbnail when we have one, else the reference
+     * label, with any US-004 validation warning beneath it. */
+    function compileInspHtml(im) {
+      im = im || {};
+      var thumb = inspThumbFor(im.uri);
+      var body = thumb
+        ? '<img src="' + esc(thumb) + '" alt="" loading="lazy" />'
+        : '<span>' + esc(shortUri(im.uri)) + '</span>';
+      var warn = im.warning ? '<span class="be-insp-warn">' + esc(im.warning) + '</span>' : '';
+      return '<div class="be-compile-insp" title="' + esc(im.uri || '') + '">' + body + warn + '</div>';
+    }
+
+    /* One variant card: its resolved prompt(s) and copy as EDITABLE textareas (data
+     * attributes let the delegated input handler map an edit back to the model), plus
+     * the inspiration cells. */
+    function variantCardHtml(v, vi) {
+      v = v || {};
+      var prompts = (v.prompts || []).map(function (p, pi) {
+        return '<label class="be-field"><span class="be-label">Prompt: '
+          + esc(p.component_role || ('image ' + (pi + 1))) + '</span>'
+          + '<textarea class="be-compile-prompt" data-be-edit="prompt" data-vi="' + vi + '" data-idx="' + pi + '">'
+          + esc(p.prompt || '') + '</textarea></label>';
+      }).join('');
+      var copy = (v.copy || []).map(function (cb, ci) {
+        return '<label class="be-field"><span class="be-label">Copy: '
+          + esc(cb.role || ('block ' + (ci + 1))) + '</span>'
+          + '<textarea class="be-compile-copy" data-be-edit="copy" data-vi="' + vi + '" data-idx="' + ci + '">'
+          + esc(cb.text || '') + '</textarea></label>';
+      }).join('');
+      var insps = (v.inspiration_images || []).map(compileInspHtml).join('');
+      var inspWrap = insps
+        ? '<div class="be-compile-insps"><span class="be-label">Inspiration</span>' + insps + '</div>' : '';
+      var idLine = v.brief_id ? '<span class="be-variant-id">' + esc(v.brief_id) + '</span>' : '';
+      return '<div class="be-variant" data-vi="' + vi + '">'
+        + '<div class="be-variant-head"><strong>Variant ' + (vi + 1) + '</strong>' + idLine + '</div>'
+        + prompts + copy + inspWrap + '</div>';
+    }
+
+    /* The full inline compiled-brief view: header, any top-level warnings, the size set
+     * and cost estimate, then one editable card per variant. */
+    function compiledHtml(resp) {
+      resp = resp || {};
+      var ce = resp.cost_estimate || {};
+      var variants = Array.isArray(resp.variants) ? resp.variants : [];
+      var warn = (Array.isArray(resp.warnings) && resp.warnings.length)
+        ? '<div class="be-compile-warn">' + resp.warnings.map(esc).join('<br />') + '</div>' : '';
+      var meta = '<div class="be-compile-meta">'
+        + '<div><span class="be-label">Sizes</span> ' + esc(sizesLabel(resp.sizes)) + '</div>'
+        + '<div class="be-cost"><span class="be-label">Cost estimate</span> '
+        + 'Files: ' + (ce.files_produced || 0)
+        + ' | Generations: ' + (ce.unique_image_generations || 0)
+        + ' | Estimated: $' + fmtUsd(ce.estimated_usd)
+        + ' | Remaining cap: $' + fmtUsd(ce.remaining_cap_usd)
+        + '</div></div>';
+      var head = '<div class="be-compile-head"><strong>Compiled brief</strong> '
+        + '<span class="be-muted">' + variants.length + ' variant' + (variants.length === 1 ? '' : 's')
+        + ', no spend yet. Edit any prompt or copy below; your edits are what generate.</span></div>';
+      return head + warn + meta + '<div class="be-variants">' + variants.map(variantCardHtml).join('') + '</div>';
+    }
+
+    function overCapMessage(ce) {
+      ce = ce || {};
+      return 'Estimated $' + fmtUsd(ce.estimated_usd) + ' exceeds the remaining cap $'
+        + fmtUsd(ce.remaining_cap_usd) + '. Reduce the size set or the variant matrix to submit.';
+    }
+    function readyMessage(ce) {
+      ce = ce || {};
+      return 'Ready to generate ' + (ce.files_produced || 0) + ' file'
+        + ((ce.files_produced === 1) ? '' : 's') + ' for about $' + fmtUsd(ce.estimated_usd)
+        + ' (remaining cap $' + fmtUsd(ce.remaining_cap_usd) + ').';
+    }
+    function setSubmitNote(msg, over) {
+      var el = document.getElementById('be-submit-note');
+      if (!el) return;
+      el.textContent = msg || '';
+      if (el.classList) { if (over) el.classList.add('be-over'); else el.classList.remove('be-over'); }
+    }
+
+    /* Render the compiled brief inline, reveal the submit bar, and gate Submit on the
+     * cost estimate: over the remaining cap disables Submit with a clear message. */
+    function renderCompiled(resp) {
+      var el = document.getElementById('be-compiled');
+      if (el) el.innerHTML = compiledHtml(resp);
+      var bar = document.getElementById('be-submit-bar');
+      if (bar && bar.style) bar.style.display = '';
+      var prog = document.getElementById('be-progress');
+      if (prog) prog.innerHTML = '';
+      var ce = (resp && resp.cost_estimate) || {};
+      var over = !!ce.exceeds_cap;
+      var btn = document.getElementById('be-submit-btn');
+      if (btn) btn.disabled = over;
+      setSubmitNote(over ? overCapMessage(ce) : readyMessage(ce), over);
+    }
+
+    function renderCompileError(msg) {
+      var el = document.getElementById('be-compiled');
+      if (el) el.innerHTML = '<div class="be-err">' + esc(msg || 'Compile failed.') + '</div>';
+      var bar = document.getElementById('be-submit-bar');
+      if (bar && bar.style) bar.style.display = 'none';
+    }
+
+    /* Compile the current brief with NO spend and render the result inline. */
+    async function compileBrief() {
+      stopPolling();
+      var el = document.getElementById('be-compiled');
+      if (el) el.innerHTML = '<div class="be-muted">Compiling brief (no spend)...</div>';
+      var bar = document.getElementById('be-submit-bar');
+      if (bar && bar.style) bar.style.display = 'none';
+      try {
+        var resp = await store().compile(buildCompileRequest());
+        if (!resp || resp.ok === false) throw new Error((resp && resp.error) || 'compile failed');
+        beCompiled = resp;
+        beCompiledEdits = {};
+        renderCompiled(resp);
+      } catch (err) {
+        beCompiled = null;
+        renderCompileError('Failed to compile: ' + (err && err.message ? err.message : err));
+      }
+    }
+
+    /* Render a job's live progress + the results that have landed so far. Accepts both
+     * the submit 202 body and a /status job doc (both carry status + counts). */
+    function renderProgress(doc) {
+      var el = document.getElementById('be-progress');
+      if (!el) return;
+      doc = doc || {};
+      var status = doc.status || 'running';
+      var done = doc.bundles_completed || 0;
+      var total = doc.bundles_total || 0;
+      var spend = doc.spend_usd;
+      var assets = Array.isArray(doc.asset_uris) ? doc.asset_uris : [];
+      var head = '<div class="be-prog-head"><strong>Generation: ' + esc(status) + '</strong>'
+        + ' · ' + done + '/' + (total || done) + ' bundles'
+        + (spend != null ? (' · $' + fmtUsd(spend) + ' spent') : '')
+        + (doc.error ? (' · ' + esc(doc.error)) : '') + '</div>';
+      var results = assets.length
+        ? '<div class="be-results">' + assets.map(function (u) {
+          return '<div class="be-result"><a href="' + esc(u) + '" target="_blank" rel="noopener">'
+            + esc(u) + '</a></div>';
+        }).join('') + '</div>'
+        : '<div class="be-muted">No results yet.</div>';
+      el.innerHTML = head + results;
+    }
+
+    function renderProgressError(msg) {
+      var el = document.getElementById('be-progress');
+      if (el) el.innerHTML = '<div class="be-err">' + esc(msg || 'Generation failed.') + '</div>';
+    }
+
+    function stopPolling() {
+      if (bePollTimer) { clearTimeout(bePollTimer); bePollTimer = null; }
+    }
+
+    /* One status poll: read the job, render its progress, and return the job doc (or
+     * null on error, already surfaced). Exposed so tests drive polling without timers. */
+    async function pollStatusOnce(jobId) {
+      try {
+        var resp = await store().status({ jobId: jobId });
+        var doc = (resp && resp.job) ? resp.job : resp;
+        renderProgress(doc);
+        return doc;
+      } catch (err) {
+        renderProgressError('Could not read job status: ' + (err && err.message ? err.message : err));
+        return null;
+      }
+    }
+
+    /* Poll /status on an interval, dropping in results as they land, until the job
+     * reaches a terminal state (completed | failed) or the polling is stopped. */
+    function startPolling(jobId) {
+      stopPolling();
+      var tick = function () {
+        pollStatusOnce(jobId).then(function (doc) {
+          if (!doc) return; // error already surfaced; stop the loop
+          if (doc.status === 'completed' || doc.status === 'failed') { stopPolling(); return; }
+          if (typeof setTimeout === 'function') bePollTimer = setTimeout(tick, POLL_MS);
+        });
+      };
+      if (typeof setTimeout === 'function') bePollTimer = setTimeout(tick, POLL_MS);
+    }
+
+    /* Submit the approved (edited) compiled brief for generation, then poll status.
+     * Over the remaining cap, Submit is disabled and this is a no-op guard (the server
+     * would 402 anyway). */
+    async function submitCompiled() {
+      if (!beCompiled) return;
+      var ce = beCompiled.cost_estimate || {};
+      if (ce.exceeds_cap) { setSubmitNote(overCapMessage(ce), true); return; }
+      var compiledBrief = readCompiledBrief();
+      if (!compiledBrief) return;
+      var btn = document.getElementById('be-submit-btn');
+      if (btn) btn.disabled = true;
+      var prog = document.getElementById('be-progress');
+      if (prog) prog.innerHTML = '<div class="be-muted">Submitting...</div>';
+      try {
+        var req = buildCompileRequest();
+        req.compiledBrief = compiledBrief;
+        var resp = await store().submit(req);
+        if (!resp || resp.ok === false) throw new Error((resp && resp.error) || 'submit failed');
+        beJobId = resp.job_id || null;
+        renderProgress(resp);
+        if (beJobId) startPolling(beJobId);
+      } catch (err) {
+        renderProgressError('Submit failed: ' + (err && err.message ? err.message : err));
+        if (btn) btn.disabled = false;
       }
     }
 
@@ -1391,6 +1782,29 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         form.addEventListener('submit', function (e) { if (e && e.preventDefault) e.preventDefault(); saveNewRevision(); });
       }
       wireInspiration();
+
+      // Compile / review / tweak / submit surface (US-009). The compile + submit
+      // buttons are static; the edit handler is delegated on the compiled container so
+      // the dynamically rendered prompt/copy textareas need no per-node listeners.
+      var compileBtn = document.getElementById('be-compile-btn');
+      if (compileBtn && compileBtn.addEventListener) {
+        compileBtn.addEventListener('click', function (e) { if (e && e.preventDefault) e.preventDefault(); compileBrief(); });
+      }
+      var submitBtn = document.getElementById('be-submit-btn');
+      if (submitBtn && submitBtn.addEventListener) {
+        submitBtn.addEventListener('click', function (e) { if (e && e.preventDefault) e.preventDefault(); submitCompiled(); });
+      }
+      var compiledEl = document.getElementById('be-compiled');
+      if (compiledEl && compiledEl.addEventListener) {
+        compiledEl.addEventListener('input', function (e) {
+          var t = e && e.target;
+          if (!t || !t.getAttribute) return;
+          var kind = t.getAttribute('data-be-edit');
+          if (!kind) return;
+          applyCompiledEdit(kind, parseInt(t.getAttribute('data-vi'), 10) || 0,
+            parseInt(t.getAttribute('data-idx'), 10) || 0, t.value);
+        });
+      }
       var others = document.querySelectorAll ? document.querySelectorAll('#sidebar nav a') : [];
       Array.prototype.forEach.call(others, function (a) {
         if (a === beNavLink || !a.addEventListener) return;
@@ -1474,10 +1888,29 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       getInspiration: function () { return beInspiration.slice(); },
       getClientPage: function () { return { offset: beClientPage.offset, hasMore: beClientPage.hasMore }; },
       getCompState: function () { return JSON.parse(JSON.stringify(beCompState)); },
+      // compile / review / tweak / submit surface (US-009)
+      compileBrief: compileBrief,
+      submitCompiled: submitCompiled,
+      pollStatusOnce: pollStatusOnce,
+      applyCompiledEdit: applyCompiledEdit,
+      readCompiledBrief: readCompiledBrief,
+      buildCompileRequest: buildCompileRequest,
+      renderCompiled: renderCompiled,
+      compileEndpoint: compileEndpoint,
+      submitEndpoint: submitEndpoint,
+      statusEndpoint: statusEndpoint,
+      getCompiled: function () { return beCompiled; },
+      getJobId: function () { return beJobId; },
+      setVariantMatrix: function (m) { beVariantMatrix = m; },
+      setRemainingCap: function (c) { beRemainingCap = c; },
+      stopPolling: stopPolling,
       resetForTest: function () {
         beBooted = false; beLoadedRevision = null;
         beInspiration = []; beRefIndex = {}; beInspTab = 'upload';
         beClientPage = { offset: 0, hasMore: false, loading: false }; beCompState = {};
+        stopPolling();
+        beCompiled = null; beCompiledEdits = null; beVariantMatrix = null;
+        beRemainingCap = null; beJobId = null;
       },
     };
   })();
