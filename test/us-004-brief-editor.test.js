@@ -17,8 +17,9 @@
  * PART 2 - BROWSER panel (probe-gated self-registration):
  *   - probe true injects the nav link + panel; probe false and a probe error both fail
  *     closed with zero DOM trace (AC1, module pattern);
- *   - the five axes are <select> dropdowns whose options are exactly the canonical enums,
- *     and there is no free-text axis input (AC1/AC3, e2e 2);
+ *   - the editable axes are <select> dropdowns whose options are exactly the canonical
+ *     enums, the dead format axis is gone, and there is no free-text axis input
+ *     (AC1/AC3, e2e 2);
  *   - loading a revision, changing the hook and saving writes a NEW revision through a
  *     fake store and shows its id + the CLI next step (AC2/AC4, e2e 1);
  *   - the save path refuses a tampered non-canonical axis (defence in depth, AC3).
@@ -39,7 +40,10 @@ const BE = require('../f10-brief-editor.js'); // Node half (module.exports)
 let passed = 0;
 async function check(name, fn) { await fn(); passed++; console.log('  ok -', name); }
 
-/* A canonical sample revision record (all five axes canonical). */
+/* A canonical sample revision record (all editable axes canonical). It also carries a
+ * stored format value: US-004 retired format as an editable axis, but the field and the
+ * BigQuery column are kept for backward compatibility, so a legacy format rides along on
+ * the persisted doc and registry row and is ignored gracefully by validation. */
 function sampleRecord(overrides) {
   return Object.assign({
     revision_id: 'rev_moshy_seed',
@@ -105,7 +109,14 @@ async function runNode() {
     assert.deepStrictEqual(BE.CANONICAL.cta_type, [
       'shop-now', 'learn-more', 'sign-up', 'book', 'download', 'subscribe', 'contact', 'none',
     ]);
-    assert.deepStrictEqual(BE.CANONICAL.format, ['static-photo', 'static-illustration']);
+    // US-004: the dead format axis is gone from the editor. It has no canonical
+    // vocabulary and is not one of the editable axes.
+    assert.strictEqual(BE.CANONICAL.format, undefined, 'no format canonical vocabulary');
+    assert.deepStrictEqual(
+      BE.AXES.map((a) => a.key),
+      ['visual_style', 'hook_type', 'message_angle', 'cta_type'],
+      'the format axis is gone from the editable axes',
+    );
   });
 
   // ── The GCS path + gs:// uri match the US-003 contract, with the same slug rule. ──
@@ -124,10 +135,17 @@ async function runNode() {
     const bad = BE.validate(sampleRecord({ visual_style: 'neon-chrome' }));
     assert.ok(bad.error, 'a non-canonical axis is an error');
     assert.ok(/non-canonical visual_style/.test(bad.error), 'the error names the offending axis');
-    // Every axis is guarded, not just visual_style.
+    // Every editable axis is guarded, not just visual_style.
     assert.ok(BE.validate(sampleRecord({ hook_type: 'shock' })).error);
     assert.ok(BE.validate(sampleRecord({ cta_type: 'buy-it' })).error);
-    assert.ok(BE.validate(sampleRecord({ format: 'carousel' })).error, 'carousel is not a canonical single-static format');
+    // US-004: format is a dead axis, no longer gated. Even a value that used to be
+    // rejected (carousel) or an empty/absent format is now accepted gracefully; the
+    // stored value simply rides along on the backward-compatible column.
+    assert.ok(!BE.validate(sampleRecord({ format: 'carousel' })).error, 'a stored format is ignored, not rejected');
+    assert.ok(!BE.validate(sampleRecord({ format: '' })).error, 'an empty format validates');
+    const noFmt = sampleRecord();
+    delete noFmt.format;
+    assert.ok(!BE.validate(noFmt).error, 'an absent format validates');
     assert.ok(!BE.validate(sampleRecord()).error, 'a fully canonical record validates');
   });
 
@@ -338,19 +356,26 @@ async function runBrowser() {
       'no tab on a probe error');
   });
 
-  // ── AC1/AC3, e2e 2: the five axes are dropdowns of exactly the canonical enums,
-  //     and there is no free-text axis input. ──
-  await check('each axis is a <select> of the canonical enum only - no free-text axis input (e2e 2)', async () => {
+  // ── AC1/AC3, e2e 2: the editable axes are dropdowns of exactly the canonical
+  //     enums, and there is no free-text axis input. The dead format axis (US-004)
+  //     is gone: no Format dropdown appears in the editor. ──
+  await check('each editable axis is a <select> of the canonical enum only, and the format axis is gone (e2e 2)', async () => {
     const ctx = makeBrowserCtx();
     const html = ctx.window.f10BriefEditor.panelMarkup();
     const CANON = ctx.window.f10BriefEditor.CANONICAL;
-    ['visual_style', 'hook_type', 'message_angle', 'cta_type', 'format'].forEach((axis) => {
+    ['visual_style', 'hook_type', 'message_angle', 'cta_type'].forEach((axis) => {
       assert.ok(new RegExp('id="be-axis-' + axis + '"').test(html), axis + ' is rendered as a select');
       assert.ok(new RegExp('<select[^>]*id="be-axis-' + axis + '"').test(html), axis + ' control is a <select>, not an input');
       CANON[axis].forEach((v) => {
         assert.ok(new RegExp('<option value="' + v + '">').test(html), axis + ' offers canonical option ' + v);
       });
     });
+    // US-004 (e2e 2, AC1): the Format axis no longer appears in the editor at all.
+    assert.ok(!/id="be-axis-format"/.test(html), 'no Format dropdown is rendered');
+    assert.ok(!/<option value="static-photo">/.test(html), 'no static-photo format option is rendered');
+    assert.ok(!/<option value="static-illustration">/.test(html), 'no static-illustration format option is rendered');
+    assert.strictEqual(ctx.window.f10BriefEditor.AXES.map((a) => a.key).indexOf('format'), -1,
+      'format is not one of the editable axes');
     // The only free-text inputs are the load-id field and copy textareas - never an axis.
     assert.ok(!/<input[^>]*be-axis/.test(html), 'no <input> is bound to any axis');
     assert.ok(!/<textarea[^>]*be-axis/.test(html), 'no <textarea> is bound to any axis');

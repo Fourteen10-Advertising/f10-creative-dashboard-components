@@ -14,14 +14,16 @@
  *       gs://f10-creative-assets/brief-revisions/{client}/{revision_id}.json
  *   - a registry row in BigQuery
  *       mcc-poc-477801.creative_pipeline.brief_revisions
- * carrying the five canonical axes (visual_style, hook_type, message_angle, cta_type,
- * format), the copy blocks as free text, and provenance (client, evidence source,
+ * carrying the canonical axes (visual_style, hook_type, message_angle, cta_type),
+ * the copy blocks as free text, and provenance (client, evidence source,
  * winning values, revision id). The axis vocabularies below MIRROR brief.py /
  * brief_revision.schema.json EXACTLY - they are not invented here. A save both validates
  * the axes against the canonical vocabulary and writes the doc + row so a future
- * generation run reproduces the equivalent in-code brief.
+ * generation run reproduces the equivalent in-code brief. US-004 retired the dead
+ * format axis; the brief_revisions.format column is kept for backward compatibility
+ * but format is no longer edited here and no longer drives generation.
  *
- * NEVER NON-CANONICAL (AC3): the five axes are edited through <select> dropdowns whose
+ * NEVER NON-CANONICAL (AC3): the editable axes are edited through <select> dropdowns whose
  * options are exactly the canonical enums, so a free-text axis value is not reachable in
  * the UI. The save path validates a second time (defence in depth) and rejects any axis
  * value outside its vocabulary before anything is written.
@@ -69,9 +71,15 @@
 
 /* The canonical vocabularies. These MIRROR the python source of truth EXACTLY:
  * brief.CANONICAL_VISUAL_STYLES / CANONICAL_HOOK_TYPES / CANONICAL_MESSAGE_ANGLES /
- * CANONICAL_CTA_TYPES / CANONICAL_FORMATS and brief_revision.schema.json enums. A test
- * asserts they stay in lockstep. Do not add or reorder values here without changing the
- * schema; the whole point of the editor is that it cannot emit a non-canonical value. */
+ * CANONICAL_CTA_TYPES and brief_revision.schema.json enums. A test asserts they stay
+ * in lockstep. Do not add or reorder values here without changing the schema; the
+ * whole point of the editor is that it cannot emit a non-canonical value.
+ *
+ * US-004 retired the dead format axis: photo versus illustration is a visual_style
+ * concept and every ad is static for now, so format is no longer an editable axis
+ * here and has no canonical vocabulary. The brief_revisions.format BigQuery column
+ * and the stored field are retained for backward compatibility (see the MERGE SQL
+ * and buildDoc/buildRow/fromDoc below), and any stored value is ignored gracefully. */
 var F10_BRIEF_CANONICAL = {
   visual_style: [
     'minimal-clean', 'bold-graphic', 'warm-natural', 'aspirational-premium',
@@ -92,18 +100,16 @@ var F10_BRIEF_CANONICAL = {
     'shop-now', 'learn-more', 'sign-up', 'book', 'download', 'subscribe',
     'contact', 'none',
   ],
-  format: [
-    'static-photo', 'static-illustration',
-  ],
 };
 
-/* The five editable axes, in render order, with human-readable labels. */
+/* The editable axes, in render order, with human-readable labels. The dead format
+ * axis (US-004) is intentionally absent, so no Format dropdown is rendered and
+ * format does not drive save, load, or generation. */
 var F10_BRIEF_AXES = [
   { key: 'visual_style', label: 'Visual style' },
   { key: 'hook_type', label: 'Hook type' },
   { key: 'message_angle', label: 'Message angle' },
   { key: 'cta_type', label: 'CTA type' },
-  { key: 'format', label: 'Format' },
 ];
 
 var F10_BRIEF_SCHEMA = 'brief_revision';
@@ -213,7 +219,11 @@ function f10BriefValidate(rec) {
     hook_type: axes.hook_type,
     message_angle: axes.message_angle,
     cta_type: axes.cta_type,
-    format: axes.format,
+    // Dead axis (US-004): format is no longer an editable axis, so it is not in the
+    // validated axes loop above. Any stored value is preserved verbatim into the
+    // backward-compatible field / BigQuery column and ignored gracefully; a new
+    // revision simply carries an empty format.
+    format: typeof rec.format === 'string' ? rec.format : '',
     copy_blocks: copyBlocks,
     creative_direction: typeof rec.creative_direction === 'string' ? rec.creative_direction : '',
     inspiration_image_uris: Array.isArray(rec.inspiration_image_uris)
@@ -1183,6 +1193,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // Inspiration references come from the picker's selection (uploads + library +
       // whatever was seeded from the loaded revision), de-duplicated to bare gs:// uris.
       rec.inspiration_image_uris = beInspiration.map(function (r) { return r.gcs_uri; });
+      // Dead axis (US-004): format is not an editable dropdown, so it is not read from
+      // the form. A loaded revision's stored format rides along unchanged into the new
+      // revision for backward compatibility; it never drives generation.
+      rec.format = typeof loaded.format === 'string' ? loaded.format : '';
       F10_BRIEF_AXES.forEach(function (a) {
         var sel = document.getElementById('be-axis-' + a.key);
         rec[a.key] = sel ? sel.value : loaded[a.key];
