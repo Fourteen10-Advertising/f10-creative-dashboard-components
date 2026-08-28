@@ -1353,6 +1353,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var result = await store().save(record);
         if (result && result.ok === false) throw new Error(result.error || 'save rejected');
         renderSaved(result || { revision_id: record.revision_id });
+        // Adopt the just-saved record as the loaded revision so a later Compile or
+        // Submit (even one that resolves without an inline brief) still reflects it,
+        // and readForm carries the saved provenance + id forward. Prefer the
+        // backend's echoed revision doc; fall back to the validated record as a doc.
+        var savedDoc = (result && result.revision) ? result.revision : f10BriefBuildDoc(validated.record);
+        beLoadedRevision = f10BriefFromDoc(savedDoc);
       } catch (err) {
         renderStatusError('Failed to save revision: ' + (err && err.message ? err.message : err));
       } finally {
@@ -1397,11 +1403,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function buildCompileRequest() {
       var loaded = beLoadedRevision || {};
       var dirEl = document.getElementById('be-direction');
+      // The LIVE on-screen brief is the primary driver. readForm() assembles the
+      // full current record (the axes, the copy VERBATIM, the creative direction and
+      // the inspiration references) in the exact revision-doc shape a saved revision
+      // has, so Compile and Submit resolve exactly what the operator sees, with no
+      // Save/Load step. client + creativeDirection stay for backward compatibility;
+      // a revisionId is still sent when a revision is loaded or entered, but the
+      // inline brief wins if both reach the backend.
       var req = {
         client: loaded.client || beClient,
         creativeDirection: dirEl ? (dirEl.value || '') : (loaded.creative_direction || ''),
         baseInspirationImageUris: beInspiration.map(function (r) { return r.gcs_uri; }),
         variantMatrix: beVariantMatrix || {},
+        brief: readForm(),
       };
       if (beRemainingCap != null) req.remainingCapUsd = beRemainingCap;
       var loadId = document.getElementById('be-load-id');

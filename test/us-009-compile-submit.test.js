@@ -198,6 +198,138 @@ async function run() {
     assert.strictEqual(req.client, 'moshy', 'the resolved client is forwarded');
   });
 
+  // A tiny helper: make querySelectorAll('#be-copy .be-copy-text') return copy nodes
+  // (role via data-role, text via value), exactly what readCopy() reads. Anything
+  // else resolves to [] like the tiny DOM default.
+  function stubCopy(ctx, blocks) {
+    const nodes = blocks.map(function (b) {
+      return {
+        value: b.text,
+        getAttribute: function (a) { return a === 'data-role' ? b.role : null; },
+      };
+    });
+    ctx.document.querySelectorAll = function (sel) {
+      return sel === '#be-copy .be-copy-text' ? nodes : [];
+    };
+  }
+
+  // ── US-009 FIX / e2e: Compile resolves the LIVE on-screen brief. The request
+  //     carries the current axes AND the copy VERBATIM as an inline `brief`, so no
+  //     Save/Load step is needed and "Book your consult" is not dropped to a
+  //     default. ──
+  await check('Compile sends the live on-screen brief as an inline brief: axes + verbatim copy', async () => {
+    const ctx = makeBrowserCtx();
+    let req = null;
+    ctx.window.f10BriefEditor.setStore({
+      async probe() { return true; }, async load() {}, async save() {},
+      async compile(p) { req = p; return compileResponse(); },
+    });
+    await ctx.window.initBriefEditor();
+    // The operator sets each axis + drafts copy on screen (no Save first).
+    ctx.document.getElementById('be-axis-visual_style').value = 'ugc-authentic';
+    ctx.document.getElementById('be-axis-hook_type').value = 'question';
+    ctx.document.getElementById('be-axis-message_angle').value = 'problem-solution';
+    ctx.document.getElementById('be-axis-cta_type').value = 'book-now';
+    ctx.document.getElementById('be-direction').value = 'warm, authentic, real people';
+    stubCopy(ctx, [
+      { role: 'headline', text: 'Sleep better tonight' },
+      { role: 'cta', text: 'Book your consult' },
+    ]);
+
+    await ctx.window.f10BriefEditor.compileBrief();
+
+    assert.ok(req && req.brief, 'the compile request carries an inline brief (the live form)');
+    // The four axes are forwarded exactly as set on screen.
+    assert.strictEqual(req.brief.visual_style, 'ugc-authentic', 'visual_style axis carried');
+    assert.strictEqual(req.brief.hook_type, 'question', 'hook_type axis carried');
+    assert.strictEqual(req.brief.message_angle, 'problem-solution', 'message_angle axis carried');
+    assert.strictEqual(req.brief.cta_type, 'book-now', 'cta_type axis carried');
+    // The copy is carried VERBATIM (US-003: "Book your consult" is not rewritten).
+    // Compare via JSON: the brief is built inside the vm realm, so its objects have a
+    // different prototype than a main-realm literal and deepStrictEqual would reject
+    // them on prototype alone.
+    assert.strictEqual(JSON.stringify(req.brief.copy_blocks), JSON.stringify([
+      { role: 'headline', text: 'Sleep better tonight' },
+      { role: 'cta', text: 'Book your consult' },
+    ]), 'the drafted copy is carried verbatim in the inline brief');
+    assert.strictEqual(req.brief.creative_direction, 'warm, authentic, real people',
+      'creative direction carried on the inline brief');
+    // Backward-compat fields still present alongside the inline brief.
+    assert.strictEqual(req.creativeDirection, 'warm, authentic, real people',
+      'creativeDirection still sent for backward compatibility');
+    assert.strictEqual(req.client, 'moshy', 'client scope still sent at the top level');
+    assert.strictEqual(req.brief.client, 'moshy',
+      'the inline brief carries the client so the backend can enforce scope');
+  });
+
+  // ── US-009 FIX: two different on-screen brief states produce materially different
+  //     compile payloads (the "same brief no matter what I change" bug is gone). ──
+  await check('two different form states produce different compile payloads', async () => {
+    const ctx = makeBrowserCtx();
+    let req = null;
+    ctx.window.f10BriefEditor.setStore({
+      async probe() { return true; }, async load() {}, async save() {},
+      async compile(p) { req = p; return compileResponse(); },
+    });
+    await ctx.window.initBriefEditor();
+
+    // Project only the operator-driven fields (revision_id is a random stamp).
+    function project(b) {
+      return JSON.stringify({
+        visual_style: b.visual_style, hook_type: b.hook_type,
+        message_angle: b.message_angle, cta_type: b.cta_type,
+        creative_direction: b.creative_direction, copy_blocks: b.copy_blocks,
+      });
+    }
+
+    // State A.
+    ctx.document.getElementById('be-axis-visual_style').value = 'ugc-authentic';
+    ctx.document.getElementById('be-axis-cta_type').value = 'book-now';
+    ctx.document.getElementById('be-direction').value = 'warm and authentic';
+    stubCopy(ctx, [{ role: 'cta', text: 'Book your consult' }]);
+    await ctx.window.f10BriefEditor.compileBrief();
+    const payloadA = project(req.brief);
+
+    // State B: a different visual style, cta and copy.
+    ctx.document.getElementById('be-axis-visual_style').value = 'bold-graphic';
+    ctx.document.getElementById('be-axis-cta_type').value = 'learn-more';
+    ctx.document.getElementById('be-direction').value = 'high contrast, punchy';
+    stubCopy(ctx, [{ role: 'cta', text: 'Start your trial' }]);
+    await ctx.window.f10BriefEditor.compileBrief();
+    const payloadB = project(req.brief);
+
+    assert.notStrictEqual(payloadA, payloadB, 'changing axes + copy changes the compile payload');
+  });
+
+  // ── US-009 FIX: Submit derives from the SAME live on-screen brief as Compile,
+  //     so the job generates exactly what the operator saw. ──
+  await check('Submit carries the same inline on-screen brief as Compile', async () => {
+    const ctx = makeBrowserCtx();
+    let submitted = null;
+    ctx.window.f10BriefEditor.setStore({
+      async probe() { return true; }, async load() {}, async save() {},
+      async compile() { return compileResponse(); },
+      async submit(p) { submitted = p; return { ok: true, job_id: 'j_live', status: 'running' }; },
+      async status() { return { ok: true, job: { status: 'completed', asset_uris: [] } }; },
+    });
+    await ctx.window.initBriefEditor();
+    ctx.document.getElementById('be-axis-visual_style').value = 'ugc-authentic';
+    ctx.document.getElementById('be-axis-cta_type').value = 'book-now';
+    stubCopy(ctx, [{ role: 'cta', text: 'Book your consult' }]);
+    await ctx.window.f10BriefEditor.compileBrief();
+    await ctx.window.f10BriefEditor.submitCompiled();
+    ctx.window.f10BriefEditor.stopPolling();
+
+    assert.ok(submitted && submitted.brief, 'submit carries the inline on-screen brief');
+    assert.strictEqual(submitted.brief.visual_style, 'ugc-authentic', 'submit inline brief carries the live axis');
+    assert.strictEqual(JSON.stringify(submitted.brief.copy_blocks),
+      JSON.stringify([{ role: 'cta', text: 'Book your consult' }]),
+      'submit inline brief carries the verbatim copy');
+    // And it still sends the approved compiled brief (the edit-overlay path).
+    assert.ok(submitted.compiledBrief && Array.isArray(submitted.compiledBrief.variants),
+      'submit still sends the approved compiled brief');
+  });
+
   // ── AC2 / e2e 2: edit a resolved prompt, submit, and the EDITED prompt is the one
   //     sent to the backend (the round-trip that proves edits are what generate). ──
   await check('an edited prompt is the prompt sent to submit; unedited copy carries through (e2e 2)', async () => {
