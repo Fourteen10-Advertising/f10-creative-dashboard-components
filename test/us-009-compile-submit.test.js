@@ -464,6 +464,55 @@ async function run() {
       'both results are shown as they land');
   });
 
+  // ── Viewable results: a landed composite renders as an <img> thumbnail from the
+  //     signed asset_previews[].url (a browser cannot open a gs:// uri), with the
+  //     size as a label and a click-through that opens the full signed url. ──
+  await check('landed composites render as <img> thumbnails from signed asset_previews', async () => {
+    const ctx = makeBrowserCtx();
+    const gcs = 'gs://f10-creative-assets/components/meta/Moshy/b1/composite_1080x1080.png';
+    const signed = 'https://signed.example/composite_1080x1080.png?sig=abc';
+    ctx.window.f10BriefEditor.setStore({
+      async probe() { return true; }, async load() {}, async save() {},
+      async status() {
+        return { ok: true, job: {
+          job_id: 'jobV', status: 'completed', bundles_total: 1, bundles_completed: 1, spend_usd: 0.03,
+          asset_uris: [gcs],
+          asset_previews: [{ gcs_uri: gcs, url: signed, size: '1080x1080' }],
+        } };
+      },
+    });
+    await ctx.window.initBriefEditor();
+    await ctx.window.f10BriefEditor.pollStatusOnce('jobV');
+    ctx.window.f10BriefEditor.stopPolling();
+    const html = progressHtml(ctx);
+    assert.ok(html.indexOf('<img') !== -1 && html.indexOf('src="' + signed + '"') !== -1,
+      'the landed composite renders as an <img> from the signed preview url');
+    assert.ok(html.indexOf('be-result-thumb') !== -1, 'uses the result-thumb thumbnail styling');
+    assert.ok(html.indexOf('1080x1080') !== -1, 'shows the composite size as a label');
+    assert.ok(/target="_blank"/.test(html), 'click-through opens the signed url in a new tab');
+  });
+
+  // ── Fallback: with no signed url, the result stays the raw gs:// text link. ──
+  await check('results fall back to the gs:// text link when no signed preview url is available', async () => {
+    const ctx = makeBrowserCtx();
+    ctx.window.f10BriefEditor.setStore({
+      async probe() { return true; }, async load() {}, async save() {},
+      async status() {
+        return { ok: true, job: {
+          job_id: 'jobF', status: 'completed', bundles_total: 1, bundles_completed: 1,
+          asset_uris: ['gs://out/moshy/1.png'],
+          asset_previews: [{ gcs_uri: 'gs://out/moshy/1.png', url: null, size: null }],
+        } };
+      },
+    });
+    await ctx.window.initBriefEditor();
+    await ctx.window.f10BriefEditor.pollStatusOnce('jobF');
+    ctx.window.f10BriefEditor.stopPolling();
+    const html = progressHtml(ctx);
+    assert.ok(html.indexOf('<img') === -1, 'no <img> is rendered when there is no signed url');
+    assert.ok(/<a href="gs:\/\/out\/moshy\/1\.png"/.test(html), 'falls back to the raw gs:// text link');
+  });
+
   // ── The compile/submit/status endpoints derive off the brief endpoint. ──
   await check('compile / submit / status endpoints derive off the brief endpoint', async () => {
     const ctx = makeBrowserCtx();
