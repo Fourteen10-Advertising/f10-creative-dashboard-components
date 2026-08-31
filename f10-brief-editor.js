@@ -880,6 +880,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '#panel-brief-editor .be-results{display:flex;flex-direction:column;gap:6px;margin-top:8px;}'
         + '#panel-brief-editor .be-result a{color:var(--brand,#7a1f2b);word-break:break-all;text-decoration:none;}'
         + '#panel-brief-editor .be-result a:hover{text-decoration:underline;}'
+        // landed composites as viewable image thumbnails (signed https preview urls)
+        + '#panel-brief-editor .be-result-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:8px;}'
+        + '#panel-brief-editor .be-result-thumb{position:relative;aspect-ratio:1/1;border-radius:8px;overflow:hidden;display:block;'
+        + 'border:3px solid transparent;background:#f4f4f4;}'
+        + '#panel-brief-editor .be-result-thumb img{width:100%;height:100%;object-fit:cover;display:block;}'
+        + '#panel-brief-editor .be-result-thumb .be-cap{position:absolute;left:0;right:0;bottom:0;font-size:10px;line-height:1.2;'
+        + 'padding:3px 4px;background:rgba(0,0,0,0.55);color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}'
         + '</style>'
         + '<div class="be-insight"><strong>Brief editor:</strong> steer generation before it spends. '
         + 'Load a saved brief revision, adjust the five creative axes (dropdowns are locked to the canonical '
@@ -1589,16 +1596,37 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var total = doc.bundles_total || 0;
       var spend = doc.spend_usd;
       var assets = Array.isArray(doc.asset_uris) ? doc.asset_uris : [];
+      // Signed https preview urls per composite (US viewable-results): a browser
+      // cannot open a gs:// uri, so /status signs each landed composite to a
+      // short-lived https READ url the editor renders as an <img>.
+      var previews = Array.isArray(doc.asset_previews) ? doc.asset_previews : [];
+      var previewByUri = {};
+      previews.forEach(function (p) { if (p && p.gcs_uri) previewByUri[p.gcs_uri] = p; });
+      var anySigned = previews.some(function (p) { return p && p.url; });
       var head = '<div class="be-prog-head"><strong>Generation: ' + esc(status) + '</strong>'
         + ' · ' + done + '/' + (total || done) + ' bundles'
         + (spend != null ? (' · $' + fmtUsd(spend) + ' spent') : '')
         + (doc.error ? (' · ' + esc(doc.error)) : '') + '</div>';
-      var results = assets.length
-        ? '<div class="be-results">' + assets.map(function (u) {
+      var results;
+      if (!assets.length) {
+        results = '<div class="be-muted">No results yet.</div>';
+      } else {
+        var items = assets.map(function (u) {
+          var p = previewByUri[u] || {};
+          var cap = p.size ? '<span class="be-cap">' + esc(p.size) + '</span>' : '';
+          if (p.url) {
+            // Render the signed https preview as an image thumbnail; the
+            // click-through opens the full signed url in a new tab.
+            return '<a class="be-result-thumb" href="' + esc(p.url) + '" target="_blank" rel="noopener" '
+              + 'title="' + esc(u) + '"><img src="' + esc(p.url) + '" alt="" loading="lazy" />' + cap + '</a>';
+          }
+          // Fall back to the raw gs:// text link when no signed url is available.
           return '<div class="be-result"><a href="' + esc(u) + '" target="_blank" rel="noopener">'
             + esc(u) + '</a></div>';
-        }).join('') + '</div>'
-        : '<div class="be-muted">No results yet.</div>';
+        }).join('');
+        results = '<div class="' + (anySigned ? 'be-results be-result-grid' : 'be-results') + '">'
+          + items + '</div>';
+      }
       el.innerHTML = head + results;
     }
 
