@@ -794,6 +794,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + options + '</select></label>';
     }
 
+    /* One numbered section heading for the top-to-bottom flow: a step chip, the section
+     * title, and an optional sub-line (used to mark a section OPTIONAL or add a one-line
+     * hint). Keeps the six sections visually consistent without any per-client logic. */
+    function sectionHeadHtml(step, title, sub) {
+      return '<div class="be-section-head"><span class="be-step">' + esc(step) + '</span>'
+        + '<span>' + esc(title) + '</span></div>'
+        + (sub ? '<div class="be-section-sub">' + esc(sub) + '</div>' : '');
+    }
+
     function panelMarkup() {
       var axisFields = F10_BRIEF_AXES.map(axisSelectHtml).join('');
       return '<div class="tab-panel brief-editor-tab-panel" id="panel-brief-editor">'
@@ -856,7 +865,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + 'background:#fff;border-radius:6px;cursor:pointer;color:#444;}'
         + '#panel-brief-editor .be-more[disabled]{opacity:0.5;cursor:default;}'
         // compile / review / submit surface (US-009)
-        + '#panel-brief-editor .be-compile-bar{margin:18px 0 8px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;}'
         + '#panel-brief-editor .be-compiled{margin:0;}'
         + '#panel-brief-editor .be-compile-head{margin:8px 0 12px;font-size:14px;}'
         + '#panel-brief-editor .be-compile-warn{background:#fff6e5;border:1px solid #f0d8a8;color:#8a5a00;'
@@ -887,26 +895,48 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '#panel-brief-editor .be-result-thumb img{width:100%;height:100%;object-fit:cover;display:block;}'
         + '#panel-brief-editor .be-result-thumb .be-cap{position:absolute;left:0;right:0;bottom:0;font-size:10px;line-height:1.2;'
         + 'padding:3px 4px;background:rgba(0,0,0,0.55);color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}'
+        // numbered top-to-bottom flow: section headings + the actions row
+        + '#panel-brief-editor .be-section{margin:0 0 24px;}'
+        + '#panel-brief-editor .be-section-head{display:flex;align-items:baseline;gap:9px;font-size:15px;font-weight:700;margin:0 0 3px;}'
+        + '#panel-brief-editor .be-step{flex:0 0 auto;width:22px;height:22px;line-height:22px;text-align:center;border-radius:50%;'
+        + 'background:var(--brand,#7a1f2b);color:#fff;font-size:12px;font-weight:700;}'
+        + '#panel-brief-editor .be-section-sub{color:#666;font-size:12px;font-weight:400;margin:0 0 10px 31px;line-height:1.45;}'
+        + '#panel-brief-editor .be-optional{font-weight:400;color:#888;font-size:12px;}'
+        + '#panel-brief-editor .be-actions-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:2px;}'
         + '</style>'
-        + '<div class="be-insight"><strong>Brief editor:</strong> steer generation before it spends. '
-        + 'Load a saved brief revision, adjust the five creative axes (dropdowns are locked to the canonical '
-        + 'vocabulary, so nothing off-vocabulary can be saved) and the copy, then save a NEW revision. '
-        + 'Generation does not run from here in v1: after saving, an operator runs it from the CLI against '
-        + 'the new revision id.</div>'
+        + '<div class="be-insight"><strong>Brief editor:</strong> build the brief top to bottom — pick the four '
+        + 'creative axes, add optional copy and creative direction, choose inspiration images, then compile to '
+        + 'resolve the exact prompts, copy and cost with no spend. The axis dropdowns are locked to the canonical '
+        + 'vocabulary, so nothing off-vocabulary is ever saved. Generation does not run from here until you submit '
+        + 'a compiled brief.</div>'
+        // Optional starting point: load an existing revision to edit, above the flow.
         + '<div class="be-load">'
-        + '<label class="be-field" style="flex:1;min-width:220px;"><span class="be-label">Revision id to load</span>'
+        + '<label class="be-field" style="flex:1;min-width:220px;"><span class="be-label">Start from an existing revision '
+        + '<span class="be-optional">(optional)</span></span>'
         + '<input type="text" id="be-load-id" placeholder="existing revision id" /></label>'
         + '<button type="button" class="be-btn be-btn-secondary" id="be-load-btn">Load revision</button>'
         + '</div>'
         + '<form id="be-form" autocomplete="off">'
+        // 1 — Creative axes (the four canonical dropdowns).
+        + '<div class="be-section">'
+        + sectionHeadHtml('1', 'Creative axes', 'Visual style, hook, message angle and CTA — locked to the canonical vocabulary.')
         + '<div class="be-grid">' + axisFields + '</div>'
+        + '</div>'
+        // 2 — Copy (optional).
+        + '<div class="be-section">'
+        + sectionHeadHtml('2', 'Copy', 'Optional — headline and body text. Leave any field blank to let generation write it.')
         + '<div class="be-copy" id="be-copy"></div>'
-        + '<label class="be-field" style="margin-bottom:14px;"><span class="be-label">Creative direction '
-        + '<span style="font-weight:400;color:#666;">(optional — steers the picture, never the copy)</span></span>'
-        + '<textarea id="be-direction" placeholder="e.g. the people shown have a higher BMI / are plus-size, warm and authentic — or — minimal, one person talking to a doctor"></textarea></label>'
+        + '</div>'
+        // 3 — Creative direction (free text).
+        + '<div class="be-section">'
+        + sectionHeadHtml('3', 'Creative direction', 'Optional free text — steers the picture, never the copy.')
+        + '<label class="be-field"><textarea id="be-direction" aria-label="Creative direction" '
+        + 'placeholder="e.g. the people shown have a higher BMI / are plus-size, warm and authentic — or — minimal, one person talking to a doctor"></textarea></label>'
+        + '</div>'
+        // 4 — Inspiration references (upload / your library / competitors).
+        + '<div class="be-section">'
+        + sectionHeadHtml('4', 'Inspiration references', 'Optional — real images the model looks at for style and subject. Upload your own, or pick from your library or competitors.')
         + '<div class="be-insp" id="be-insp">'
-        + '<span class="be-label">Inspiration references '
-        + '<span style="font-weight:400;color:#666;">(optional — real images the model looks at for style/subject)</span></span>'
         + '<div class="be-chips" id="be-insp-chips"></div>'
         + '<div class="be-insp-tabs" id="be-insp-tabs">'
         + '<button type="button" data-insp-tab="upload" class="active">Upload</button>'
@@ -928,12 +958,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '<div id="be-comp-groups"></div>'
         + '</div>'
         + '</div>'
-        + '<button type="submit" class="be-btn" id="be-save-btn" disabled>Save as new revision</button>'
-        + '</form>'
-        + '<div class="be-compile-bar">'
-        + '<button type="button" class="be-btn" id="be-compile-btn">Compile brief</button>'
-        + '<span class="be-muted">Resolve the exact prompts, copy and cost with no spend before generating.</span>'
         + '</div>'
+        // 5 — Compile the brief (primary). Saving a revision is an optional secondary action.
+        + '<div class="be-section">'
+        + sectionHeadHtml('5', 'Compile brief', 'Resolve the exact prompts, copy and cost with no spend before generating. Saving a revision is optional.')
+        + '<div class="be-actions-row">'
+        + '<button type="button" class="be-btn" id="be-compile-btn">Compile brief</button>'
+        + '<button type="submit" class="be-btn be-btn-secondary" id="be-save-btn" disabled>Save as new revision</button>'
+        + '</div>'
+        + '</div>'
+        + '</form>'
+        // 6 — The compiled result (resolved prompts, copy, inspiration, cost) renders here,
+        //     then the submit / generate controls and live progress below it.
         + '<div class="be-compiled" id="be-compiled"></div>'
         + '<div class="be-submit-bar" id="be-submit-bar" style="display:none;">'
         + '<button type="button" class="be-btn" id="be-submit-btn">Submit and generate</button>'
@@ -1824,6 +1860,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         form.addEventListener('submit', function (e) { if (e && e.preventDefault) e.preventDefault(); saveNewRevision(); });
       }
       wireInspiration();
+      // Show the copy section's default headline + body fields on boot so the operator
+      // can draft copy directly in the flow. Copy stays OPTIONAL: an empty field simply
+      // compiles to no copy. A later Load revision replaces these with its own blocks.
+      renderCopy();
 
       // Compile / review / tweak / submit surface (US-009). The compile + submit
       // buttons are static; the edit handler is delegated on the compiled container so
