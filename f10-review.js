@@ -99,6 +99,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     var rvFeedback = null;   // injectable feedback client (US-009; tests override via setFeedbackClient)
     var rvResultsById = {};  // per-bundle loaded results keyed by bundle_id, so a selected date renders (and a decision re-renders) from cache
     var rvLoadedDates = {};  // set of generation dates whose bundles have already been lazy-loaded, so switching back is instant
+    var rvDateBound = false; // guard: the generation-date <select> change listener is bound once, even though initDateFilter re-runs on every re-discovery
     var rvStatus = {};       // per-bundle approval state {state,comment,actor,updated_at}, read back + updated on decide
     var rvBusy = {};         // per-bundle in-flight guard so a double click cannot double-post
     var rvDecErr = {};       // per-bundle last decision error message, surfaced inline (never a silent failure)
@@ -741,6 +742,36 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
     }
 
+    /* Re-discovery on EVERY re-activation (not only the first load), so a bundle generated
+     * after the tab was first opened appears without a page reload. Best-effort and defensive:
+     * a discovery failure keeps the last-known bundles and the current view rather than blanking
+     * the tab. The per-date result cache (rvResultsById / rvLoadedDates) is preserved, so an
+     * already-loaded date stays instant and only the discovery LIST refreshes; loadDate fetches
+     * just the bundles it has not seen. After a successful re-discovery we jump to the MOST
+     * RECENT generation date (the first date in the newest-first list) so a freshly generated
+     * bundle is visible immediately, rather than staying on a stale older date. Switching dates
+     * via the dropdown still works and stays cached. */
+    async function refreshReview() {
+      try {
+        await discoverBundles();
+      } catch (err) {
+        if (window.console && console.warn) {
+          console.warn('Creative Review re-discovery error:', err && err.message ? err.message : err);
+        }
+        return; // keep whatever is already shown; never blank the tab
+      }
+      var dates = distinctDates();
+      if (dates.length) rvDate = dates[0];   // jump to the most recent generation run
+      initDateFilter();
+      try {
+        await loadDate(rvDate);
+      } catch (err) {
+        if (window.console && console.warn) {
+          console.warn('Creative Review reload error:', err && err.message ? err.message : err);
+        }
+      }
+    }
+
     /* ---- decide (US-009): approve / decline a bundle via the US-008 write path ---- */
 
     /* Re-render the CURRENT date's bundles from the cache; each block reads the current
@@ -838,7 +869,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (d === rvDate) o.selected = true;
         sel.appendChild(o);
       });
-      if (sel.addEventListener) sel.addEventListener('change', onDateChange);
+      // Bind the change listener ONCE. initDateFilter re-runs on every re-discovery to
+      // refresh the option list, so guard the binding or repeated activations would stack
+      // duplicate change handlers on the same select.
+      if (sel.addEventListener && !rvDateBound) { sel.addEventListener('change', onDateChange); rvDateBound = true; }
     }
 
     /* The generation-date selection changed: switch to that date, lazy-loading its bundles the
@@ -880,7 +914,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var t = document.getElementById('page-title'); if (t) t.textContent = 'Creative Review';
       }
       if (window.F10A) F10A.track('tab_viewed', { tab: 'review', tab_label: 'Creative Review' });
-      if (!rvLoaded) { rvLoaded = true; loadReview(); }
+      // First activation does the full spinner-backed load; every subsequent activation
+      // re-discovers in place (best-effort) so a bundle generated after the tab was first
+      // opened shows up, and jumps to the most recent generation date.
+      if (!rvLoaded) { rvLoaded = true; loadReview(); } else { refreshReview(); }
     }
 
     /* When any OTHER nav link is clicked, drop this tab's active state so only one
@@ -1081,6 +1118,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       activate: activate,
       deactivateOnOtherNav: deactivateOnOtherNav,
       load: loadReview,
+      refresh: refreshReview,
       loadDate: loadDate,
       loadBundle: loadBundle,
       discoverBundles: discoverBundles,
@@ -1122,7 +1160,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       getClient: function () { return rvClient; },
       isLoaded: function () { return rvLoaded; },
       _resetBooted: function () { rvBooted = false; rvLoaded = false; },
-      _resetState: function () { rvStatus = {}; rvBusy = {}; rvDecErr = {}; rvResultsById = {}; rvLoadedDates = {}; rvDate = ''; },
+      _resetState: function () { rvStatus = {}; rvBusy = {}; rvDecErr = {}; rvResultsById = {}; rvLoadedDates = {}; rvDate = ''; rvDateBound = false; },
     };
   })();
 }

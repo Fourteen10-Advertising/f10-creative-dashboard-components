@@ -637,6 +637,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     var beBooted = false;     // guard against double boot
     var beLoadedRevision = null; // the currently loaded revision record (provenance carrier)
     var beStore = null;       // injectable brief store (tests override via setStore)
+    var beMode = 'scratch';   // brief mode: 'scratch' (build everything) | 'inspiration' (pick an ad + write commentary; copy/style auto-generated). Not persisted; defaults to scratch on load.
     var beInspiration = [];   // selected inspiration refs: [{gcs_uri, thumb_url, source, label}]
     var beInspTab = 'upload'; // active inspiration picker tab: upload | client | competitor
     var beRefIndex = {};      // gcs_uri -> ref object, populated as thumbs render (toggle lookup)
@@ -662,6 +663,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     var beJobId = null;           // the running generation job id (submit -> status polling)
     var bePollTimer = null;       // status poll timer handle
     var POLL_MS = 2500;           // status poll interval
+
+    /* Section-3 heading + sub-line copy per mode. In "From scratch" it stays the creative-
+     * direction steer; in "From inspiration" it becomes the primary "What you want" prompt
+     * (the operator picks an ad and describes it; copy + style are auto-generated server-side).
+     * Deliberately client-neutral — this file ships in the shared framework, so no client name
+     * appears in the example. */
+    var BE_DIRECTION_SCRATCH_TITLE = 'Creative direction';
+    var BE_DIRECTION_SCRATCH_SUB = 'Optional free text — steers the picture, never the copy.';
+    var BE_DIRECTION_INSP_TITLE = 'What you want';
+    var BE_DIRECTION_INSP_SUB = 'Describe the ad you want, any copy, and any changes'
+      + ' — e.g. "our version of this, centred on being built for women".';
 
     function esc(s) {
       if (s == null) return '';
@@ -903,12 +915,30 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '#panel-brief-editor .be-section-sub{color:#666;font-size:12px;font-weight:400;margin:0 0 10px 31px;line-height:1.45;}'
         + '#panel-brief-editor .be-optional{font-weight:400;color:#888;font-size:12px;}'
         + '#panel-brief-editor .be-actions-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:2px;}'
+        // mode toggle: From scratch vs From inspiration
+        + '#panel-brief-editor .be-mode{display:flex;flex-direction:column;gap:6px;margin:0 0 22px;}'
+        + '#panel-brief-editor .be-mode-label{font-size:11px;text-transform:uppercase;letter-spacing:0.04em;color:#777;font-weight:700;}'
+        + '#panel-brief-editor .be-mode-tabs{display:flex;gap:8px;flex-wrap:wrap;}'
+        + '#panel-brief-editor .be-mode-tabs button{font:inherit;font-size:13px;font-weight:600;padding:8px 18px;border:1px solid rgba(0,0,0,0.2);'
+        + 'background:#fff;border-radius:20px;cursor:pointer;color:#444;}'
+        + '#panel-brief-editor .be-mode-tabs button.active{background:var(--brand,#7a1f2b);color:#fff;border-color:transparent;}'
+        + '#panel-brief-editor .be-mode-hint{color:#666;font-size:12px;line-height:1.45;}'
         + '</style>'
         + '<div class="be-insight"><strong>Brief editor:</strong> build the brief top to bottom — pick the four '
         + 'creative axes, add optional copy and creative direction, choose inspiration images, then compile to '
         + 'resolve the exact prompts, copy and cost with no spend. The axis dropdowns are locked to the canonical '
         + 'vocabulary, so nothing off-vocabulary is ever saved. Generation does not run from here until you submit '
         + 'a compiled brief.</div>'
+        // Mode toggle (top of the flow): build the whole brief yourself, or start from an
+        // ad and let the copy + style be auto-generated. Defaults to From scratch.
+        + '<div class="be-mode" id="be-mode">'
+        + '<span class="be-mode-label">How do you want to start?</span>'
+        + '<div class="be-mode-tabs" id="be-mode-tabs">'
+        + '<button type="button" data-be-mode="scratch" class="active">From scratch</button>'
+        + '<button type="button" data-be-mode="inspiration">From inspiration</button>'
+        + '</div>'
+        + '<div class="be-mode-hint" id="be-mode-hint">Build the full brief yourself — pick the creative axes, write the copy, and add any inspiration.</div>'
+        + '</div>'
         // Optional starting point: load an existing revision to edit, above the flow.
         + '<div class="be-load">'
         + '<label class="be-field" style="flex:1;min-width:220px;"><span class="be-label">Start from an existing revision '
@@ -917,19 +947,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '<button type="button" class="be-btn be-btn-secondary" id="be-load-btn">Load revision</button>'
         + '</div>'
         + '<form id="be-form" autocomplete="off">'
-        // 1 — Creative axes (the four canonical dropdowns).
-        + '<div class="be-section">'
+        // 1 — Creative axes (the four canonical dropdowns). Hidden in From-inspiration mode.
+        + '<div class="be-section" id="be-section-axes">'
         + sectionHeadHtml('1', 'Creative axes', 'Visual style, hook, message angle and CTA — locked to the canonical vocabulary.')
         + '<div class="be-grid">' + axisFields + '</div>'
         + '</div>'
-        // 2 — Copy (optional).
-        + '<div class="be-section">'
+        // 2 — Copy (optional). Hidden in From-inspiration mode (copy is auto-generated).
+        + '<div class="be-section" id="be-section-copy">'
         + sectionHeadHtml('2', 'Copy', 'Optional — headline and body text. Leave any field blank to let generation write it.')
         + '<div class="be-copy" id="be-copy"></div>'
         + '</div>'
-        // 3 — Creative direction (free text).
-        + '<div class="be-section">'
-        + sectionHeadHtml('3', 'Creative direction', 'Optional free text — steers the picture, never the copy.')
+        // 3 — Creative direction (free text). In From-inspiration mode this becomes the
+        //     primary "What you want" prompt, so its heading + sub-line are addressable and
+        //     get relabelled by setMode(); kept out of sectionHeadHtml to carry those ids.
+        + '<div class="be-section" id="be-section-direction">'
+        + '<div class="be-section-head"><span class="be-step">3</span>'
+        + '<span id="be-direction-title">' + esc(BE_DIRECTION_SCRATCH_TITLE) + '</span></div>'
+        + '<div class="be-section-sub" id="be-direction-sub">' + esc(BE_DIRECTION_SCRATCH_SUB) + '</div>'
         + '<label class="be-field"><textarea id="be-direction" aria-label="Creative direction" '
         + 'placeholder="e.g. the people shown have a higher BMI / are plus-size, warm and authentic — or — minimal, one person talking to a doctor"></textarea></label>'
         + '</div>'
@@ -982,6 +1016,43 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function navLinkHtml() {
       return '<a href="#" class="brief-editor-nav-link" data-brief-editor-tab="brief-editor">Brief Editor</a>';
+    }
+
+    /* ---- mode toggle (From scratch vs From inspiration) ---- */
+
+    /* Switch the brief mode LIVE (no reload, nothing persisted). From-inspiration HIDES the
+     * Creative axes + Copy sections (the backend defaults the axes to the client's winners and
+     * auto-writes the copy) and relabels the Creative direction section to the primary
+     * "What you want" prompt; From-scratch shows every section with its original labels. Only
+     * shows/hides + relabels DOM already built by panelMarkup; buildCompileRequest() reads
+     * beMode to shape the payload. Universal — no per-client branching. */
+    function setMode(mode) {
+      beMode = (mode === 'inspiration') ? 'inspiration' : 'scratch';
+      var insp = (beMode === 'inspiration');
+      var axes = document.getElementById('be-section-axes');
+      if (axes && axes.style) axes.style.display = insp ? 'none' : '';
+      var copy = document.getElementById('be-section-copy');
+      if (copy && copy.style) copy.style.display = insp ? 'none' : '';
+      var title = document.getElementById('be-direction-title');
+      if (title) title.textContent = insp ? BE_DIRECTION_INSP_TITLE : BE_DIRECTION_SCRATCH_TITLE;
+      var sub = document.getElementById('be-direction-sub');
+      if (sub) sub.textContent = insp ? BE_DIRECTION_INSP_SUB : BE_DIRECTION_SCRATCH_SUB;
+      var hint = document.getElementById('be-mode-hint');
+      if (hint) {
+        hint.textContent = insp
+          ? 'Pick an ad and describe what you want — the copy and style are written for you, server-side.'
+          : 'Build the full brief yourself — pick the creative axes, write the copy, and add any inspiration.';
+      }
+      var tabs = document.getElementById('be-mode-tabs');
+      if (tabs && tabs.querySelectorAll) {
+        var btns = tabs.querySelectorAll('button');
+        Array.prototype.forEach.call(btns, function (b) {
+          var m = b.getAttribute && b.getAttribute('data-be-mode');
+          if (!b.classList) return;
+          if (m === beMode) b.classList.add('active'); else b.classList.remove('active');
+        });
+      }
+      if (window.F10A) F10A.track('brief_mode_changed', { mode: beMode });
     }
 
     /* ---- copy fields ---- */
@@ -1443,22 +1514,40 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     /* The shared compile/submit request seed: same inputs for both, so the backend
      * re-resolves identical briefs on submit and overlays the operator's edits by
      * brief_id. Revision id comes from a loaded revision (or the load-id field). */
+    /* The inline brief for From-inspiration mode: the live record with the four axis values
+     * and copy_blocks OMITTED, because the backend defaults the axes to the client's winners
+     * and auto-writes the copy in this mode — sending them would pin generation to whatever the
+     * (hidden) dropdowns happen to hold. Everything else about the brief doc (client, revision
+     * id / provenance, creative_direction, inspiration uris, format) rides along unchanged. */
+    function readInspirationBrief() {
+      var full = readForm();
+      var omit = { visual_style: 1, hook_type: 1, message_angle: 1, cta_type: 1, copy_blocks: 1 };
+      var brief = {};
+      Object.keys(full).forEach(function (k) { if (!omit[k]) brief[k] = full[k]; });
+      return brief;
+    }
+
     function buildCompileRequest() {
       var loaded = beLoadedRevision || {};
       var dirEl = document.getElementById('be-direction');
-      // The LIVE on-screen brief is the primary driver. readForm() assembles the
-      // full current record (the axes, the copy VERBATIM, the creative direction and
-      // the inspiration references) in the exact revision-doc shape a saved revision
-      // has, so Compile and Submit resolve exactly what the operator sees, with no
-      // Save/Load step. client + creativeDirection stay for backward compatibility;
-      // a revisionId is still sent when a revision is loaded or entered, but the
-      // inline brief wins if both reach the backend.
+      var insp = (beMode === 'inspiration');
+      // The LIVE on-screen brief is the primary driver. In From-scratch mode readForm()
+      // assembles the full current record (the axes, the copy VERBATIM, the creative direction
+      // and the inspiration references) in the exact revision-doc shape a saved revision has, so
+      // Compile and Submit resolve exactly what the operator sees, with no Save/Load step. In
+      // From-inspiration mode the inline brief OMITS the axes + copy (the backend defaults the
+      // axes to the client's winners and auto-writes the copy), while creativeDirection and
+      // baseInspirationImageUris are sent either way. `mode` is additive: scratch is byte-for-
+      // byte what it sent before plus mode:"scratch". client + creativeDirection stay for
+      // backward compatibility; a revisionId is still sent when a revision is loaded or entered,
+      // but the inline brief wins if both reach the backend.
       var req = {
+        mode: insp ? 'inspiration' : 'scratch',
         client: loaded.client || beClient,
         creativeDirection: dirEl ? (dirEl.value || '') : (loaded.creative_direction || ''),
         baseInspirationImageUris: beInspiration.map(function (r) { return r.gcs_uri; }),
         variantMatrix: beVariantMatrix || {},
-        brief: readForm(),
+        brief: insp ? readInspirationBrief() : readForm(),
       };
       if (beRemainingCap != null) req.remainingCapUsd = beRemainingCap;
       var loadId = document.getElementById('be-load-id');
@@ -1859,6 +1948,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (form && form.addEventListener) {
         form.addEventListener('submit', function (e) { if (e && e.preventDefault) e.preventDefault(); saveNewRevision(); });
       }
+      // Mode toggle (From scratch / From inspiration): delegated click on the tab row.
+      // Defaults to scratch; toggling shows/hides the axes + copy sections and relabels the
+      // creative-direction section live, with nothing persisted.
+      var modeTabs = document.getElementById('be-mode-tabs');
+      if (modeTabs && modeTabs.addEventListener) {
+        modeTabs.addEventListener('click', function (e) {
+          var t = e && e.target;
+          var m = t && t.getAttribute && t.getAttribute('data-be-mode');
+          if (!m) return;
+          if (e.preventDefault) e.preventDefault();
+          setMode(m);
+        });
+      }
+      setMode(beMode); // reflect the default (scratch) state on the freshly injected panel
+
       wireInspiration();
       // Show the copy section's default headline + body fields on boot so the operator
       // can draft copy directly in the flow. Copy stays OPTIONAL: an empty field simply
@@ -1977,6 +2081,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       applyCompiledEdit: applyCompiledEdit,
       readCompiledBrief: readCompiledBrief,
       buildCompileRequest: buildCompileRequest,
+      // mode toggle (From scratch / From inspiration)
+      setMode: setMode,
+      getMode: function () { return beMode; },
       renderCompiled: renderCompiled,
       compileEndpoint: compileEndpoint,
       submitEndpoint: submitEndpoint,
@@ -1987,7 +2094,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       setRemainingCap: function (c) { beRemainingCap = c; },
       stopPolling: stopPolling,
       resetForTest: function () {
-        beBooted = false; beLoadedRevision = null;
+        beBooted = false; beLoadedRevision = null; beMode = 'scratch';
         beInspiration = []; beRefIndex = {}; beInspTab = 'upload';
         beClientPage = { offset: 0, hasMore: false, loading: false }; beCompState = {};
         stopPolling();
