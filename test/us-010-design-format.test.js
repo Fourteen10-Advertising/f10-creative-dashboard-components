@@ -85,10 +85,17 @@ async function run() {
     const html = contentHtml(ctx);
     assert.ok(/id="be-format-tabs"/.test(html), 'format tabs present');
     assert.ok(/data-be-format="image"/.test(html), 'image format button present');
-    assert.ok(/data-be-format="comparison"/.test(html), 'comparison format button present');
-    assert.ok(/data-be-format="native_ui"/.test(html), 'native_ui format button present');
+    // Every design format (three chassis: table, card, list) has a picker button.
+    ['comparison', 'feature_table', 'stat_card', 'testimonial_card', 'offer_card',
+      'checklist', 'faq_card', 'native_ui'].forEach(function (key) {
+      assert.ok(
+        new RegExp('data-be-format="' + key + '"').test(html),
+        key + ' format button present'
+      );
+    });
     assert.ok(/id="be-design"/.test(html), 'design panel present');
     assert.ok(/id="be-design-generate-btn"/.test(html), 'design Generate button present');
+    assert.ok(/id="be-design-direction"/.test(html), 'design-mode creative-direction field present');
   });
 
   await check('a design format adds archetypeId to the request; image omits it', async () => {
@@ -109,6 +116,43 @@ async function run() {
 
     be.setFormat('image');
     assert.strictEqual(be.buildCompileRequest().archetypeId, undefined, 'back to image omits it again');
+  });
+
+  await check('every design format sends its archetypeId; image omits it', async () => {
+    const ctx = makeBrowserCtx();
+    const be = ctx.window.f10BriefEditor;
+    be.setStore({ async probe() { return true; }, async load() {}, async save() {} });
+    await ctx.window.initBriefEditor();
+    ['comparison', 'feature_table', 'stat_card', 'testimonial_card', 'offer_card',
+      'checklist', 'faq_card', 'native_ui'].forEach(function (key) {
+      be.setFormat(key);
+      assert.strictEqual(be.getFormat(), key, key + ' is selected');
+      assert.strictEqual(be.buildCompileRequest().archetypeId, key, key + ' sends its archetypeId');
+    });
+    be.setFormat('image');
+    assert.strictEqual(be.buildCompileRequest().archetypeId, undefined, 'image omits archetypeId');
+  });
+
+  await check('the design-mode creative direction flows to the request as a soft steer', async () => {
+    const ctx = makeBrowserCtx();
+    const be = ctx.window.f10BriefEditor;
+    be.setStore({ async probe() { return true; }, async load() {}, async save() {} });
+    await ctx.window.initBriefEditor();
+    // Vivify + fill the design-mode direction field, then a design request carries it.
+    ctx.document.getElementById('be-design-direction').value = 'lean warm and personal';
+    be.setFormat('stat_card');
+    assert.strictEqual(
+      be.buildCompileRequest().creativeDirection,
+      'lean warm and personal',
+      'a design format reads the design-mode creative-direction field'
+    );
+    // Image mode ignores the design field (uses the image build form field instead).
+    be.setFormat('image');
+    assert.strictEqual(
+      be.buildCompileRequest().creativeDirection,
+      '',
+      'image mode does not read the design-mode field'
+    );
   });
 
   await check('Generate submits a design one-shot: archetypeId set, NO compiledBrief', async () => {
