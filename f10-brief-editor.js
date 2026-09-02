@@ -638,6 +638,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     var beLoadedRevision = null; // the currently loaded revision record (provenance carrier)
     var beStore = null;       // injectable brief store (tests override via setStore)
     var beMode = 'scratch';   // brief mode: 'scratch' (build everything) | 'inspiration' (pick an ad + write commentary; copy/style auto-generated). Not persisted; defaults to scratch on load.
+    var beFormat = 'image';   // ad format: 'image' (a generated scene) | 'comparison' | 'native_ui' (typeset design ads the strategist drafts from substance). Not persisted; defaults to image. A design format sends archetypeId and generates directly (no compile/spend).
     var beInspiration = [];   // selected inspiration refs: [{gcs_uri, thumb_url, source, label}]
     var beInspTab = 'upload'; // active inspiration picker tab: upload | client | competitor
     var beRefIndex = {};      // gcs_uri -> ref object, populated as thumbs render (toggle lookup)
@@ -929,6 +930,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + 'resolve the exact prompts, copy and cost with no spend. The axis dropdowns are locked to the canonical '
         + 'vocabulary, so nothing off-vocabulary is ever saved. Generation does not run from here until you submit '
         + 'a compiled brief.</div>'
+        // Format picker (top of the flow): an image ad (a generated scene), or a
+        // typeset design ad (comparison chart / native-UI note) the strategist drafts
+        // from the client's substance and live scoreboard. A design format hides the
+        // image build flow and generates directly (no compile, no spend).
+        + '<div class="be-mode" id="be-format">'
+        + '<span class="be-mode-label">What are you making?</span>'
+        + '<div class="be-mode-tabs" id="be-format-tabs">'
+        + '<button type="button" data-be-format="image" class="active">Image ad</button>'
+        + '<button type="button" data-be-format="comparison">Comparison chart</button>'
+        + '<button type="button" data-be-format="native_ui">Native UI note</button>'
+        + '</div>'
+        + '<div class="be-mode-hint" id="be-format-hint">An image ad: a generated scene with the copy laid over it.</div>'
+        + '</div>'
         // Mode toggle (top of the flow): build the whole brief yourself, or start from an
         // ad and let the copy + style be auto-generated. Defaults to From scratch.
         + '<div class="be-mode" id="be-mode">'
@@ -1002,6 +1016,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '</div>'
         + '</div>'
         + '</form>'
+        // Design format flow: the strategist drafts a typeset ad from substance, the
+        // render service rasterises it, and it publishes directly (no compile step, no
+        // spend). Hidden in image mode; shown by setFormat() for a design format.
+        + '<div class="be-design" id="be-design" style="display:none;">'
+        + '<div class="be-section-sub" id="be-design-hint"></div>'
+        + '<div class="be-actions-row">'
+        + '<button type="button" class="be-btn" id="be-design-generate-btn">Generate</button>'
+        + '</div>'
+        + '</div>'
         // 6 — The compiled result (resolved prompts, copy, inspiration, cost) renders here,
         //     then the submit / generate controls and live progress below it.
         + '<div class="be-compiled" id="be-compiled"></div>'
@@ -1053,6 +1076,59 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         });
       }
       if (window.F10A) F10A.track('brief_mode_changed', { mode: beMode });
+    }
+
+    /* ---- format picker (Image ad vs a typeset design ad) ---- */
+
+    /* Switch the ad format LIVE (nothing persisted). A DESIGN format (comparison /
+     * native_ui) hides the whole image build flow (mode toggle, revision loader, the
+     * brief form and the compile result) and shows a single Generate button: the
+     * strategist drafts the ad from the client's substance, the render service
+     * rasterises it, and it publishes directly — no compile step and no spend, so the
+     * operator reviews and approves it in the Review tab. IMAGE restores the full
+     * build flow. Only shows/hides DOM built by panelMarkup; buildCompileRequest()
+     * reads beFormat to add archetypeId. Universal — no per-client branching. */
+    function setFormat(fmt) {
+      beFormat = (fmt === 'comparison' || fmt === 'native_ui') ? fmt : 'image';
+      var design = (beFormat !== 'image');
+      function show(id, on) {
+        var el = document.getElementById(id);
+        if (el && el.style) el.style.display = on ? '' : 'none';
+      }
+      show('be-mode', !design);
+      show('be-load', !design);
+      show('be-form', !design);
+      show('be-design', design);
+      if (design) {
+        show('be-compiled', false);
+        show('be-submit-bar', false);
+        beMode = 'scratch';
+        var label = (beFormat === 'comparison') ? 'comparison chart' : 'native UI note';
+        var dh = document.getElementById('be-design-hint');
+        if (dh) {
+          dh.textContent = 'A ' + label + " is drafted from this client's substance and "
+            + 'live scoreboard by the strategist, rendered, and published straight to the '
+            + 'Review tab. It costs nothing to generate, so you can regenerate freely.';
+        }
+      } else {
+        show('be-compiled', true);
+        setMode(beMode); // restore the image build sections + their labels
+      }
+      var fhint = document.getElementById('be-format-hint');
+      if (fhint) {
+        fhint.textContent = design
+          ? "A typeset design ad — no image model. The strategist writes it from the client's real facts; you review and approve it in the Review tab."
+          : 'An image ad: a generated scene with the copy laid over it.';
+      }
+      var tabs = document.getElementById('be-format-tabs');
+      if (tabs && tabs.querySelectorAll) {
+        Array.prototype.forEach.call(tabs.querySelectorAll('button'), function (b) {
+          var f = b.getAttribute && b.getAttribute('data-be-format');
+          if (!b.classList) return;
+          if (f === beFormat) b.classList.add('active'); else b.classList.remove('active');
+        });
+      }
+      if (window.F10A) F10A.track('brief_format_changed', { format: beFormat });
     }
 
     /* ---- copy fields ---- */
@@ -1550,6 +1626,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         brief: insp ? readInspirationBrief() : readForm(),
       };
       if (beRemainingCap != null) req.remainingCapUsd = beRemainingCap;
+      // A design format resolves a typeset archetype server-side (comparison /
+      // native_ui); image omits archetypeId so the backend auto-picks the layout.
+      if (beFormat && beFormat !== 'image') req.archetypeId = beFormat;
       var loadId = document.getElementById('be-load-id');
       var rid = loaded.revision_id || (loadId ? loadId.value : '') || '';
       if (rid) req.revisionId = rid;
@@ -1819,6 +1898,32 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
     }
 
+    /* Generate a DESIGN ad directly (no compile step). A design format has no image
+     * spend to gate and the strategist that drafts it is non-deterministic, so it
+     * submits straight to generation with no compiledBrief: the strategist drafts the
+     * brief once, the render service rasterises it, and it publishes. Progress + the
+     * landed composite are polled exactly like an image submit; the operator reviews
+     * and approves in the Review tab. The button re-enables once the job is running
+     * (the backend's single-active-job guard rejects a concurrent generate). */
+    async function generateDesign() {
+      var btn = document.getElementById('be-design-generate-btn');
+      if (btn) btn.disabled = true;
+      var prog = document.getElementById('be-progress');
+      if (prog) prog.innerHTML = '<div class="be-muted">Generating…</div>';
+      try {
+        var req = buildCompileRequest(); // carries archetypeId; the inline brief is ignored server-side for a design one-shot
+        var resp = await store().submit(req);
+        if (!resp || resp.ok === false) throw new Error((resp && resp.error) || 'generate failed');
+        beJobId = resp.job_id || null;
+        renderProgress(resp);
+        if (beJobId) startPolling(beJobId);
+        if (btn) btn.disabled = false;
+      } catch (err) {
+        renderProgressError('Generate failed: ' + (err && err.message ? err.message : err));
+        if (btn) btn.disabled = false;
+      }
+    }
+
     /* Wire the inspiration picker's events once the panel exists. Delegated clicks so the
      * dynamically rendered chips + thumbs need no per-node listeners. */
     function wireInspiration() {
@@ -1962,6 +2067,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         });
       }
       setMode(beMode); // reflect the default (scratch) state on the freshly injected panel
+      // Format picker (Image ad / Comparison chart / Native UI note): delegated click
+      // on the tab row. A design format hides the image build flow and shows Generate.
+      var formatTabs = document.getElementById('be-format-tabs');
+      if (formatTabs && formatTabs.addEventListener) {
+        formatTabs.addEventListener('click', function (e) {
+          var t = e && e.target;
+          var f = t && t.getAttribute && t.getAttribute('data-be-format');
+          if (!f) return;
+          if (e.preventDefault) e.preventDefault();
+          setFormat(f);
+        });
+      }
+      setFormat(beFormat); // reflect the default (image) format on the freshly injected panel
 
       wireInspiration();
       // Show the copy section's default headline + body fields on boot so the operator
@@ -1979,6 +2097,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var submitBtn = document.getElementById('be-submit-btn');
       if (submitBtn && submitBtn.addEventListener) {
         submitBtn.addEventListener('click', function (e) { if (e && e.preventDefault) e.preventDefault(); submitCompiled(); });
+      }
+      var designGenBtn = document.getElementById('be-design-generate-btn');
+      if (designGenBtn && designGenBtn.addEventListener) {
+        designGenBtn.addEventListener('click', function (e) { if (e && e.preventDefault) e.preventDefault(); generateDesign(); });
       }
       var compiledEl = document.getElementById('be-compiled');
       if (compiledEl && compiledEl.addEventListener) {
@@ -2084,6 +2206,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // mode toggle (From scratch / From inspiration)
       setMode: setMode,
       getMode: function () { return beMode; },
+      // format picker (Image ad / Comparison chart / Native UI note)
+      setFormat: setFormat,
+      getFormat: function () { return beFormat; },
+      generateDesign: generateDesign,
       renderCompiled: renderCompiled,
       compileEndpoint: compileEndpoint,
       submitEndpoint: submitEndpoint,
@@ -2094,7 +2220,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       setRemainingCap: function (c) { beRemainingCap = c; },
       stopPolling: stopPolling,
       resetForTest: function () {
-        beBooted = false; beLoadedRevision = null; beMode = 'scratch';
+        beBooted = false; beLoadedRevision = null; beMode = 'scratch'; beFormat = 'image';
         beInspiration = []; beRefIndex = {}; beInspTab = 'upload';
         beClientPage = { offset: 0, hasMore: false, loading: false }; beCompState = {};
         stopPolling();
