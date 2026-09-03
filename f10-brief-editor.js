@@ -652,7 +652,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       { key: 'offer_card', label: 'Offer card', noun: 'offer card' },
       { key: 'checklist', label: 'Checklist', noun: 'checklist' },
       { key: 'faq_card', label: 'FAQ card', noun: 'FAQ card' },
-      { key: 'native_ui', label: 'Native UI note', noun: 'native UI note' }
+      { key: 'native_ui', label: 'Native UI note', noun: 'native UI note' },
+      { key: 'native_ui_search', label: 'Search result', noun: 'search result' },
+      { key: 'native_ui_review', label: 'Review card', noun: 'review card' }
     ];
     function beIsDesignFormat(fmt) {
       for (var i = 0; i < BE_DESIGN_FORMATS.length; i++) {
@@ -1058,6 +1060,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '<textarea id="be-design-direction" aria-label="Creative direction" '
         + 'placeholder="A soft steer for angle, emphasis or tone. The strategist still '
         + 'uses only the client\'s real facts and stays within compliance."></textarea></label>'
+        // Opt-in photo variant: a generated on-brand background behind the design.
+        // Off keeps the ad free and instant; on adds a small generation cost.
+        + '<label class="be-field be-checkfield"><span class="be-label">'
+        + '<input type="checkbox" id="be-design-photo"> Add a generated background image '
+        + '<span class="be-optional">(optional)</span></span>'
+        + '<span class="be-section-sub">Generates an on-brand background photo behind the '
+        + 'design. It costs a small amount to generate and, unlike a plain design ad, cannot '
+        + 'be regenerated for free. No faces and no before/after imagery are ever generated.'
+        + '</span></label>'
         + '<div class="be-actions-row">'
         + '<button type="button" class="be-btn" id="be-design-generate-btn">Generate</button>'
         + '</div>'
@@ -1672,6 +1683,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // A design format resolves a typeset archetype server-side (comparison /
       // native_ui); image omits archetypeId so the backend auto-picks the layout.
       if (beFormat && beFormat !== 'image') req.archetypeId = beFormat;
+      // A design photo variant: the operator opted into a generated background
+      // image. Only meaningful for a design format; an image ad always generates.
+      var photoEl = document.getElementById('be-design-photo');
+      if (beIsDesignFormat(beFormat) && photoEl && photoEl.checked) {
+        req.wantImage = true;
+      }
       var loadId = document.getElementById('be-load-id');
       var rid = loaded.revision_id || (loadId ? loadId.value : '') || '';
       if (rid) req.revisionId = rid;

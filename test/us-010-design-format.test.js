@@ -85,9 +85,10 @@ async function run() {
     const html = contentHtml(ctx);
     assert.ok(/id="be-format-tabs"/.test(html), 'format tabs present');
     assert.ok(/data-be-format="image"/.test(html), 'image format button present');
-    // Every design format (three chassis: table, card, list) has a picker button.
+    // Every design format (three chassis + native surfaces) has a picker button.
     ['comparison', 'feature_table', 'stat_card', 'testimonial_card', 'offer_card',
-      'checklist', 'faq_card', 'native_ui'].forEach(function (key) {
+      'checklist', 'faq_card', 'native_ui', 'native_ui_search',
+      'native_ui_review'].forEach(function (key) {
       assert.ok(
         new RegExp('data-be-format="' + key + '"').test(html),
         key + ' format button present'
@@ -96,6 +97,7 @@ async function run() {
     assert.ok(/id="be-design"/.test(html), 'design panel present');
     assert.ok(/id="be-design-generate-btn"/.test(html), 'design Generate button present');
     assert.ok(/id="be-design-direction"/.test(html), 'design-mode creative-direction field present');
+    assert.ok(/id="be-design-photo"/.test(html), 'design-mode photo toggle present');
   });
 
   await check('a design format adds archetypeId to the request; image omits it', async () => {
@@ -124,13 +126,30 @@ async function run() {
     be.setStore({ async probe() { return true; }, async load() {}, async save() {} });
     await ctx.window.initBriefEditor();
     ['comparison', 'feature_table', 'stat_card', 'testimonial_card', 'offer_card',
-      'checklist', 'faq_card', 'native_ui'].forEach(function (key) {
+      'checklist', 'faq_card', 'native_ui', 'native_ui_search',
+      'native_ui_review'].forEach(function (key) {
       be.setFormat(key);
       assert.strictEqual(be.getFormat(), key, key + ' is selected');
       assert.strictEqual(be.buildCompileRequest().archetypeId, key, key + ' sends its archetypeId');
     });
     be.setFormat('image');
     assert.strictEqual(be.buildCompileRequest().archetypeId, undefined, 'image omits archetypeId');
+  });
+
+  await check('the photo toggle sends wantImage only for a design format', async () => {
+    const ctx = makeBrowserCtx();
+    const be = ctx.window.f10BriefEditor;
+    be.setStore({ async probe() { return true; }, async load() {}, async save() {} });
+    await ctx.window.initBriefEditor();
+    // off by default: no wantImage
+    be.setFormat('stat_card');
+    assert.strictEqual(be.buildCompileRequest().wantImage, undefined, 'off by default');
+    // toggle on -> a design request carries wantImage
+    ctx.document.getElementById('be-design-photo').checked = true;
+    assert.strictEqual(be.buildCompileRequest().wantImage, true, 'design format sends wantImage');
+    // image ads always generate; the design photo toggle does not apply to them
+    be.setFormat('image');
+    assert.strictEqual(be.buildCompileRequest().wantImage, undefined, 'image omits wantImage');
   });
 
   await check('the design-mode creative direction flows to the request as a soft steer', async () => {
