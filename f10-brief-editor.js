@@ -638,7 +638,34 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     var beLoadedRevision = null; // the currently loaded revision record (provenance carrier)
     var beStore = null;       // injectable brief store (tests override via setStore)
     var beMode = 'scratch';   // brief mode: 'scratch' (build everything) | 'inspiration' (pick an ad + write commentary; copy/style auto-generated). Not persisted; defaults to scratch on load.
-    var beFormat = 'image';   // ad format: 'image' (a generated scene) | 'comparison' | 'native_ui' (typeset design ads the strategist drafts from substance). Not persisted; defaults to image. A design format sends archetypeId and generates directly (no compile/spend).
+    var beFormat = 'image';   // ad format: 'image' (a generated scene) or one of the typeset DESIGN formats below (the strategist drafts them from substance). Not persisted; defaults to image. A design format sends archetypeId and generates directly (no compile/spend).
+    // The typeset DESIGN formats. Each `key` is the archetype the backend resolves
+    // (is_design_archetype); `label` is the picker button; `noun` is used in the
+    // design-mode hint. IMAGE is the only non-design format. They cluster into three
+    // shared chassis (table, card, list); adding a format here + registering it
+    // backend-side is all it takes to expose a new button.
+    var BE_DESIGN_FORMATS = [
+      { key: 'comparison', label: 'Comparison chart', noun: 'comparison chart' },
+      { key: 'feature_table', label: 'Feature table', noun: 'feature table' },
+      { key: 'stat_card', label: 'Stat card', noun: 'stat card' },
+      { key: 'testimonial_card', label: 'Testimonial', noun: 'testimonial card' },
+      { key: 'offer_card', label: 'Offer card', noun: 'offer card' },
+      { key: 'checklist', label: 'Checklist', noun: 'checklist' },
+      { key: 'faq_card', label: 'FAQ card', noun: 'FAQ card' },
+      { key: 'native_ui', label: 'Native UI note', noun: 'native UI note' }
+    ];
+    function beIsDesignFormat(fmt) {
+      for (var i = 0; i < BE_DESIGN_FORMATS.length; i++) {
+        if (BE_DESIGN_FORMATS[i].key === fmt) return true;
+      }
+      return false;
+    }
+    function beDesignNoun(fmt) {
+      for (var i = 0; i < BE_DESIGN_FORMATS.length; i++) {
+        if (BE_DESIGN_FORMATS[i].key === fmt) return BE_DESIGN_FORMATS[i].noun;
+      }
+      return 'design ad';
+    }
     var beInspiration = [];   // selected inspiration refs: [{gcs_uri, thumb_url, source, label}]
     var beInspTab = 'upload'; // active inspiration picker tab: upload | client | competitor
     var beRefIndex = {};      // gcs_uri -> ref object, populated as thumbs render (toggle lookup)
@@ -938,8 +965,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '<span class="be-mode-label">What are you making?</span>'
         + '<div class="be-mode-tabs" id="be-format-tabs">'
         + '<button type="button" data-be-format="image" class="active">Image ad</button>'
-        + '<button type="button" data-be-format="comparison">Comparison chart</button>'
-        + '<button type="button" data-be-format="native_ui">Native UI note</button>'
+        + BE_DESIGN_FORMATS.map(function (f) {
+            return '<button type="button" data-be-format="' + esc(f.key) + '">'
+              + esc(f.label) + '</button>';
+          }).join('')
         + '</div>'
         + '<div class="be-mode-hint" id="be-format-hint">An image ad: a generated scene with the copy laid over it.</div>'
         + '</div>'
@@ -1021,6 +1050,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // spend). Hidden in image mode; shown by setFormat() for a design format.
         + '<div class="be-design" id="be-design" style="display:none;">'
         + '<div class="be-section-sub" id="be-design-hint"></div>'
+        // Creative direction (optional) is available in design mode too: a SOFT steer
+        // the strategist honours for angle, emphasis and tone only. It never adds a
+        // fact that is not in the client substance and never relaxes compliance.
+        + '<label class="be-field"><span class="be-label">Creative direction '
+        + '<span class="be-optional">(optional)</span></span>'
+        + '<textarea id="be-design-direction" aria-label="Creative direction" '
+        + 'placeholder="A soft steer for angle, emphasis or tone. The strategist still '
+        + 'uses only the client\'s real facts and stays within compliance."></textarea></label>'
         + '<div class="be-actions-row">'
         + '<button type="button" class="be-btn" id="be-design-generate-btn">Generate</button>'
         + '</div>'
@@ -1089,7 +1126,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      * build flow. Only shows/hides DOM built by panelMarkup; buildCompileRequest()
      * reads beFormat to add archetypeId. Universal — no per-client branching. */
     function setFormat(fmt) {
-      beFormat = (fmt === 'comparison' || fmt === 'native_ui') ? fmt : 'image';
+      beFormat = beIsDesignFormat(fmt) ? fmt : 'image';
       var design = (beFormat !== 'image');
       function show(id, on) {
         var el = document.getElementById(id);
@@ -1103,7 +1140,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         show('be-compiled', false);
         show('be-submit-bar', false);
         beMode = 'scratch';
-        var label = (beFormat === 'comparison') ? 'comparison chart' : 'native UI note';
+        var label = beDesignNoun(beFormat);
         var dh = document.getElementById('be-design-hint');
         if (dh) {
           dh.textContent = 'A ' + label + " is drafted from this client's substance and "
@@ -1606,7 +1643,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function buildCompileRequest() {
       var loaded = beLoadedRevision || {};
       var dirEl = document.getElementById('be-direction');
+      var designDirEl = document.getElementById('be-design-direction');
       var insp = (beMode === 'inspiration');
+      // A design format takes its soft creative direction from the design-mode field
+      // (the image build form is hidden); image / inspiration use the form field.
+      var creativeDirection = beIsDesignFormat(beFormat)
+        ? (designDirEl ? (designDirEl.value || '') : '')
+        : (dirEl ? (dirEl.value || '') : (loaded.creative_direction || ''));
       // The LIVE on-screen brief is the primary driver. In From-scratch mode readForm()
       // assembles the full current record (the axes, the copy VERBATIM, the creative direction
       // and the inspiration references) in the exact revision-doc shape a saved revision has, so
@@ -1620,7 +1663,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var req = {
         mode: insp ? 'inspiration' : 'scratch',
         client: loaded.client || beClient,
-        creativeDirection: dirEl ? (dirEl.value || '') : (loaded.creative_direction || ''),
+        creativeDirection: creativeDirection,
         baseInspirationImageUris: beInspiration.map(function (r) { return r.gcs_uri; }),
         variantMatrix: beVariantMatrix || {},
         brief: insp ? readInspirationBrief() : readForm(),
