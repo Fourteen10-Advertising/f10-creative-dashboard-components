@@ -687,6 +687,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      * message (the server also rejects an over-cap submit 402, so this is defence in
      * depth, not the only guard). */
     var beCompiled = null;        // last /compile response (resolved variants + cost)
+    var beDesignSpec = null;      // Phase 2: the drafted/edited design layout_spec (edit loop)
     var beCompiledEdits = null;   // operator overrides: { 'p:vi:pi': text, 'c:vi:ci': text }
     var beVariantMatrix = null;   // optional variant config passed through compile + submit
     var beRemainingCap = null;    // optional remaining spend cap (omitted -> backend default)
@@ -779,6 +780,25 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           var p = payload || {};
           return callAt(statusEndpoint(), { client: beClient, jobId: p.jobId || p.job_id || '' });
         },
+        // Phase 2: preview an edited design spec. A 422 (the compliance gate) carries
+        // { error, issues } and is RETURNED, not thrown, so the editor can show the
+        // issues inline; other non-2xx still throw. Reads the body once as text so a
+        // 422 body can be parsed without a double-read.
+        async designPreview(payload) {
+          var res = await fetch(designPreviewEndpoint(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(Object.assign({ client: beClient }, payload || {})),
+          });
+          var text = await res.text();
+          var body = null;
+          try { body = text ? JSON.parse(text) : null; } catch (e) { body = null; }
+          if (!res.ok) {
+            if (res.status === 422 && body) return body;
+            throw new Error((body && body.error) || text || 'preview failed');
+          }
+          return body;
+        },
       };
     }
 
@@ -808,19 +828,26 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (typeof window.STATUS_FUNCTION !== 'undefined' && window.STATUS_FUNCTION) return String(window.STATUS_FUNCTION);
       return endpoint().replace(/\/brief(\/)?$/, '/status');
     }
+    /* Phase 2: the no-spend deterministic re-render of an operator-edited design
+     * layout_spec. Same BACKEND as /brief, swapping the trailing /brief. */
+    function designPreviewEndpoint() {
+      if (typeof window.DESIGN_PREVIEW_FUNCTION !== 'undefined' && window.DESIGN_PREVIEW_FUNCTION) return String(window.DESIGN_PREVIEW_FUNCTION);
+      return endpoint().replace(/\/brief(\/)?$/, '/design-preview');
+    }
 
     function store() {
       var s = beStore || defaultStore();
       // The picker + compile/submit calls are optional on an injected store; back any
       // that are missing with the default network store so a test store that only stubs
       // probe/load/save still works. A test that exercises compile/submit stubs those.
-      if (!s.references || !s.upload || !s.compile || !s.submit || !s.status) {
+      if (!s.references || !s.upload || !s.compile || !s.submit || !s.status || !s.designPreview) {
         var net = defaultStore();
         if (!s.references) s.references = net.references;
         if (!s.upload) s.upload = net.upload;
         if (!s.compile) s.compile = net.compile;
         if (!s.submit) s.submit = net.submit;
         if (!s.status) s.status = net.status;
+        if (!s.designPreview) s.designPreview = net.designPreview;
       }
       return s;
     }
@@ -1070,7 +1097,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + 'be regenerated for free. No faces and no before/after imagery are ever generated.'
         + '</span></label>'
         + '<div class="be-actions-row">'
-        + '<button type="button" class="be-btn" id="be-design-generate-btn">Generate</button>'
+        + '<button type="button" class="be-btn" id="be-design-draft-btn">Draft ad</button>'
+        + '</div>'
+        // Phase 2 edit loop: the drafted ad's words shown as editable fields, a live
+        // preview, and Publish. The strategist drafts ONCE (Draft ad); every edit is
+        // re-rendered deterministically, so what publishes equals what is previewed.
+        // A results/efficacy claim typed into any field is rejected before it renders.
+        + '<div class="be-design-edit" id="be-design-edit" style="display:none;">'
+        + '<div class="be-section-sub">Edit the wording below, preview it, then publish. '
+        + 'What you publish is exactly what you preview.</div>'
+        + '<div id="be-design-fields"></div>'
+        + '<div class="be-actions-row">'
+        + '<button type="button" class="be-btn be-btn-secondary" id="be-design-preview-btn">Preview</button>'
+        + '<button type="button" class="be-btn" id="be-design-publish-btn">Publish</button>'
+        + '<span class="be-submit-note" id="be-design-cost-note"></span>'
+        + '</div>'
+        + '<div class="be-design-issues" id="be-design-issues" style="display:none;"></div>'
+        + '<div class="be-design-preview" id="be-design-preview"></div>'
         + '</div>'
         + '</div>'
         // 6 — The compiled result (resolved prompts, copy, inspiration, cost) renders here,
@@ -1958,31 +2001,171 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
     }
 
-    /* Generate a DESIGN ad directly (no compile step). A design format has no image
-     * spend to gate and the strategist that drafts it is non-deterministic, so it
-     * submits straight to generation with no compiledBrief: the strategist drafts the
-     * brief once, the render service rasterises it, and it publishes. Progress + the
-     * landed composite are polled exactly like an image submit; the operator reviews
-     * and approves in the Review tab. The button re-enables once the job is running
-     * (the backend's single-active-job guard rejects a concurrent generate). */
-    async function generateDesign() {
-      var btn = document.getElementById('be-design-generate-btn');
+    /* ---- Phase 2: the design edit loop (draft -> edit -> preview -> publish) ----
+     *
+     * A design ad is drafted ONCE (Draft ad -> /compile, no spend), the operator edits
+     * the wording, and every preview + the publish RE-RENDER the exact edited spec
+     * (deterministic renderer, no second strategist call), so what publishes equals
+     * what was previewed. Editing is a new way for a results claim to reach an ad with
+     * no disclaimer slot, so the backend re-checks compliance and a failing edit is
+     * surfaced inline before anything renders or spends. */
+
+    /* A friendly label for a copy-block role: 'headline' -> 'Headline',
+     * 'card.quote' -> 'Quote', 'list.item.0.text' -> 'Item 1'. Falls back to a
+     * title-cased role so an unknown role is still readable. */
+    function designRoleLabel(role) {
+      var r = String(role || '');
+      var m = r.match(/\.item\.(\d+)\./);
+      if (m) return 'Item ' + (parseInt(m[1], 10) + 1);
+      var last = r.split('.').pop() || r;
+      var named = {
+        headline: 'Headline', cta: 'Call to action', quote: 'Quote',
+        attribution: 'Attribution', title: 'Title', eyebrow: 'Eyebrow',
+        offer: 'Offer', code: 'Code', terms: 'Terms', question: 'Question',
+        answer: 'Answer', label: 'Label', value: 'Value', body: 'Body',
+        query: 'Search query', snippet: 'Snippet',
+      };
+      if (named[last]) return named[last];
+      return last.charAt(0).toUpperCase() + last.slice(1).replace(/[_-]/g, ' ');
+    }
+
+    /* Render the drafted design's editable copy fields. All visible text lives in the
+     * spec's copy_blocks by role, so one field per copy block covers every format's
+     * wording (rows, list items, quotes, answers, values). Fields are indexed to
+     * preserve order for read-back. */
+    function renderDesignEditor(spec) {
+      var wrap = document.getElementById('be-design-fields');
+      var blocks = (spec && spec.copy_blocks) || [];
+      if (wrap) {
+        wrap.innerHTML = blocks.map(function (cb, i) {
+          var role = (cb && cb.role) || '';
+          var text = (cb && cb.text) != null ? cb.text : '';
+          return '<label class="be-field"><span class="be-label">' + esc(designRoleLabel(role)) + '</span>'
+            + '<textarea class="be-design-field" id="be-df-' + i + '" data-role="' + esc(role) + '" rows="2">'
+            + esc(text) + '</textarea></label>';
+        }).join('');
+      }
+      var edit = document.getElementById('be-design-edit');
+      if (edit && edit.style) edit.style.display = '';
+    }
+
+    /* Read the on-screen edits back into a deep clone of the drafted spec: each
+     * field's value replaces its copy block's text by position. The clone is what
+     * preview + publish render, so the strategist is never re-run. */
+    function readEditedDesignSpec() {
+      if (!beDesignSpec) return null;
+      var spec = JSON.parse(JSON.stringify(beDesignSpec));
+      var blocks = spec.copy_blocks || [];
+      for (var i = 0; i < blocks.length; i++) {
+        var el = document.getElementById('be-df-' + i);
+        if (el && typeof el.value === 'string') blocks[i].text = el.value;
+      }
+      return spec;
+    }
+
+    function designCostNote(compileResp) {
+      var ce = compileResp && compileResp.cost_estimate;
+      if (!ce || !ce.unique_image_generations) return '';
+      return 'Publishing generates ' + ce.unique_image_generations + ' image (~$'
+        + Number(ce.estimated_usd || 0).toFixed(2) + ').';
+    }
+
+    function showDesignIssues(issues) {
+      var box = document.getElementById('be-design-issues');
+      if (!box) return;
+      if (!issues || !issues.length) {
+        box.style.display = 'none';
+        box.innerHTML = '';
+        return;
+      }
+      box.style.display = '';
+      box.innerHTML = '<div class="be-error"><strong>This can\'t run yet:</strong><ul>'
+        + issues.map(function (i) { return '<li>' + esc(String(i)) + '</li>'; }).join('')
+        + '</ul></div>';
+    }
+
+    /* Draft a design ad: compile (no spend) to resolve the layout_spec, then show the
+     * editable fields and an immediate preview of the draft. */
+    async function draftDesign() {
+      var btn = document.getElementById('be-design-draft-btn');
       if (btn) btn.disabled = true;
       var prog = document.getElementById('be-progress');
-      if (prog) prog.innerHTML = '<div class="be-muted">Generating…</div>';
+      if (prog) prog.innerHTML = '<div class="be-muted">Drafting…</div>';
       try {
-        var req = buildCompileRequest(); // carries archetypeId; the inline brief is ignored server-side for a design one-shot
-        var resp = await store().submit(req);
-        if (!resp || resp.ok === false) throw new Error((resp && resp.error) || 'generate failed');
-        beJobId = resp.job_id || null;
-        renderProgress(resp);
-        if (beJobId) startPolling(beJobId);
-        if (btn) btn.disabled = false;
+        var req = buildCompileRequest(); // carries archetypeId + creativeDirection + wantImage
+        var resp = await store().compile(req);
+        if (!resp || resp.ok === false) throw new Error((resp && resp.error) || 'draft failed');
+        var variant = (resp.variants && resp.variants[0]) || null;
+        var spec = variant && variant.design_spec;
+        if (!spec) throw new Error('the draft returned no editable design.');
+        beDesignSpec = spec;
+        beCompiled = resp; // reuse the cost estimate for the cost note
+        if (prog) prog.innerHTML = '';
+        renderDesignEditor(spec);
+        showDesignIssues(null);
+        var note = document.getElementById('be-design-cost-note');
+        if (note) note.textContent = designCostNote(resp);
+        await previewDesign(); // show the drafted result straight away
       } catch (err) {
-        renderProgressError('Generate failed: ' + (err && err.message ? err.message : err));
+        renderProgressError('Draft failed: ' + (err && err.message ? err.message : err));
+      } finally {
         if (btn) btn.disabled = false;
       }
     }
+
+    /* Re-render the edited spec (no spend) and show it, or surface the compliance
+     * issues that block it. Runs after Draft and on every Preview click. */
+    async function previewDesign() {
+      var spec = readEditedDesignSpec();
+      if (!spec) return;
+      var out = document.getElementById('be-design-preview');
+      if (out) out.innerHTML = '<div class="be-muted">Rendering preview…</div>';
+      try {
+        var resp = await store().designPreview({ layoutSpec: spec });
+        if (resp && resp.issues && resp.issues.length) {
+          showDesignIssues(resp.issues);
+          if (out) out.innerHTML = '';
+          return;
+        }
+        showDesignIssues(null);
+        var uri = resp && resp.png_data_uri;
+        if (out) {
+          out.innerHTML = uri
+            ? '<img class="be-design-preview-img" alt="Design preview" src="' + esc(uri) + '">'
+            : '<div class="be-muted">No preview returned.</div>';
+        }
+      } catch (err) {
+        if (out) out.innerHTML = '<div class="be-error">Preview failed: '
+          + esc(err && err.message ? err.message : String(err)) + '</div>';
+      }
+    }
+
+    /* Publish the edited spec verbatim: submit with the edited layout_spec so the job
+     * renders exactly what was previewed (no re-draft). Progress polls as usual. */
+    async function publishDesign() {
+      var spec = readEditedDesignSpec();
+      if (!spec) { renderProgressError('Draft the ad before publishing.'); return; }
+      var btn = document.getElementById('be-design-publish-btn');
+      if (btn) btn.disabled = true;
+      var prog = document.getElementById('be-progress');
+      if (prog) prog.innerHTML = '<div class="be-muted">Publishing…</div>';
+      try {
+        var req = buildCompileRequest();
+        req.layoutSpec = spec; // render THIS verbatim; skip the strategist re-draft
+        var resp = await store().submit(req);
+        if (!resp || resp.ok === false) throw new Error((resp && resp.error) || 'publish failed');
+        beJobId = resp.job_id || null;
+        renderProgress(resp);
+        if (beJobId) startPolling(beJobId);
+      } catch (err) {
+        renderProgressError('Publish failed: ' + (err && err.message ? err.message : err));
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    // Back-compat alias: the design entry point is now Draft (compile-first edit loop).
+    var generateDesign = draftDesign;
 
     /* Wire the inspiration picker's events once the panel exists. Delegated clicks so the
      * dynamically rendered chips + thumbs need no per-node listeners. */
@@ -2158,9 +2341,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (submitBtn && submitBtn.addEventListener) {
         submitBtn.addEventListener('click', function (e) { if (e && e.preventDefault) e.preventDefault(); submitCompiled(); });
       }
-      var designGenBtn = document.getElementById('be-design-generate-btn');
-      if (designGenBtn && designGenBtn.addEventListener) {
-        designGenBtn.addEventListener('click', function (e) { if (e && e.preventDefault) e.preventDefault(); generateDesign(); });
+      var designDraftBtn = document.getElementById('be-design-draft-btn');
+      if (designDraftBtn && designDraftBtn.addEventListener) {
+        designDraftBtn.addEventListener('click', function (e) { if (e && e.preventDefault) e.preventDefault(); draftDesign(); });
+      }
+      var designPreviewBtn = document.getElementById('be-design-preview-btn');
+      if (designPreviewBtn && designPreviewBtn.addEventListener) {
+        designPreviewBtn.addEventListener('click', function (e) { if (e && e.preventDefault) e.preventDefault(); previewDesign(); });
+      }
+      var designPublishBtn = document.getElementById('be-design-publish-btn');
+      if (designPublishBtn && designPublishBtn.addEventListener) {
+        designPublishBtn.addEventListener('click', function (e) { if (e && e.preventDefault) e.preventDefault(); publishDesign(); });
       }
       var compiledEl = document.getElementById('be-compiled');
       if (compiledEl && compiledEl.addEventListener) {
@@ -2270,6 +2461,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       setFormat: setFormat,
       getFormat: function () { return beFormat; },
       generateDesign: generateDesign,
+      // Phase 2 design edit loop (draft -> edit -> preview -> publish)
+      draftDesign: draftDesign,
+      previewDesign: previewDesign,
+      publishDesign: publishDesign,
+      renderDesignEditor: renderDesignEditor,
+      readEditedDesignSpec: readEditedDesignSpec,
+      designRoleLabel: designRoleLabel,
+      designPreviewEndpoint: designPreviewEndpoint,
+      getDesignSpec: function () { return beDesignSpec; },
       renderCompiled: renderCompiled,
       compileEndpoint: compileEndpoint,
       submitEndpoint: submitEndpoint,
@@ -2284,7 +2484,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         beInspiration = []; beRefIndex = {}; beInspTab = 'upload';
         beClientPage = { offset: 0, hasMore: false, loading: false }; beCompState = {};
         stopPolling();
-        beCompiled = null; beCompiledEdits = null; beVariantMatrix = null;
+        beCompiled = null; beDesignSpec = null; beCompiledEdits = null; beVariantMatrix = null;
         beRemainingCap = null; beJobId = null;
       },
     };

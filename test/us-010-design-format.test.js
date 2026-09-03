@@ -95,9 +95,16 @@ async function run() {
       );
     });
     assert.ok(/id="be-design"/.test(html), 'design panel present');
-    assert.ok(/id="be-design-generate-btn"/.test(html), 'design Generate button present');
+    assert.ok(/id="be-design-draft-btn"/.test(html), 'design Draft button present');
     assert.ok(/id="be-design-direction"/.test(html), 'design-mode creative-direction field present');
     assert.ok(/id="be-design-photo"/.test(html), 'design-mode photo toggle present');
+    // Phase 2 edit loop: the edit panel, preview + publish controls, and containers.
+    assert.ok(/id="be-design-edit"/.test(html), 'design edit panel present');
+    assert.ok(/id="be-design-fields"/.test(html), 'design edit fields container present');
+    assert.ok(/id="be-design-preview-btn"/.test(html), 'design Preview button present');
+    assert.ok(/id="be-design-publish-btn"/.test(html), 'design Publish button present');
+    assert.ok(/id="be-design-preview"/.test(html), 'design preview container present');
+    assert.ok(/id="be-design-issues"/.test(html), 'design compliance-issues container present');
   });
 
   await check('a design format adds archetypeId to the request; image omits it', async () => {
@@ -174,24 +181,114 @@ async function run() {
     );
   });
 
-  await check('Generate submits a design one-shot: archetypeId set, NO compiledBrief', async () => {
+  // A minimal drafted design spec (schema-shaped: copy_blocks by role + a component).
+  function fakeDesignSpec(archetypeId) {
+    return {
+      schema: 'layout_spec', archetype_id: archetypeId,
+      copy_blocks: [
+        { role: 'headline', text: 'Drafted headline', slot_index: null },
+        { role: 'cta', text: 'Start now', slot_index: null },
+      ],
+      components: [{ kind: 'design', component_type: 'stat_card', spec: {} }],
+    };
+  }
+
+  await check('Draft compiles the design and renders editable fields (no submit)', async () => {
+    const ctx = makeBrowserCtx();
+    const be = ctx.window.f10BriefEditor;
+    let compiled = null, submitted = null, previewed = null;
+    be.setStore({
+      async probe() { return true; }, async load() {}, async save() {},
+      async compile(req) {
+        compiled = req;
+        return { ok: true, variants: [{ archetype_id: 'stat_card', design_spec: fakeDesignSpec('stat_card') }],
+          cost_estimate: { unique_image_generations: 0, estimated_usd: 0 } };
+      },
+      async designPreview(req) { previewed = req; return { ok: true, png_data_uri: 'data:image/png;base64,AAAA', pending_image_generations: 0 }; },
+      async submit(req) { submitted = req; return { ok: true, job_id: 'x' }; },
+    });
+    await ctx.window.initBriefEditor();
+
+    be.setFormat('stat_card');
+    await be.draftDesign();
+
+    assert.ok(compiled, 'draft calls compile');
+    assert.strictEqual(compiled.archetypeId, 'stat_card', 'compile carries the design archetype');
+    assert.ok(be.getDesignSpec(), 'the drafted spec is held for editing');
+    assert.strictEqual(submitted, null, 'draft does NOT submit');
+    assert.ok(previewed, 'draft auto-previews the drafted spec');
+    // The editable fields were rendered from the spec's copy blocks.
+    const fields = ctx._slots['be-design-fields'];
+    assert.ok(/id="be-df-0"/.test(fields.innerHTML) && /id="be-df-1"/.test(fields.innerHTML),
+      'a field per copy block is rendered');
+  });
+
+  await check('Publish submits the EDITED spec verbatim as layoutSpec', async () => {
     const ctx = makeBrowserCtx();
     const be = ctx.window.f10BriefEditor;
     let submitted = null;
     be.setStore({
       async probe() { return true; }, async load() {}, async save() {},
-      async submit(req) { submitted = req; return { ok: true, job_id: 'job-design-1', status: 'running' }; },
+      async compile() {
+        return { ok: true, variants: [{ archetype_id: 'stat_card', design_spec: fakeDesignSpec('stat_card') }],
+          cost_estimate: { unique_image_generations: 0, estimated_usd: 0 } };
+      },
+      async designPreview() { return { ok: true, png_data_uri: 'data:image/png;base64,AAAA' }; },
+      async submit(req) { submitted = req; return { ok: true, job_id: 'job-design-2', status: 'running' }; },
     });
     await ctx.window.initBriefEditor();
 
-    be.setFormat('comparison');
-    await be.generateDesign();
+    be.setFormat('stat_card');
+    await be.draftDesign();
+    // Edit the headline field, then publish.
+    ctx.document.getElementById('be-df-0').value = 'AN EDITED HEADLINE';
+    await be.publishDesign();
 
-    assert.ok(submitted, 'submit was called');
-    assert.strictEqual(submitted.archetypeId, 'comparison', 'submit carries the design archetype');
-    assert.strictEqual(submitted.compiledBrief, undefined, 'a design one-shot sends no compiledBrief');
-    assert.strictEqual(be.getJobId(), 'job-design-1', 'the design job id is tracked (polling started)');
+    assert.ok(submitted, 'publish calls submit');
+    assert.ok(submitted.layoutSpec, 'submit carries the edited layoutSpec');
+    const headline = submitted.layoutSpec.copy_blocks.find(function (c) { return c.role === 'headline'; });
+    assert.strictEqual(headline.text, 'AN EDITED HEADLINE', 'the edit is published verbatim');
+    assert.strictEqual(be.getJobId(), 'job-design-2', 'the publish job id is tracked (polling started)');
     be.stopPolling();
+  });
+
+  await check('Preview surfaces a compliance rejection inline (422) and renders nothing', async () => {
+    const ctx = makeBrowserCtx();
+    const be = ctx.window.f10BriefEditor;
+    be.setStore({
+      async probe() { return true; }, async load() {}, async save() {},
+      async compile() {
+        return { ok: true, variants: [{ archetype_id: 'stat_card', design_spec: fakeDesignSpec('stat_card') }],
+          cost_estimate: { unique_image_generations: 0, estimated_usd: 0 } };
+      },
+      // First call (auto-preview after draft) is clean; after editing in a claim it fails.
+      async designPreview(req) {
+        var h = req.layoutSpec.copy_blocks.find(function (c) { return c.role === 'headline'; });
+        if (h && /10kg/.test(h.text)) return { error: 'blocked', issues: ['quantified results claim in visible copy'] };
+        return { ok: true, png_data_uri: 'data:image/png;base64,AAAA' };
+      },
+      async submit() { throw new Error('should not submit'); },
+    });
+    await ctx.window.initBriefEditor();
+
+    be.setFormat('stat_card');
+    await be.draftDesign();
+    ctx.document.getElementById('be-df-0').value = 'Lose 10kg fast';
+    await be.previewDesign();
+
+    const issues = ctx._slots['be-design-issues'];
+    assert.ok(/results claim/.test(issues.innerHTML), 'the compliance issue is shown inline');
+    const preview = ctx._slots['be-design-preview'];
+    assert.ok(!/<img/.test(preview.innerHTML), 'no preview image is shown for a blocked edit');
+  });
+
+  await check('designRoleLabel humanizes copy-block roles', async () => {
+    const ctx = makeBrowserCtx();
+    const be = ctx.window.f10BriefEditor;
+    assert.strictEqual(be.designRoleLabel('headline'), 'Headline');
+    assert.strictEqual(be.designRoleLabel('card.quote'), 'Quote');
+    assert.strictEqual(be.designRoleLabel('list.item.0.text'), 'Item 1');
+    assert.strictEqual(be.designRoleLabel('list.item.2.text'), 'Item 3');
   });
 
   console.log('\n' + passed + ' checks passed.');
