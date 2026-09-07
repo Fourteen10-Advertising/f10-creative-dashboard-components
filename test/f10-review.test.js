@@ -129,6 +129,33 @@ function makeUnitCtx(fetchImpl, reviewConfig, opts) {
 async function runUnit() {
   console.log('US-007 Creative Review tab - unit');
 
+  // ── A preview image whose signed url failed to load degrades to the placeholder. ──
+  await check('a preview image that fails to load is swapped for the placeholder (never a broken img)', async () => {
+    const ctx = makeUnitCtx(async () => jsonResponse({}));
+    const R = ctx.window.f10Review;
+    let replaced = null;
+    const parent = { replaceChild(nw, old) { replaced = { nw, old }; } };
+    const img = {
+      tagName: 'IMG', className: 'rev-img rev-card-thumb', parentNode: parent, _a: {},
+      classList: { contains(c) { return 'rev-img rev-card-thumb'.split(' ').indexOf(c) >= 0; } },
+      getAttribute(k) { return this._a[k] || null; },
+    };
+    const doc = { createElement() { return { _a: {}, setAttribute(k, v) { this._a[k] = v; } }; } };
+
+    const ok = R.swapFailedPreviewImg(img, doc);
+    assert.strictEqual(ok, true, 'it reports a swap');
+    assert.ok(replaced && replaced.old === img, 'the failed img was replaced');
+    assert.ok(/rev-img\b/.test(replaced.nw.className) && /rev-img-empty/.test(replaced.nw.className),
+      'the placeholder keeps rev-img sizing and adds rev-img-empty');
+    assert.strictEqual(replaced.nw.textContent, 'Preview not available', 'placeholder shows the copy');
+    assert.strictEqual(replaced.nw._a['data-rev-fallback'], '1', 'placeholder is flagged so it never re-swaps');
+
+    // A non-preview element (or a non-IMG) is left alone.
+    assert.strictEqual(R.swapFailedPreviewImg({ tagName: 'DIV' }, doc), false, 'ignores non-img targets');
+    const plain = { tagName: 'IMG', className: 'other', classList: { contains() { return false; } } };
+    assert.strictEqual(R.swapFailedPreviewImg(plain, doc), false, 'ignores images that are not previews');
+  });
+
   // ── Discovery gating: list-bundles returns >=1 bundle registers the nav link + panel. ──
   await check('discovery returning >=1 bundle registers the Review nav link + panel', async () => {
     let listBody = null;

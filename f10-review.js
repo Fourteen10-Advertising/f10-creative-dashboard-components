@@ -381,6 +381,22 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }).join(' ');
     }
 
+    /* Swap a preview <img> that FAILED to load (e.g. its short-lived signed url
+     * expired) for the same "Preview not available" placeholder the null-url path
+     * shows, so a failed preview degrades gracefully instead of a broken-image icon.
+     * Pure + injectable (doc) so it is unit-testable without a live DOM: returns
+     * true when it replaced the image. Idempotent via a data flag. */
+    function swapFailedPreviewImg(imgEl, doc) {
+      if (!imgEl || imgEl.tagName !== 'IMG' || !imgEl.classList || !imgEl.classList.contains('rev-img')) return false;
+      if (imgEl.getAttribute && imgEl.getAttribute('data-rev-fallback')) return false;
+      var ph = doc.createElement('div');
+      ph.className = imgEl.className + ' rev-img-empty';
+      ph.setAttribute('data-rev-fallback', '1');
+      ph.textContent = 'Preview not available';
+      if (imgEl.parentNode) imgEl.parentNode.replaceChild(ph, imgEl);
+      return true;
+    }
+
     /* The NEW generated ad card: its own preview image (US-005), the bundle's component
      * values, any copy, and the coherence flags / held dimensions in context. A missing
      * or unresolvable composite falls back to a labelled placeholder, never a broken img. */
@@ -1056,7 +1072,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // Bind the approve/decline delegation ONCE on the stable rev-body container so it
       // survives every re-render (renderCurrent only swaps the container's innerHTML).
       var body = document.getElementById('rev-body');
-      if (body && body.addEventListener) body.addEventListener('click', onDecisionClick);
+      if (body && body.addEventListener) {
+        body.addEventListener('click', onDecisionClick);
+        // A composite preview is a short-lived SIGNED url (it expires), so an <img>
+        // can fail to load and show a broken-image icon. The card copy promises
+        // "never a broken img", so swap a failed preview for the same "Preview not
+        // available" placeholder. 'error' does not bubble, so listen in the CAPTURE
+        // phase; this one handler covers both the grid thumb and the detail image.
+        body.addEventListener('error', function (e) {
+          swapFailedPreviewImg(e && e.target, document);
+        }, true);
+      }
       // Bind the deactivate handler to every OTHER existing nav anchor - generic, no
       // hard-coded class list - so this never needs editing when tabs are added.
       var others = document.querySelectorAll ? document.querySelectorAll('#sidebar nav a') : [];
@@ -1126,6 +1152,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       renderError: renderError,
       bundleHtml: bundleHtml,
       newAdHtml: newAdHtml,
+      swapFailedPreviewImg: swapFailedPreviewImg,
       panelMarkup: panelMarkup,
       navLinkHtml: navLinkHtml,
       clientKey: clientKey,
