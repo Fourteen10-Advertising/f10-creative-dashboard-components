@@ -29,7 +29,31 @@ function prodBenchmarkHTML(){
   }
   return `<span class="bm-item"><strong>Home Run:</strong> Spend &ge; ${fmt$(HR_SPEND)} &amp; CPA &lt; ${fmt$(HR_CPA)}</span>` +
     `<span class="bm-item"><strong>On Base:</strong> Spend &ge; ${fmt$(OB_SPEND)} &amp; CPA &lt; ${fmt$(OB_CPA)}</span>` +
-    `<span class="bm-item"><strong>Strike Out:</strong> Spend &ge; ${fmt$(SO_SPEND)} &amp; CPA &gt; ${fmt$(SO_CPA)}</span>`;
+    `<span class="bm-item"><strong>Strike Out:</strong> Spend &ge; ${fmt$(SO_SPEND)} &amp; CPA &gt; ${fmt$(SO_CPA)}</span>` +
+    prodBenchmarkGroupHTML();
+}
+
+/* When per-group thresholds are configured, spell out each group's own bands so
+ * the benchmark copy is honest about the two scales. The base copy above is the
+ * fallback every unlisted group uses; these lines are the exceptions. Returns ''
+ * when no per-group thresholds are set, so single-scale dashboards are
+ * unchanged. */
+function prodBenchmarkGroupHTML(){
+  const g = (typeof thresholdGroups === 'function') ? thresholdGroups() : null;
+  if (!g) return '';
+  const roas = targetMetric() === 'roas';
+  const base = _baseThresholdObj();
+  return Object.entries(g.groups).map(([name, ov]) => {
+    const th = Object.assign({}, base, ov);
+    const band = roas
+      ? `ROAS &ge; ${fmtRatio(th.HR_ROAS)}`
+      : `CPA &lt; ${fmt$(th.HR_CPA)}`;
+    const bandOb = roas
+      ? `ROAS &ge; ${fmtRatio(th.OB_ROAS)}`
+      : `CPA &lt; ${fmt$(th.OB_CPA)}`;
+    return `<span class="bm-item bm-group"><strong>${name} Home Run:</strong> Spend &ge; ${fmt$(th.HR_SPEND)} &amp; ${band}</span>` +
+      `<span class="bm-item bm-group"><strong>${name} On Base:</strong> Spend &ge; ${fmt$(th.OB_SPEND)} &amp; ${bandOb}</span>`;
+  }).join('');
 }
 function prodThresholdLegendHTML(){
   if (targetMetric() === 'roas'){

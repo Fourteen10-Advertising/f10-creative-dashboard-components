@@ -196,6 +196,7 @@ lives in `test/review-list-bundles.test.js`.
 | `SHOW_DEFINITIONS` | no | Set `false` to turn all hover definitions off. Default on |
 | `SHOW_ZERO_SPEND_FILTER` | no | Set `true` to add the zero-spend control to the controls bar (see [Zero-spend filter](#zero-spend-filter)) |
 | `FULL_COVERAGE_TIERS` | no | Set `true` to grade every ad into one of five tiers that sum to 100% of the ad base (see [Full-coverage tiers](#full-coverage-tiers)) |
+| `THRESHOLDS_BY_GROUP` | no | Per-product Ad Production thresholds, e.g. grade SMSF ads on a different cost scale than Trade (see [Per-product thresholds](#per-product-thresholds)) |
 | `REVIEW` | no | F10-internal Creative Review surface only. The bundle list is now **auto-discovered** via the `list-bundles` action, so this block no longer carries `BUNDLES` or `LIMIT` and is effectively optional/empty; it holds only optional overrides (`CLIENT` slug override, `ACTOR`, `FEEDBACK_FUNCTION`). Live client dashboards never define it (see [Creative review](#creative-review)) |
 
 ## Competitor Ad Library
@@ -603,6 +604,60 @@ dropped or thrown.
 in `Unclassified` now count. Expect the strike-out rate to rise. That is the
 correction, not a regression: recalibrate the thresholds against the new
 denominator rather than reading the old numbers across.
+
+## Per-product thresholds
+
+A multi-product account can convert on different actions per product, at cost
+scales too far apart for one Home Run / On Base ceiling. Stake is the case in
+point: Trade converts on app installs at about $60 each, SMSF on Calendly
+bookings at about $255 each, roughly 8x apart. A single install-priced threshold
+would strike out every SMSF ad for missing a target it was never running for,
+which is exactly the false-strikeout artefact the tiers are meant to remove.
+
+Opt in per dashboard:
+
+```js
+const THRESHOLDS_BY_GROUP = {
+  col: 'group_name',            // a real mart column to switch on
+  groups: {
+    SMSF: { HR_SPEND: 3000, HR_CPA: 300, OB_SPEND: 1000, OB_CPA: 1000, SO_SPEND: 1000 },
+  },
+};
+```
+
+A listed group grades on its own thresholds. A partial override inherits the
+rest from the base `THRESHOLDS`, so the SMSF block above could set just `HR_CPA`
+and keep everything else. Any unlisted group, and any row with a NULL group,
+falls through to the base thresholds.
+
+The dispatch is an outer `CASE` on `col`, evaluated **per row**, so grades are
+correct even with the Product filter on "All": each ad is judged on its own
+product's thresholds regardless of what else is on screen. `col` is interpolated
+into SQL, so it is validated as a plain column identifier; anything else disables
+per-group thresholds and falls back to the base scale. Group values are escaped
+as SQL string literals.
+
+This pairs with a per-product `CONV_EXPR`. The Ad Production CPA is already
+`spend / SUM(CONV_EXPR)`, so a conversion expression like
+`CASE WHEN group_name = 'SMSF' THEN calendly_booking ELSE app_install END` makes
+each ad's cost the cost of the action it actually runs for, and the per-group
+thresholds then grade that cost on the right scale.
+
+Scope and limits:
+
+- Governs only the **Ad Production tier grading** (the Meta production tab). The
+  weekly Movement states never used these thresholds, and the TikTok tab keeps
+  its own single scale.
+- The live threshold editor tunes the **base** thresholds. Per-group overrides
+  are config and are not edited live.
+- The scatter's dashed **guide lines** are drawn at the base thresholds. The
+  coloured classification is always per-group-correct, but on the combined view
+  the guide lines only line up with the base-scale product. Filter to a single
+  product to read the scatter against one scale. The scorecard rates are always
+  correct.
+
+With no config, the emitted SQL is byte-for-byte what it was; a test pins that in
+both CPA and ROAS mode.
 
 ## Thresholds
 
