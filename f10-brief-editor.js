@@ -1608,18 +1608,22 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     /* ---- load + save actions ---- */
 
-    async function loadRevisionById(revisionId) {
-      if (!revisionId) { renderStatusError('Enter a revision id to load.'); return; }
+    async function loadRevisionById(revisionId, opts) {
+      // opts.silent is set for the boot-time auto-load of a configured seed revision: a missing
+      // or failed seed must NOT error the panel — it just leaves the blank new-brief form (the
+      // correct empty state). An operator-initiated Load (no opts) still surfaces every message.
+      var silent = !!(opts && opts.silent);
+      if (!revisionId) { if (!silent) renderStatusError('Enter a revision id to load.'); return; }
       var el = document.getElementById('be-status');
-      if (el) el.innerHTML = 'Loading revision ' + esc(revisionId) + '...';
+      if (el && !silent) el.innerHTML = 'Loading revision ' + esc(revisionId) + '...';
       try {
         var doc = await store().load(revisionId);
-        if (!doc) { renderStatusError('No brief revision found for id ' + revisionId + '.'); return; }
+        if (!doc) { if (!silent) renderStatusError('No brief revision found for id ' + revisionId + '.'); return; }
         beLoadedRevision = f10BriefFromDoc(doc);
         populateForm(beLoadedRevision);
         if (el) el.innerHTML = '';
       } catch (err) {
-        renderStatusError('Failed to load revision: ' + (err && err.message ? err.message : err));
+        if (!silent) renderStatusError('Failed to load revision: ' + (err && err.message ? err.message : err));
       }
     }
 
@@ -2369,29 +2373,41 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (a === beNavLink || !a.addEventListener) return;
         a.addEventListener('click', deactivateOnOtherNav);
       });
-      // Optional auto-load of a configured revision once the panel exists.
-      if (CFG.REVISION_ID) loadRevisionById(String(CFG.REVISION_ID));
+      // Optional auto-load of a configured seed revision once the panel exists. Silent: a
+      // missing/failed seed leaves the blank new-brief form rather than erroring the panel.
+      if (CFG.REVISION_ID) loadRevisionById(String(CFG.REVISION_ID), { silent: true });
+    }
+
+    /* True only in a REVIEW-APP context: the internal creative-review app injects the brief
+     * backend as window.BRIEF_FUNCTION (or a bespoke host sets an explicit BRIEF_EDITOR.ENDPOINT).
+     * A live, client-facing dashboard has a DATASET but NO brief backend, so this stays false
+     * there and the editor never surfaces and never touches the network. This signal — NOT the
+     * client/DATASET — is what gates the tab, so the editor cannot leak onto a client dashboard. */
+    function isReviewAppContext() {
+      if (CFG && CFG.ENDPOINT) return true;
+      return !!(typeof window !== 'undefined'
+        && typeof window.BRIEF_FUNCTION !== 'undefined' && window.BRIEF_FUNCTION);
     }
 
     /* ---- boot ----
-     * Resolve the client, run the cheap probe through the store, and register the tab only
-     * when the client has a brief revision to edit. Any probe error fails closed (no tab,
-     * no DOM trace). Does not require an f10-layout.js edit: it self-boots and also exposes
-     * window.initBriefEditor for explicit dispatch. */
+     * Resolve the client, then, ONLY in a review-app context, ALWAYS register the tab —
+     * regardless of whether any brief revision exists yet. The brief editor is the surface
+     * used to author the FIRST brief, so it must never be hidden behind a "has data" probe;
+     * a discovery result decides only the tab's INNER state (auto-load a configured seed
+     * revision vs. a blank "author a new brief" form), never whether the tab appears. Outside
+     * a review-app context it is a silent no-op with zero DOM trace and no network call.
+     * Self-boots and also exposes window.initBriefEditor for explicit dispatch. */
     async function initBriefEditor() {
       if (beBooted) return;
       beBooted = true;
       beClient = clientKey();
       if (!beClient) return; // no client -> silent no-op
-      try {
-        var ok = await store().probe(beClient);
-        if (ok === true) registerTab();
-      } catch (err) {
-        // Fail closed: no tab, no empty state.
-        if (window.console && console.warn) {
-          console.warn('Brief Editor visibility probe error:', err && err.message ? err.message : err);
-        }
-      }
+      // Gate strictly on the explicit review-app signal, never on DATASET/client alone: a plain
+      // client dashboard (no BRIEF_FUNCTION, no ENDPOINT) shows no tab and makes no network call.
+      if (!isReviewAppContext()) return;
+      // ALWAYS register in a review-app context. A configured seed revision is auto-loaded as
+      // inner state inside registerTab(); a missing seed leaves a blank new-brief form, not an error.
+      registerTab();
     }
 
     window.initBriefEditor = initBriefEditor;

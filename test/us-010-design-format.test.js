@@ -57,6 +57,9 @@ function makeBrowserCtx(config) {
   const { document, slots } = makeTinyDom();
   const window = {};
   window.F10A = { track() {} };
+  // The review app injects window.BRIEF_FUNCTION (the brief backend); the browser panel only
+  // surfaces in that review-app context, so the harness sets it to register the editor tab.
+  window.BRIEF_FUNCTION = 'https://fn.example/.netlify/functions/brief';
   const sandbox = {
     window, document, console,
     F10A: window.F10A,

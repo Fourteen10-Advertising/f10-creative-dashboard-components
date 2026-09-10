@@ -156,14 +156,14 @@ async function runUnit() {
     assert.strictEqual(R.swapFailedPreviewImg(plain, doc), false, 'ignores images that are not previews');
   });
 
-  // ── Discovery gating: list-bundles returns >=1 bundle registers the nav link + panel. ──
-  await check('discovery returning >=1 bundle registers the Review nav link + panel', async () => {
+  // ── A review-app context (BQ_FUNCTION + a REVIEW block) with >=1 discovered bundle registers. ──
+  await check('a review-app context with >=1 discovered bundle registers the Review nav link + panel', async () => {
     let listBody = null;
     const ctx = makeUnitCtx(async (url, opts) => {
       const body = JSON.parse(opts.body);
       if (body.action === 'list-bundles') { listBody = body; return jsonResponse({ bundles: [sampleBundle()] }); }
       return jsonResponse({});
-    });
+    }, {});
     await ctx.window.initReview();
     assert.ok(listBody, 'the list-bundles discovery was called');
     assert.strictEqual(listBody.action, 'list-bundles', 'discovery uses the list-bundles action');
@@ -176,24 +176,32 @@ async function runUnit() {
     assert.ok(/class="tab-panel review-tab-panel"/.test(content), 'panel carries the shared tab-panel class');
   });
 
-  // ── Discovery gating: an empty discovery leaves ZERO DOM trace (fail closed). ──
-  await check('discovery returning no bundles injects no nav link and no panel (fail closed)', async () => {
-    const ctx = makeUnitCtx(async () => jsonResponse({ bundles: [] }));
+  // ── REGRESSION (chicken-and-egg): in a review-app context the tab ALWAYS registers, even
+  //    when discovery finds NO bundles. Discovery no longer HIDES the tab; it decides only the
+  //    inner state - here the friendly "No generated ads yet" empty state, never a blank page. ──
+  await check('a review-app context with NO discovered bundles still registers the tab and shows the empty state', async () => {
+    const ctx = makeUnitCtx(async () => jsonResponse({ bundles: [] }), {});
     await ctx.window.initReview();
     const nav = (ctx._slots['__nav'] && ctx._slots['__nav'].innerHTML) || '';
     const content = (ctx._slots['content'] && ctx._slots['content'].innerHTML) || '';
-    assert.ok(!/review-nav-link/.test(nav), 'no Review nav link');
-    assert.ok(!/panel-review/.test(content), 'no Review panel');
+    assert.ok(/review-nav-link/.test(nav), 'Review nav link injected even with zero bundles');
+    assert.ok(/id="panel-review"/.test(content), 'Review panel injected even with zero bundles');
+    // Activating the tab renders the "No generated ads yet" empty state, never a blank panel.
+    await ctx.window.f10Review.load();
+    const bodyHtml = (ctx._slots['rev-body'] && ctx._slots['rev-body'].innerHTML) || '';
+    assert.ok(/No generated ads yet/.test(bodyHtml), 'the empty state is rendered when there are no bundles');
+    assert.ok(/rev-empty/.test(bodyHtml), 'the empty state uses the rev-empty block');
   });
 
-  // ── Discovery gating: a discovery error fails closed (zero trace). ──
-  await check('a discovery error fails closed (no nav link, no panel)', async () => {
-    const ctx = makeUnitCtx(async () => { throw new Error('endpoint 500'); });
+  // ── REGRESSION: in a review-app context a discovery error still registers the tab (never
+  //    hides it), so a transient backend hiccup can never strand the operator on a blank page. ──
+  await check('a discovery error in a review-app context still registers the tab', async () => {
+    const ctx = makeUnitCtx(async () => { throw new Error('endpoint 500'); }, {});
     await ctx.window.initReview();
     const nav = (ctx._slots['__nav'] && ctx._slots['__nav'].innerHTML) || '';
     const content = (ctx._slots['content'] && ctx._slots['content'].innerHTML) || '';
-    assert.ok(!/review-nav-link/.test(nav), 'no Review nav link on discovery error');
-    assert.ok(!/panel-review/.test(content), 'no Review panel on discovery error');
+    assert.ok(/review-nav-link/.test(nav), 'Review nav link injected despite the discovery error');
+    assert.ok(/id="panel-review"/.test(content), 'Review panel injected despite the discovery error');
   });
 
   // ── LIVE-PATH SAFETY: no BQ_FUNCTION AND no injected store => no network, no DOM. ──
@@ -208,13 +216,31 @@ async function runUnit() {
     assert.ok(!/panel-review/.test(content), 'no Review panel on the live path');
   });
 
-  // ── Discovery gating via an injected store: an empty list still means no tab. ──
-  await check('an injected store whose discovery returns no bundles registers no tab', async () => {
-    const ctx = makeUnitCtx(async () => jsonResponse({}));
-    ctx.window.f10Review.setStore({ async listBundles() { return { bundles: [] }; } });
+  // ── REGRESSION (live-path safety): a LIVE client dashboard has BQ_FUNCTION (it powers the
+  //    dashboard) but NO REVIEW block, so it is NOT a review-app context: the module registers
+  //    NEITHER tab and makes NO discovery call. Keying "always show" off BQ_FUNCTION/DATASET
+  //    alone would regress this and leak the review surface onto a client-facing dashboard. ──
+  await check('a live client dashboard (BQ_FUNCTION but no REVIEW block) registers no tab and makes no network call', async () => {
+    let fetched = 0;
+    const ctx = makeUnitCtx(async () => { fetched += 1; return jsonResponse({ bundles: [sampleBundle()] }); }); // no REVIEW config
     await ctx.window.initReview();
+    assert.strictEqual(fetched, 0, 'no discovery call without a REVIEW block, even though BQ_FUNCTION is present');
     const nav = (ctx._slots['__nav'] && ctx._slots['__nav'].innerHTML) || '';
-    assert.ok(!/review-nav-link/.test(nav), 'no Review nav link when discovery is empty');
+    const content = (ctx._slots['content'] && ctx._slots['content'].innerHTML) || '';
+    assert.ok(!/review-nav-link/.test(nav), 'no Review nav link on a live client dashboard');
+    assert.ok(!/panel-review/.test(content), 'no Review panel on a live client dashboard');
+  });
+
+  // ── REGRESSION (live-path safety): even an injected store cannot force the tab onto a host
+  //    with no REVIEW block - the store's discovery is never called. ──
+  await check('an injected store with no REVIEW block registers no tab and never calls discovery', async () => {
+    let listCalls = 0;
+    const ctx = makeUnitCtx(async () => jsonResponse({}));
+    ctx.window.f10Review.setStore({ async listBundles() { listCalls += 1; return { bundles: [sampleBundle()] }; } });
+    await ctx.window.initReview();
+    assert.strictEqual(listCalls, 0, 'discovery is never called without a REVIEW block');
+    const nav = (ctx._slots['__nav'] && ctx._slots['__nav'].innerHTML) || '';
+    assert.ok(!/review-nav-link/.test(nav), 'no Review nav link without a REVIEW block');
   });
 
   // ── Render: each new ad renders with its preview, coherence flags and held dimensions. ──
@@ -604,16 +630,27 @@ async function runCanary() {
     assert.ok(!document.getElementById('panel-review').classList.contains('active'), 'Review panel cleared');
   });
 
-  // LIVE-PATH: a client whose discovery finds no bundles boots with the base nav UNCHANGED.
-  await check('a client with no discovered bundles is completely unaffected (no Review nav or panel)', async () => {
+  // LIVE-PATH: a live client dashboard (NO REVIEW block) boots with the base nav UNCHANGED,
+  // regardless of any injected store. This is the safety property: the review surface never
+  // leaks onto a client-facing dashboard.
+  await check('a live client dashboard (no REVIEW block) is completely unaffected (no Review nav or panel)', async () => {
     const d2 = await bootDashboard(undefined, EMPTY_STORE);
-    assert.strictEqual(d2.document.querySelectorAll('.review-nav-link').length, 0, 'no Review nav link injected when discovery is empty');
-    assert.strictEqual(d2.document.querySelectorAll('.review-tab-panel').length, 0, 'no Review panel injected when discovery is empty');
+    assert.strictEqual(d2.document.querySelectorAll('.review-nav-link').length, 0, 'no Review nav link injected without a REVIEW block');
+    assert.strictEqual(d2.document.querySelectorAll('.review-tab-panel').length, 0, 'no Review panel injected without a REVIEW block');
     // The base nav + its active summary panel are exactly as booted.
     assert.strictEqual(d2.document.querySelectorAll('.nav-link').length, 5, 'the five base nav links are untouched');
     const active = activePanels(d2.document);
     assert.strictEqual(active.length, 1, 'exactly one base panel active');
     assert.strictEqual(active[0].getAttribute('id'), 'tab-summary', 'the base Weekly Summary panel is still the active one');
+  });
+
+  // REVIEW-APP, ZERO DATA: a review-app context (REVIEW block present) with NO generated
+  // bundles STILL registers the Review tab, so a brand-new client is never a blank page.
+  await check('a review-app context with no bundles still registers the Review tab (chicken-and-egg fix)', async () => {
+    const d3 = await bootDashboard({}, EMPTY_STORE);
+    assert.strictEqual(d3.document.querySelectorAll('.review-nav-link').length, 1, 'exactly one Review nav link even with zero bundles');
+    const panel = d3.document.getElementById('panel-review');
+    assert.ok(panel && panel.classList.contains('tab-panel'), 'the Review panel is present even with zero bundles');
   });
 }
 

@@ -14,9 +14,10 @@
  *   - the GCS path + registry row match the US-003 contract, and the canonical
  *     vocabularies stay in lockstep with the pipeline schema.
  *
- * PART 2 - BROWSER panel (probe-gated self-registration):
- *   - probe true injects the nav link + panel; probe false and a probe error both fail
- *     closed with zero DOM trace (AC1, module pattern);
+ * PART 2 - BROWSER panel (review-app-gated self-registration):
+ *   - a review-app context (window.BRIEF_FUNCTION set) ALWAYS injects the nav link + panel,
+ *     even with zero data; a plain client dashboard (no brief backend) registers nothing and
+ *     makes no network call (AC1, module pattern, chicken-and-egg regression);
  *   - the editable axes are <select> dropdowns whose options are exactly the canonical
  *     enums, the dead format axis is gone, and there is no free-text axis input
  *     (AC1/AC3, e2e 2);
@@ -274,7 +275,7 @@ async function runNode() {
 }
 
 /* ========================================================================== *
- * PART 2 - BROWSER panel (probe-gated self-registration)
+ * PART 2 - BROWSER panel (review-app-gated self-registration)
  * ========================================================================== */
 
 function makeTinyDom() {
@@ -301,17 +302,22 @@ function makeTinyDom() {
   return { document, slots };
 }
 
-function makeBrowserCtx(config) {
+function makeBrowserCtx(config, opts) {
+  opts = opts || {};
   const { document, slots } = makeTinyDom();
   const window = {};
   window.F10A = { track() {} };
+  // The review app injects window.BRIEF_FUNCTION (the brief backend); the browser panel only
+  // surfaces in that review-app context. Default the harness to it so the editor registers;
+  // pass { reviewApp: false } to simulate a plain client dashboard (a DATASET but no backend).
+  if (opts.reviewApp !== false) window.BRIEF_FUNCTION = 'https://fn.example/.netlify/functions/brief';
   const sandbox = {
     window, document, console,
     F10A: window.F10A,
     PROJECT: 'mcc-poc-477801',
     DATASET: 'moshy_marts',
     BQ_FUNCTION: 'https://fn.example/.netlify/functions/bq',
-    fetch: async () => { throw new Error('no network in tests'); },
+    fetch: opts.fetch || (async () => { throw new Error('no network in tests'); }),
     setTimeout, clearTimeout,
     _slots: slots,
   };
@@ -327,8 +333,8 @@ function contentHtml(ctx) { return (ctx._slots['content'] && ctx._slots['content
 async function runBrowser() {
   console.log('US-004 brief editor - browser panel');
 
-  // ── AC1: probe true registers the nav section, link + panel. ──
-  await check('probe true injects the Creative Briefs nav section, link + panel', async () => {
+  // ── A review-app context registers the nav section, link + panel. ──
+  await check('a review-app context injects the Creative Briefs nav section, link + panel', async () => {
     const ctx = makeBrowserCtx();
     ctx.window.f10BriefEditor.setStore({ async probe() { return true; }, async load() {}, async save() {} });
     await ctx.window.initBriefEditor();
@@ -338,22 +344,58 @@ async function runBrowser() {
     assert.ok(/class="tab-panel brief-editor-tab-panel"/.test(contentHtml(ctx)), 'panel carries the shared tab-panel class');
   });
 
-  // ── AC1: probe false leaves ZERO DOM trace (fail closed). ──
-  await check('probe false injects no nav link and no panel (fail closed)', async () => {
+  // ── REGRESSION (chicken-and-egg): in a review-app context the tab ALWAYS registers,
+  //    even with ZERO existing data. The probe/discovery result must no longer HIDE the tab -
+  //    the editor is the surface used to author the FIRST brief for a brand-new client. ──
+  await check('a review-app context with NO existing data still registers the tab (probe no longer gates)', async () => {
     const ctx = makeBrowserCtx();
-    ctx.window.f10BriefEditor.setStore({ async probe() { return false; }, async load() {}, async save() {} });
+    // probe false AND load returns nothing: a brand-new client with no brief revision yet.
+    ctx.window.f10BriefEditor.setStore({ async probe() { return false; }, async load() { return null; }, async save() {} });
     await ctx.window.initBriefEditor();
-    assert.ok(!/brief-editor-nav-link/.test(navHtml(ctx)), 'no nav link');
-    assert.ok(!/panel-brief-editor/.test(contentHtml(ctx)), 'no panel');
+    assert.ok(/nav-section">Creative Briefs/.test(navHtml(ctx)), 'Creative Briefs nav section still injected with zero data');
+    assert.ok(/brief-editor-nav-link/.test(navHtml(ctx)), 'Brief Editor nav link still injected with zero data');
+    assert.ok(/id="panel-brief-editor"/.test(contentHtml(ctx)), 'brief editor panel still injected with zero data');
+    assert.ok(/id="be-form"/.test(contentHtml(ctx)), 'the blank new-brief form is present');
+    assert.ok(!/be-err/.test((ctx._slots['be-status'] && ctx._slots['be-status'].innerHTML) || ''), 'no error on the empty panel');
   });
 
-  // ── AC1: a probe error fails closed (e.g. the brief endpoint is not yet hosted). ──
-  await check('a probe error fails closed with zero DOM trace', async () => {
-    const ctx = makeBrowserCtx();
-    ctx.window.f10BriefEditor.setStore({ async probe() { throw new Error('endpoint 404'); }, async load() {}, async save() {} });
+  // ── REGRESSION (live-path safety): a plain client dashboard has a DATASET but NO brief
+  //    backend (no window.BRIEF_FUNCTION). It must register NEITHER tab and make NO network call
+  //    - the review surface must never leak onto a client-facing dashboard. ──
+  await check('a plain client dashboard (no BRIEF_FUNCTION) registers no tab and makes no network call', async () => {
+    let fetched = 0;
+    const ctx = makeBrowserCtx(undefined, { reviewApp: false, fetch: async () => { fetched += 1; throw new Error('unexpected network'); } });
     await ctx.window.initBriefEditor();
-    assert.ok(!/brief-editor-nav-link/.test(navHtml(ctx)) && !/panel-brief-editor/.test(contentHtml(ctx)),
-      'no tab on a probe error');
+    assert.strictEqual(fetched, 0, 'no network call on a plain client dashboard');
+    assert.ok(!/brief-editor-nav-link/.test(navHtml(ctx)), 'no Brief Editor nav link on a plain dashboard');
+    assert.ok(!/panel-brief-editor/.test(contentHtml(ctx)), 'no Brief Editor panel on a plain dashboard');
+  });
+
+  // ── REGRESSION: a missing configured seed REVISION_ID must NOT error the panel - the
+  //    blank new-brief form is the correct empty state. The operator-initiated Load path still
+  //    surfaces the "not found" message (so the silent seam did not gut error reporting). ──
+  await check('a missing seed REVISION_ID shows a blank form with NO error (silent seed auto-load)', async () => {
+    const ctx = makeBrowserCtx();
+    ctx.window.f10BriefEditor.setStore({ async probe() { return false; }, async load() { return null; }, async save() {} });
+    ctx.window.f10BriefEditor.registerTab();
+    const statusEl = () => (ctx._slots['be-status'] && ctx._slots['be-status'].innerHTML) || '';
+    // The silent seed auto-load leaves the panel blank, with no error status.
+    await ctx.window.f10BriefEditor.loadRevisionById('does-not-exist', { silent: true });
+    assert.strictEqual(statusEl(), '', 'a missing seed revision leaves an empty status (no error)');
+    // An operator-initiated Load of the same missing id DOES surface the not-found error.
+    await ctx.window.f10BriefEditor.loadRevisionById('does-not-exist');
+    assert.ok(/be-err/.test(statusEl()) && /No brief revision found/.test(statusEl()), 'an explicit Load still reports the missing revision');
+  });
+
+  // ── REGRESSION: the boot path wires a configured REVISION_ID through the SILENT auto-load,
+  //    so a brand-new client whose seed does not resolve still gets a registered, error-free panel. ──
+  await check('a configured but missing REVISION_ID auto-loads silently on boot (no error, panel present)', async () => {
+    const ctx = makeBrowserCtx({ REVISION_ID: 'ghost' });
+    ctx.window.f10BriefEditor.setStore({ async probe() { return false; }, async load() { return null; }, async save() {} });
+    await ctx.window.initBriefEditor();
+    await new Promise((r) => setTimeout(r, 0)); // let the un-awaited silent auto-load settle
+    assert.ok(/id="panel-brief-editor"/.test(contentHtml(ctx)), 'the panel registered despite the missing seed');
+    assert.strictEqual((ctx._slots['be-status'] && ctx._slots['be-status'].innerHTML) || '', '', 'the missing seed did not error the panel');
   });
 
   // ── AC1/AC3, e2e 2: the editable axes are dropdowns of exactly the canonical
