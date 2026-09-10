@@ -643,13 +643,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      * date with no visible bundles renders a small note. */
     function renderCurrent() {
       var bundles = getBundles();
+      var body = document.getElementById('rev-body');
+      // No generated bundles discovered at all: a brand-new client wired into the review app
+      // but with nothing generated yet. Show a friendly empty state (never a blank panel) so
+      // the operator can see the client is connected and simply awaiting its first bundle.
+      if (!bundles.length) {
+        if (body) body.innerHTML = emptyStateHtml();
+        hideEl('rev-loading');
+        hideEl('rev-error');
+        showEl('rev-body');
+        return;
+      }
       var visible = [];
       for (var i = 0; i < bundles.length; i++) {
         if (bundleDate(bundles[i]) !== rvDate) continue;
         var r = rvResultsById[bundleId(bundles[i])];
         if (r) visible.push(r);
       }
-      var body = document.getElementById('rev-body');
       if (body) {
         body.innerHTML = visible.length
           ? ((visible.length > 1) ? gridHtml(visible) : detailHtml(visible))
@@ -658,6 +668,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       hideEl('rev-loading');
       hideEl('rev-error');
       showEl('rev-body');
+    }
+
+    /* The empty state shown in a review-app context when no bundles have been generated for
+     * this client yet. The tab is always present in the review app, so this is what a
+     * brand-new client sees until the first creative bundle lands. */
+    function emptyStateHtml() {
+      return '<div class="rev-empty"><strong>No generated ads yet</strong>'
+        + '<div class="rev-empty-detail">Once a creative bundle is generated for this client '
+        + 'it will appear here for review.</div></div>';
     }
 
     /* A total load failure (should be rare - per-bundle failures are caught) renders a
@@ -980,6 +999,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '#panel-review .rev-copy{margin-top:10px;font-size:12px;color:#444;}'
         + '#panel-review .rev-copy-line{margin:2px 0;}'
         + '#panel-review .rev-muted{color:#999;}'
+        + '#panel-review .rev-empty{color:#555;background:rgba(0,0,0,0.03);border:1px dashed rgba(0,0,0,0.15);border-radius:6px;padding:22px 18px;text-align:center;}'
+        + '#panel-review .rev-empty-detail{color:#777;font-size:13px;margin-top:6px;}'
         + '#panel-review .rev-bundle-error{border-color:#e3a9b6;}'
         + '#panel-review .rev-err,#panel-review .rev-error-detail{color:#a3243c;font-size:12px;margin-top:6px;word-break:break-word;}'
         + '#panel-review .rev-error{background:#fbe6ea;border:1px solid #e3a9b6;color:#a3243c;padding:14px 16px;border-radius:6px;}'
@@ -1092,27 +1113,40 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
+    /* True only in a REVIEW-APP context: the internal creative-review app injects BOTH the
+     * BQ backend (BQ_FUNCTION) and a REVIEW config block. A live, client-facing dashboard has
+     * BQ_FUNCTION (it powers the dashboard) but NO REVIEW block, so this stays false there and
+     * the module never registers and never touches the network. This signal — NOT the
+     * client/DATASET, and NOT BQ_FUNCTION alone — is what gates the tab, so the review surface
+     * cannot leak onto a client dashboard. */
+    function isReviewAppContext() {
+      var hasReview = (typeof REVIEW !== 'undefined' && !!REVIEW);
+      var hasBq = (typeof BQ_FUNCTION !== 'undefined' && !!BQ_FUNCTION);
+      return hasReview && hasBq;
+    }
+
     /* ---- boot ----
      * Called by the one-line addition to the tail of renderLayout() in f10-layout.js and
-     * (idempotently) on DOMContentLoaded. Two gates, both fail closed:
-     *   - live-path safety: no client, or NO BQ endpoint AND no injected store => silent
-     *     no-op, zero DOM trace, no network (this is what protects a host with no backend);
-     *   - discovery: the module asks list-bundles which bundles exist for this client and
-     *     only injects the tab when at least one is discovered; a discovery error fails
-     *     closed (no tab, no empty state). */
+     * (idempotently) on DOMContentLoaded. ONLY in a review-app context, ALWAYS register the
+     * tab — regardless of whether any generated bundle exists yet. Discovery decides only the
+     * tab's INNER state (the ranked scorecard grid vs. a "No generated ads yet" empty state),
+     * never whether the tab appears. Outside a review-app context (a live client dashboard, or
+     * any host with no REVIEW block) it is a silent no-op: zero DOM trace, no network call. */
     async function initReview() {
       if (rvBooted) return;
       rvBooted = true;
       rvClient = clientKey();
       if (!rvClient) return;                       // no client -> silent no-op
-      if (typeof BQ_FUNCTION === 'undefined' || !BQ_FUNCTION) {
-        if (!rvStore) return;                      // no endpoint and no injected store -> no-op, zero trace
-      }
+      // Gate strictly on the explicit review-app signal, never on BQ_FUNCTION/DATASET alone: a
+      // live client dashboard has BQ_FUNCTION but no REVIEW block, so it shows no tab and makes
+      // no network call.
+      if (!isReviewAppContext()) return;
+      registerTab();                               // ALWAYS register in a review-app context
+      // Best-effort pre-discovery so the first activation is instant. An empty list or a
+      // discovery error is fine: the tab stays and the empty state renders on activation.
       try {
-        var list = await discoverBundles();
-        if (list && list.length >= 1) registerTab();
+        await discoverBundles();
       } catch (err) {
-        // Fail closed: log once, no tab, no empty state.
         if (window.console && console.warn) {
           console.warn('Creative Review discovery error:', err && err.message ? err.message : err);
         }
@@ -1155,6 +1189,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       swapFailedPreviewImg: swapFailedPreviewImg,
       panelMarkup: panelMarkup,
       navLinkHtml: navLinkHtml,
+      emptyStateHtml: emptyStateHtml,
+      isReviewAppContext: isReviewAppContext,
       clientKey: clientKey,
       getBundles: getBundles,
       flagText: flagText,
