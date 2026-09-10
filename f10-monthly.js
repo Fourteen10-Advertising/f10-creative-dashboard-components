@@ -252,7 +252,10 @@ async function loadProduction(){
     document.getElementById('sc-strike-outs').textContent=fmtNum(totals.so);
     document.getElementById('sc-so-rate').textContent=fmtPct(totals.so/totals.total*100);
     hideEl('production-scorecards-loading'); showEl('production-scorecards');
-    const byClass={'Home Run':[],'On Base':[],'Strike Out':[],'Unclassified':[]};
+    /* Buckets come from classificationTiers() so a tier the active CASE can
+       emit always has somewhere to land. A row carrying an unexpected label
+       is counted and reported rather than thrown away or crashing the tab. */
+    const byClass={}; classificationTiers().forEach(t => { byClass[t]=[]; });
     /* Metric-aware: the per-ad metric column is `lifetime_cpa` in CPA mode and
        `lifetime_roas` in ROAS mode (aliased by lifetimeMetricCol()). Read it
        generically so a dir:'higher' metric plots correctly. A creative with
@@ -260,8 +263,10 @@ async function loadProduction(){
        silently dropped — it belongs at the bottom of a higher-is-better axis. */
     const isRoas=targetMetric()==='roas';
     const mCol=lifetimeMetricCol();
-    scatterData.forEach(r=>{ const mVal=Number(r[mCol])||0, spend=Number(r.lifetime_spend)||0; if(mVal>0||spend>0){ byClass[r.classification].push({x:spend,y:mVal,label:r.ad_name}); } });
-    const scatterDatasets=Object.entries(byClass).map(([cls,pts])=>({ label:cls, data:pts, backgroundColor:CLASS_COLOR[cls]+'bb', borderColor:CLASS_COLOR[cls], borderWidth:1.5, pointRadius:6, pointHoverRadius:8 }));
+    const unknownTiers=new Set();
+    scatterData.forEach(r=>{ const mVal=Number(r[mCol])||0, spend=Number(r.lifetime_spend)||0; if(mVal>0||spend>0){ const cls=r.classification; if(!byClass[cls]){ byClass[cls]=[]; unknownTiers.add(cls); } byClass[cls].push({x:spend,y:mVal,label:r.ad_name}); } });
+    if(unknownTiers.size) console.warn('Ad Production: unrecognised classification tier(s) from the query:', [...unknownTiers].join(', '));
+    const scatterDatasets=Object.entries(byClass).map(([cls,pts])=>{ const col=CLASS_COLOR[cls]||'#b0b0b0'; return { label:cls, data:pts, backgroundColor:col+'bb', borderColor:col, borderWidth:1.5, pointRadius:6, pointHoverRadius:8 }; });
     hideEl('scatter-loading'); showEl('scatter-wrapper');
     if(scatterChart) scatterChart.destroy();
     const topSpend=Math.max(0, ...scatterData.map(r=>Number(r.lifetime_spend)||0));

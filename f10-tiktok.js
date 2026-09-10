@@ -58,17 +58,28 @@
     ? `SAFE_DIVIDE(SUM(${ttRevExpr()}), NULLIF(${spendExpr}, 0))`
     : `SAFE_DIVIDE(${spendExpr}, NULLIF(${convExpr}, 0))`;
   const ttLifetimeMetricCol = () => ttIsRoas() ? 'lifetime_roas' : 'lifetime_cpa';
+  /* Mirrors classificationCaseSQL against TT_TH, including FULL_COVERAGE_TIERS.
+   * It has to honour the same flag: the tab's chart buckets come from the shared
+   * classificationTiers(), so a TikTok CASE still emitting 'Unclassified' while
+   * the flag was on would produce a tier with no bucket to land in. */
   function ttClassificationCaseSQL(spendCol, metricCol){
-    if (ttIsRoas()){
-      return `CASE WHEN ${spendCol} >= ${TT_TH.HR_SPEND} AND ${metricCol} > ${TT_TH.HR_ROAS} THEN 'Home Run'`
-           + ` WHEN ${spendCol} >= ${TT_TH.OB_SPEND} AND ${metricCol} > ${TT_TH.OB_ROAS} THEN 'On Base'`
-           + ` WHEN ${spendCol} >= ${TT_TH.SO_SPEND} AND ${metricCol} < ${TT_TH.SO_ROAS} THEN 'Strike Out'`
-           + ` ELSE 'Unclassified' END`;
+    const roas = ttIsRoas();
+    const hr = roas
+      ? `WHEN ${spendCol} >= ${TT_TH.HR_SPEND} AND ${metricCol} > ${TT_TH.HR_ROAS} THEN 'Home Run'`
+      : `WHEN ${spendCol} >= ${TT_TH.HR_SPEND} AND ${metricCol} > 0 AND ${metricCol} < ${TT_TH.HR_CPA} THEN 'Home Run'`;
+    const ob = roas
+      ? `WHEN ${spendCol} >= ${TT_TH.OB_SPEND} AND ${metricCol} > ${TT_TH.OB_ROAS} THEN 'On Base'`
+      : `WHEN ${spendCol} >= ${TT_TH.OB_SPEND} AND ${metricCol} > 0 AND ${metricCol} < ${TT_TH.OB_CPA} THEN 'On Base'`;
+    if (typeof fullCoverageTiers === 'function' && fullCoverageTiers()){
+      return `CASE ${hr} ${ob}`
+           + ` WHEN ${spendCol} >= ${TT_TH.SO_SPEND} THEN 'Strike Out'`
+           + ` WHEN ${spendCol} > 0 THEN 'Testing'`
+           + ` ELSE 'Zero Spend' END`;
     }
-    return `CASE
-      WHEN ${spendCol} >= ${TT_TH.HR_SPEND} AND ${metricCol} > 0 AND ${metricCol} < ${TT_TH.HR_CPA} THEN 'Home Run'
-      WHEN ${spendCol} >= ${TT_TH.OB_SPEND} AND ${metricCol} > 0 AND ${metricCol} < ${TT_TH.OB_CPA} THEN 'On Base'
-      WHEN ${spendCol} >= ${TT_TH.SO_SPEND} AND ${metricCol} > ${TT_TH.SO_CPA} THEN 'Strike Out' ELSE 'Unclassified' END`;
+    const so = roas
+      ? `WHEN ${spendCol} >= ${TT_TH.SO_SPEND} AND ${metricCol} < ${TT_TH.SO_ROAS} THEN 'Strike Out'`
+      : `WHEN ${spendCol} >= ${TT_TH.SO_SPEND} AND ${metricCol} > ${TT_TH.SO_CPA} THEN 'Strike Out'`;
+    return `CASE ${hr} ${ob} ${so} ELSE 'Unclassified' END`;
   }
 
   /* Creative Score inputs for the TikTok mart (US-002). The shared creativeScoreSQL
@@ -384,12 +395,12 @@
       setTxt('tt-sc-so-rate', totals.total ? fmtPct(totals.so / totals.total * 100) : '–');
       hideEl('tt-production-scorecards-loading'); showEl('tt-production-scorecards');
 
-      const byClass = { 'Home Run': [], 'On Base': [], 'Strike Out': [], 'Unclassified': [] };
+      const byClass = {}; classificationTiers().forEach((t) => { byClass[t] = []; });
       /* Read the metric generically so a dir:'higher' ROAS plots correctly. A creative
        * with metric=0 but spend>0 (real spend, zero revenue in ROAS) is kept, not
        * dropped — it belongs at the bottom of a higher-is-better axis. */
-      scatterData.forEach((r) => { const mVal = Number(r[mCol]) || 0, spend = Number(r.lifetime_spend) || 0; if (mVal > 0 || spend > 0) byClass[r.classification].push({ x: spend, y: mVal, label: r.ad_name }); });
-      const scatterDatasets = Object.entries(byClass).map(([cls, pts]) => ({ label: cls, data: pts, backgroundColor: CLASS_COLOR[cls] + 'bb', borderColor: CLASS_COLOR[cls], borderWidth: 1.5, pointRadius: 6, pointHoverRadius: 8 }));
+      scatterData.forEach((r) => { const mVal = Number(r[mCol]) || 0, spend = Number(r.lifetime_spend) || 0; if (mVal > 0 || spend > 0) { const cls = r.classification; if (!byClass[cls]) byClass[cls] = []; byClass[cls].push({ x: spend, y: mVal, label: r.ad_name }); } });
+      const scatterDatasets = Object.entries(byClass).map(([cls, pts]) => { const col = CLASS_COLOR[cls] || '#b0b0b0'; return { label: cls, data: pts, backgroundColor: col + 'bb', borderColor: col, borderWidth: 1.5, pointRadius: 6, pointHoverRadius: 8 }; });
       hideEl('tt-scatter-loading'); showEl('tt-scatter-wrapper');
       if (ttCharts.scatter) ttCharts.scatter.destroy();
       const topSpend = Math.max(0, ...scatterData.map((r) => Number(r.lifetime_spend) || 0));

@@ -148,7 +148,8 @@ const COHORT_COLORS = _BRAND.chartPalette ||
 const AGE_COLORS    = _BRAND.chartAge ||
   { '0–14 Days': CHART_PRIMARY, '15–90 Days': CHART_SECONDARY, '90+ Days': '#4b000f' };
 const CLASS_COLOR   = _BRAND.chartClass ||
-  { 'Home Run': CHART_PRIMARY, 'On Base': CHART_SECONDARY, 'Strike Out': CHART_NEGATIVE, 'Unclassified': CHART_NEUTRAL };
+  { 'Home Run': CHART_PRIMARY, 'On Base': CHART_SECONDARY, 'Strike Out': CHART_NEGATIVE,
+    'Unclassified': CHART_NEUTRAL, 'Testing': '#9aa0a6', 'Zero Spend': CHART_NEUTRAL };
 
 /* Ad state metadata: badge CSS class + chart colour. Colours default to the F10
  * set; BRANDING.chartState may override any subset by state name. */
@@ -621,17 +622,67 @@ function classify(ad, c){
  * in either query shape. NEVER hardcode one shape's column names — the scatter
  * per-ad CTE and the rollup unique_ads CTE alias the metric differently, and a
  * hardcoded name would silently break the rollup COUNTIF classification counts. */
+/* ── Full-coverage tiers ──────────────────────────────────────────────────
+ * The default CASE grades an ad Home Run / On Base / Strike Out and drops
+ * everything else into 'Unclassified'. Two kinds of ad land there, and they are
+ * not the same thing:
+ *
+ *   1. An ad that spent real money and converted NOTHING. In CPA mode its
+ *      metric is NULL (spend / 0), so it fails the Home Run and On Base tests
+ *      (which need metric > 0) AND the Strike Out test (metric > SO_CPA is NULL,
+ *      never true). An ad that burned budget for no result is the clearest
+ *      strike out there is, and today it is invisible.
+ *   2. An ad that has not spent enough to be judged at all.
+ *
+ * Because both fall in the same bucket, the graded rates cannot be read as
+ * shares of the ad base: Home Run + On Base + Strike Out never sums to 100%,
+ * and the strike-out rate understates reality.
+ *
+ * Set FULL_COVERAGE_TIERS = true to grade every ad into exactly one of five
+ * tiers that DO partition the base:
+ *
+ *   Home Run    spend >= HR_SPEND and the metric beats the Home Run target
+ *   On Base     spend >= OB_SPEND and the metric beats the On Base target
+ *   Strike Out  spend >= SO_SPEND and it did not, INCLUDING zero-conversion ads
+ *   Testing     spent something, but under the gate to be judged fairly
+ *   Zero Spend  no spend at all
+ *
+ * Left off (the default), the CASE is byte-for-byte what it was, so every
+ * existing dashboard grades identically. */
+function fullCoverageTiers(){
+  return (typeof FULL_COVERAGE_TIERS !== 'undefined') && FULL_COVERAGE_TIERS === true;
+}
+/* The tier labels the active CASE can emit, in display order. Chart code builds
+ * its buckets from this rather than hardcoding a list, so turning the flag on
+ * cannot leave a tier without a bucket to land in. */
+function classificationTiers(){
+  return fullCoverageTiers()
+    ? ['Home Run', 'On Base', 'Strike Out', 'Testing', 'Zero Spend']
+    : ['Home Run', 'On Base', 'Strike Out', 'Unclassified'];
+}
+
 function classificationCaseSQL(spendCol, metricCol){
-  if (targetMetric() === 'roas'){
-    return `CASE WHEN ${spendCol} >= ${HR_SPEND} AND ${metricCol} > ${HR_ROAS} THEN 'Home Run'`
-         + ` WHEN ${spendCol} >= ${OB_SPEND} AND ${metricCol} > ${OB_ROAS} THEN 'On Base'`
-         + ` WHEN ${spendCol} >= ${SO_SPEND} AND ${metricCol} < ${SO_ROAS} THEN 'Strike Out'`
-         + ` ELSE 'Unclassified' END`;
+  const roas = targetMetric() === 'roas';
+  const hr = roas
+    ? `WHEN ${spendCol} >= ${HR_SPEND} AND ${metricCol} > ${HR_ROAS} THEN 'Home Run'`
+    : `WHEN ${spendCol} >= ${HR_SPEND} AND ${metricCol} > 0 AND ${metricCol} < ${HR_CPA} THEN 'Home Run'`;
+  const ob = roas
+    ? `WHEN ${spendCol} >= ${OB_SPEND} AND ${metricCol} > ${OB_ROAS} THEN 'On Base'`
+    : `WHEN ${spendCol} >= ${OB_SPEND} AND ${metricCol} > 0 AND ${metricCol} < ${OB_CPA} THEN 'On Base'`;
+  if (fullCoverageTiers()){
+    /* Strike Out has no metric test here on purpose: anything that cleared the
+     * spend gate and did not qualify above is a strike out, INCLUDING the
+     * zero-conversion ads whose metric is NULL. That is what makes the five
+     * tiers a partition. */
+    return `CASE ${hr} ${ob}`
+         + ` WHEN ${spendCol} >= ${SO_SPEND} THEN 'Strike Out'`
+         + ` WHEN ${spendCol} > 0 THEN 'Testing'`
+         + ` ELSE 'Zero Spend' END`;
   }
-  return `CASE WHEN ${spendCol} >= ${HR_SPEND} AND ${metricCol} > 0 AND ${metricCol} < ${HR_CPA} THEN 'Home Run'`
-       + ` WHEN ${spendCol} >= ${OB_SPEND} AND ${metricCol} > 0 AND ${metricCol} < ${OB_CPA} THEN 'On Base'`
-       + ` WHEN ${spendCol} >= ${SO_SPEND} AND ${metricCol} > ${SO_CPA} THEN 'Strike Out'`
-       + ` ELSE 'Unclassified' END`;
+  const so = roas
+    ? `WHEN ${spendCol} >= ${SO_SPEND} AND ${metricCol} < ${SO_ROAS} THEN 'Strike Out'`
+    : `WHEN ${spendCol} >= ${SO_SPEND} AND ${metricCol} > ${SO_CPA} THEN 'Strike Out'`;
+  return `CASE ${hr} ${ob} ${so} ELSE 'Unclassified' END`;
 }
 
 /* Column alias the classifier's metric column carries in the active mode. CPA

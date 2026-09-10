@@ -220,3 +220,109 @@ function check(name, fn) { fn(); passed++; console.log('  ok -', name); }
 
   console.log(`\n${passed} checks passed.`);
 })();
+
+/**
+ * FULL_COVERAGE_TIERS — the graded tiers partition the ad base.
+ *
+ * The default CASE drops two very different kinds of ad into 'Unclassified':
+ * ads that spent real money and converted nothing (metric NULL, so they fail
+ * every branch including Strike Out), and ads that never spent enough to be
+ * judged. That is why Home Run + On Base + Strike Out never sums to 100% and
+ * why the strike-out rate understates reality.
+ *
+ * With the flag on, every ad grades into exactly one of five tiers. Off, the
+ * emitted SQL must be byte-identical to what it was.
+ */
+(() => {
+  console.log('\nFULL_COVERAGE_TIERS');
+
+  const EXPORT2 = `
+this.__G = { classificationCaseSQL, classificationTiers, fullCoverageTiers, CLASS_COLOR, targetMetric };`;
+
+  function loadG(cfg) {
+    const sandbox = { window: {}, document: { documentElement: {} }, console };
+    Object.assign(sandbox, cfg || {});
+    vm.createContext(sandbox);
+    vm.runInContext(UTILS + EXPORT2, sandbox, { filename: 'f10-utils.js' });
+    return sandbox.__G;
+  }
+
+  // The exact strings the framework emitted before this change, for both modes.
+  const LEGACY_CPA =
+    "CASE WHEN s >= 5000 AND m > 0 AND m < 100 THEN 'Home Run'" +
+    " WHEN s >= 1000 AND m > 0 AND m < 200 THEN 'On Base'" +
+    " WHEN s >= 1000 AND m > 200 THEN 'Strike Out'" +
+    " ELSE 'Unclassified' END";
+  const LEGACY_ROAS =
+    "CASE WHEN s >= 5000 AND m > 4 THEN 'Home Run'" +
+    " WHEN s >= 1000 AND m > 2 THEN 'On Base'" +
+    " WHEN s >= 1000 AND m < 1 THEN 'Strike Out'" +
+    " ELSE 'Unclassified' END";
+
+  const TH = { HR_SPEND: 5000, HR_CPA: 100, OB_SPEND: 1000, OB_CPA: 200, SO_SPEND: 1000, SO_CPA: 200,
+               HR_ROAS: 4, OB_ROAS: 2, SO_ROAS: 1 };
+
+  check('off by default, and only the literal true turns it on', () => {
+    assert.strictEqual(loadG({ THRESHOLDS: TH }).fullCoverageTiers(), false);
+    assert.strictEqual(loadG({ THRESHOLDS: TH, FULL_COVERAGE_TIERS: true }).fullCoverageTiers(), true);
+    assert.strictEqual(loadG({ THRESHOLDS: TH, FULL_COVERAGE_TIERS: 'yes' }).fullCoverageTiers(), false);
+  });
+
+  check('with the flag off the CPA SQL is byte-identical to the legacy CASE', () => {
+    const g = loadG({ THRESHOLDS: TH });
+    assert.strictEqual(g.classificationCaseSQL('s', 'm'), LEGACY_CPA);
+  });
+
+  check('with the flag off the ROAS SQL is byte-identical to the legacy CASE', () => {
+    const g = loadG({ THRESHOLDS: TH, TARGET_METRIC: 'roas' });
+    assert.strictEqual(g.classificationCaseSQL('s', 'm'), LEGACY_ROAS);
+  });
+
+  check('with the flag on, Strike Out drops its metric test so zero-conversion ads land there', () => {
+    const g = loadG({ THRESHOLDS: TH, FULL_COVERAGE_TIERS: true });
+    const sql = g.classificationCaseSQL('s', 'm');
+    // The strike-out branch gates on spend alone. A NULL metric (spend / 0
+    // conversions) reaches it and grades Strike Out instead of vanishing.
+    assert.ok(sql.includes("WHEN s >= 1000 THEN 'Strike Out'"), sql);
+    assert.ok(!sql.includes("Unclassified"), sql);
+  });
+
+  check('with the flag on, every ad falls into exactly one tier', () => {
+    const g = loadG({ THRESHOLDS: TH, FULL_COVERAGE_TIERS: true });
+    const sql = g.classificationCaseSQL('s', 'm');
+    assert.ok(sql.includes("WHEN s > 0 THEN 'Testing'"), sql);
+    assert.ok(sql.endsWith("ELSE 'Zero Spend' END"), sql);
+  });
+
+  check('the ROAS branch honours the flag the same way', () => {
+    const g = loadG({ THRESHOLDS: TH, TARGET_METRIC: 'roas', FULL_COVERAGE_TIERS: true });
+    const sql = g.classificationCaseSQL('s', 'm');
+    assert.ok(sql.includes("WHEN s >= 5000 AND m > 4 THEN 'Home Run'"), sql);
+    assert.ok(sql.includes("WHEN s >= 1000 THEN 'Strike Out'"), sql);
+    assert.ok(!sql.includes("Unclassified"), sql);
+  });
+
+  check('classificationTiers tracks the flag', () => {
+    // Arrays cross the vm realm boundary, so compare by value not identity.
+    assert.strictEqual(loadG({ THRESHOLDS: TH }).classificationTiers().join('|'),
+      'Home Run|On Base|Strike Out|Unclassified');
+    assert.strictEqual(loadG({ THRESHOLDS: TH, FULL_COVERAGE_TIERS: true }).classificationTiers().join('|'),
+      'Home Run|On Base|Strike Out|Testing|Zero Spend');
+  });
+
+  check('every tier the active CASE can emit has a chart colour', () => {
+    [{ THRESHOLDS: TH }, { THRESHOLDS: TH, FULL_COVERAGE_TIERS: true }].forEach(cfg => {
+      const g = loadG(cfg);
+      g.classificationTiers().forEach(t =>
+        assert.ok(g.CLASS_COLOR[t], 'no colour for tier ' + t));
+    });
+  });
+
+  check('the legacy tier keeps its colour when the flag is on', () => {
+    // Nothing should lose a colour just because new tiers were added.
+    const g = loadG({ THRESHOLDS: TH, FULL_COVERAGE_TIERS: true });
+    assert.ok(g.CLASS_COLOR['Unclassified']);
+  });
+
+  console.log(`\n${passed} checks passed.`);
+})();

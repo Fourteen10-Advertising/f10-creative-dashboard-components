@@ -195,6 +195,7 @@ lives in `test/review-list-bundles.test.js`.
 | `METRIC_DEFINITIONS` | no | Override the built-in hover wording for any metric or graded tier |
 | `SHOW_DEFINITIONS` | no | Set `false` to turn all hover definitions off. Default on |
 | `SHOW_ZERO_SPEND_FILTER` | no | Set `true` to add the zero-spend control to the controls bar (see [Zero-spend filter](#zero-spend-filter)) |
+| `FULL_COVERAGE_TIERS` | no | Set `true` to grade every ad into one of five tiers that sum to 100% of the ad base (see [Full-coverage tiers](#full-coverage-tiers)) |
 | `REVIEW` | no | F10-internal Creative Review surface only. The bundle list is now **auto-discovered** via the `list-bundles` action, so this block no longer carries `BUNDLES` or `LIMIT` and is effectively optional/empty; it holds only optional overrides (`CLIENT` slug override, `ACTOR`, `FEEDBACK_FUNCTION`). Live client dashboards never define it (see [Creative review](#creative-review)) |
 
 ## Competitor Ad Library
@@ -550,6 +551,58 @@ This is distinct from **Ad status → Active only**, which is a server-side filt
 on the mart's `is_active` column, meaning Meta's current delivery status. An ad
 can be `Active` in Meta and still have spent nothing in the selected window, so
 the two controls overlap without being redundant.
+
+## Full-coverage tiers
+
+By default the Ad Production `CASE` grades an ad Home Run / On Base / Strike Out
+and drops everything else into `Unclassified`. Two very different kinds of ad end
+up in that bucket:
+
+1. **An ad that spent real money and converted nothing.** In CPA mode its metric
+   is `NULL` (spend divided by zero conversions), so it fails the Home Run and On
+   Base tests, which both require `metric > 0`, **and** the Strike Out test,
+   because `metric > SO_CPA` is `NULL` and never true. An ad that burned budget
+   for no result is the clearest strike out there is, and today it is invisible.
+2. **An ad that has not spent enough to be judged at all.**
+
+Because both land in the same bucket, the graded rates cannot be read as shares
+of the ad base: Home Run + On Base + Strike Out never sums to 100%, and the
+strike-out rate understates reality.
+
+Opt in per dashboard:
+
+```js
+const FULL_COVERAGE_TIERS = true;
+```
+
+Every ad then grades into exactly one of five tiers that do partition the base:
+
+| tier | rule |
+|---|---|
+| Home Run | spend >= `HR_SPEND` and the metric beats the Home Run target |
+| On Base | spend >= `OB_SPEND` and the metric beats the On Base target |
+| Strike Out | spend >= `SO_SPEND` and it did not, **including zero-conversion ads** |
+| Testing | spent something, but under the gate to be judged fairly |
+| Zero Spend | no spend at all |
+
+The Strike Out branch gates on spend alone. That is what makes the set a
+partition: anything that cleared the spend gate and did not qualify above is a
+strike out, whatever its metric is.
+
+Left off, `classificationCaseSQL()` emits byte-for-byte the SQL it always has, so
+every existing dashboard grades identically. There is a test pinning the legacy
+string in both CPA and ROAS mode.
+
+Chart buckets are built from `classificationTiers()` rather than a hardcoded
+list, so turning the flag on cannot leave a tier without a bucket to land in. The
+TikTok tab's own `ttClassificationCaseSQL()` honours the same flag for the same
+reason. A row carrying an unrecognised tier is bucketed and logged rather than
+dropped or thrown.
+
+**Turning this on changes the reported rates**, because ads that were invisible
+in `Unclassified` now count. Expect the strike-out rate to rise. That is the
+correction, not a regression: recalibrate the thresholds against the new
+denominator rather than reading the old numbers across.
 
 ## Thresholds
 
