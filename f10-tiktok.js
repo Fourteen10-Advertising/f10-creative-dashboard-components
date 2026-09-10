@@ -289,7 +289,7 @@
     const head = document.getElementById('tt-board-m-head'); if (head) head.textContent = m.label;
     const order = ['Scaling Winner', 'Fading', 'New Entrant', 'Efficient but Shrinking', 'Dropped Off', 'Steady'];
     const legend = document.getElementById('tt-board-legend');
-    if (legend) legend.innerHTML = order.map((s) => `<span class="li"><span class="dot" style="background:${STATE_META[s].color}"></span>${s}</span>`).join('');
+    if (legend) legend.innerHTML = order.map((s) => `<span class="li"${stateDefAttr(s)}><span class="dot" style="background:${STATE_META[s].color}"></span>${stateLabel(s)}</span>`).join('');
     const rows = movers.slice().sort((a, b) => b.sCur - a.sCur);
     const body = document.getElementById('tt-board-body');
     if (!rows.length) {
@@ -303,7 +303,7 @@
         const cr = creativeRates(a.cur, PROFILE); registerAdMetrics(a.ad_id, a.cur, PROFILE);
         return `<tr>
           <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;" title="${a.ad_name || ''}">${a.ad_name || '–'}<br><span style="color:var(--grey);font-size:10px;">${a.campaign_name || ''}</span></td>
-          <td><span class="badge ${sm.cls}">${a.state}</span></td>
+          <td><span class="badge ${sm.cls}"${stateDefAttr(a.state)}>${stateLabel(a.state)}</span></td>
           <td class="num">${fmt$(a.sCur)}</td>
           <td class="num delta-cell ${sdCls}">${sd > 0 ? '+' : ''}${fmt$(sd)}</td>
           <td class="num">${fmtMetric(a.mCur, m)}</td>
