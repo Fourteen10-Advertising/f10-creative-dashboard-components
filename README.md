@@ -643,18 +643,36 @@ This pairs with a per-product `CONV_EXPR`. The Ad Production CPA is already
 each ad's cost the cost of the action it actually runs for, and the per-group
 thresholds then grade that cost on the right scale.
 
+### Filter-aware Ad Production panel
+
+The classification SQL is per-row, so grades are always correct whatever the
+Product filter is on. The panel around it follows the filter:
+
+- With the Product filter on a configured group (e.g. SMSF), the **threshold
+  editor**, the **benchmark copy** and the **scatter guide lines** all show and
+  edit that group's thresholds. Editing and applying regrades that product; the
+  base and the other groups are untouched.
+- On **All**, the editor and guides show the base thresholds, and the benchmark
+  copy lists the base tiers followed by every group's full set of tiers.
+- On a product with no override (e.g. Trade here), the panel shows the base,
+  which is that product's scale.
+
+So switching Product from Trade to SMSF flips the adjustable inputs, the copy and
+the guide lines to the matching scale, rather than leaving them on one product's
+numbers.
+
 Scope and limits:
 
 - Governs only the **Ad Production tier grading** (the Meta production tab). The
   weekly Movement states never used these thresholds, and the TikTok tab keeps
   its own single scale.
-- The live threshold editor tunes the **base** thresholds. Per-group overrides
-  are config and are not edited live.
-- The scatter's dashed **guide lines** are drawn at the base thresholds. The
-  coloured classification is always per-group-correct, but on the combined view
-  the guide lines only line up with the base-scale product. Filter to a single
-  product to read the scatter against one scale. The scorecard rates are always
-  correct.
+- The live editor tunes whichever context is in focus: the base thresholds on
+  All / an unlisted product, or a group's thresholds when that group is filtered.
+  Edits are session-only, as before.
+- On the **All** view the scatter mixes products on one axis, so its guide lines
+  can only sit at one scale (the base). The coloured classification and the
+  scorecard rates are always per-group-correct; filter to a single product to
+  read the scatter against that product's guide lines.
 
 With no config, the emitted SQL is byte-for-byte what it was; a test pins that in
 both CPA and ROAS mode.
