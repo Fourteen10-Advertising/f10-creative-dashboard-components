@@ -190,6 +190,12 @@ lives in `test/review-list-bundles.test.js`.
 | `CREATIVE_SCORE_CONFIG` | no | Creative Score weights, maturity target, per-rate quality ceilings and band cutoffs (see [Creative Score column](#creative-score-column)) |
 | `COMPETITORS` | no | Optional Competitor Ad Library overrides — the tab itself is automatic (see below) |
 | `COMPONENTS` | no | Optional Component Scale overrides; the tab itself is automatic (see [Component Scale](#component-scale)) |
+| `STATE_LABELS` | no | Rename ad states for display, e.g. `{ 'Dropped Off': 'Zero Spend' }`. Display only, the internal keys never move (see [Ad state labels and hover definitions](#ad-state-labels-and-hover-definitions)) |
+| `STATE_DEFINITIONS` | no | Override the built-in hover wording for any ad state |
+| `METRIC_DEFINITIONS` | no | Override the built-in hover wording for any metric or graded tier |
+| `SHOW_DEFINITIONS` | no | Set `false` to turn all hover definitions off. Default on |
+| `SHOW_ZERO_SPEND_FILTER` | no | Set `true` to add the zero-spend control to the controls bar (see [Zero-spend filter](#zero-spend-filter)) |
+| `FULL_COVERAGE_TIERS` | no | Set `true` to grade every ad into one of five tiers that sum to 100% of the ad base (see [Full-coverage tiers](#full-coverage-tiers)) |
 | `REVIEW` | no | F10-internal Creative Review surface only. The bundle list is now **auto-discovered** via the `list-bundles` action, so this block no longer carries `BUNDLES` or `LIMIT` and is effectively optional/empty; it holds only optional overrides (`CLIENT` slug override, `ACTOR`, `FEEDBACK_FUNCTION`). Live client dashboards never define it (see [Creative review](#creative-review)) |
 
 ## Competitor Ad Library
@@ -459,6 +465,144 @@ Both controls live in the controls bar on **every Meta/monthly tab** and need no
 - **Ad status** (`All ads` / `Active only`) — server-side filter. `Active only` scopes every query to ads whose latest Meta delivery status is ACTIVE, via the `is_active` column on the `creative_reporting` mart. Composed with group filters through `scopeWhere()` (group + status predicates, correct WHERE/AND leading).
   - **Requires** the mart to expose `is_active` (and `effective_status`), added by the `f10-dataform` `stg_meta_ad_status` model. Pin a client to a framework tag that ships this control **only after** that column is live in the client's mart, or `Active only` queries will error.
 - **Search ad** — client-side substring filter over the ad name, applied to the current view across all ad tables (Movement Board, Ad Age, Ad Production, Power Law, Creative Effectiveness). Instant, no re-query. When a term is present the weekly board **bypasses the noise floor** so a searched ad always appears. Ad rows carry a `data-adname` attribute (`adNameAttr()`); `renderPagedTable`/`refilterAllTables` do the filtering. Month-level summary rows have no `data-adname` and are never filtered.
+
+## Ad state labels and hover definitions
+
+### Renaming a state
+
+`classify()` produces six ad states: `Scaling Winner`, `Efficient but Shrinking`,
+`Fading`, `New Entrant`, `Dropped Off`, `Steady`. A dashboard can rename what a
+person reads without touching the state itself:
+
+```js
+const STATE_LABELS = { 'Dropped Off': 'Zero Spend' };
+```
+
+Only the mapped states are renamed. Anything absent renders under its own name,
+so a dashboard with no `STATE_LABELS` is unchanged.
+
+The rename is **display only, on purpose**. The internal key stays `Dropped Off`
+everywhere, which is what `STATE_META`, the legend ordering and
+`BRANDING.chartState` all key off. If the key moved, a client config that themed
+`Dropped Off` would silently stop matching and that state would lose its colour.
+
+Renamed states flow through the Movement Board badge, the board legend, the
+Movement Map scatter legend and its tooltip, and the same three surfaces on the
+TikTok tab.
+
+### Hover definitions
+
+Every ad state, graded tier and summary tile carries plain-English hover text
+explaining what it means. This is **on by default** and needs no config: it is
+inert extra context on an element a person is already looking at.
+
+The built-in state wording describes what `classify()` actually does, so read it
+against the classifier if you change either. Override any entry per client:
+
+```js
+const STATE_DEFINITIONS  = { 'Dropped Off': 'Client wording here.' };
+const METRIC_DEFINITIONS = { spend: 'Client wording here.' };
+const SHOW_DEFINITIONS   = false;  // turn hover text off entirely
+```
+
+Metric keys are looked up lower-cased, so `CPA` and `cpa` resolve the same
+entry. Known keys: `spend`, `conversions`, `impressions`, `revenue`, `cpa`,
+`cpc`, `cpm`, `ctr`, `roas`, `home run`, `on base`, `strike out`, `testing`,
+`zero spend`. An unknown key returns empty and renders no `title` attribute
+rather than throwing.
+
+Definition text is HTML-escaped by `defAttr()` before it lands in the `title`
+attribute, so client wording containing a quote or an angle bracket cannot break
+the tag.
+
+## Zero-spend filter
+
+Opt in per dashboard:
+
+```js
+const SHOW_ZERO_SPEND_FILTER = true;
+```
+
+That adds a **Zero spend ads** control (`Show` / `Hide`) to the controls bar next
+to Ad status. Dashboards that do not set it get no control and no filtering.
+
+`Hide` drops every ad with no spend in the current window from the Movement Board
+and the Movement Map. These are the ads `classify()` marks `Dropped Off`: they
+cleared the noise floor last window and spent nothing this one. On Meta an active
+ad almost always picks up at least some spend, so this nearly always means
+somebody switched the ad off. They are real history, but they crowd out the ads a
+person can still act on.
+
+Two things to know about how it works:
+
+- It is a **display** filter, applied after classification rather than in SQL.
+  `Dropped Off` is derived client-side by comparing two windows and has no column
+  to filter on. So switching it costs no query.
+- It moves the board **and** the map together. The ad-name search deliberately
+  leaves the map alone, because it is a board-level filter, but a zero-spend
+  selection that moved only one view would leave the two disagreeing about which
+  ads exist.
+
+The board title reports what was hidden (`Ad Movement — 128 ads (38 zero spend
+hidden)`), and if the filter empties the table the no-data copy says so rather
+than blaming the noise floor.
+
+This is distinct from **Ad status → Active only**, which is a server-side filter
+on the mart's `is_active` column, meaning Meta's current delivery status. An ad
+can be `Active` in Meta and still have spent nothing in the selected window, so
+the two controls overlap without being redundant.
+
+## Full-coverage tiers
+
+By default the Ad Production `CASE` grades an ad Home Run / On Base / Strike Out
+and drops everything else into `Unclassified`. Two very different kinds of ad end
+up in that bucket:
+
+1. **An ad that spent real money and converted nothing.** In CPA mode its metric
+   is `NULL` (spend divided by zero conversions), so it fails the Home Run and On
+   Base tests, which both require `metric > 0`, **and** the Strike Out test,
+   because `metric > SO_CPA` is `NULL` and never true. An ad that burned budget
+   for no result is the clearest strike out there is, and today it is invisible.
+2. **An ad that has not spent enough to be judged at all.**
+
+Because both land in the same bucket, the graded rates cannot be read as shares
+of the ad base: Home Run + On Base + Strike Out never sums to 100%, and the
+strike-out rate understates reality.
+
+Opt in per dashboard:
+
+```js
+const FULL_COVERAGE_TIERS = true;
+```
+
+Every ad then grades into exactly one of five tiers that do partition the base:
+
+| tier | rule |
+|---|---|
+| Home Run | spend >= `HR_SPEND` and the metric beats the Home Run target |
+| On Base | spend >= `OB_SPEND` and the metric beats the On Base target |
+| Strike Out | spend >= `SO_SPEND` and it did not, **including zero-conversion ads** |
+| Testing | spent something, but under the gate to be judged fairly |
+| Zero Spend | no spend at all |
+
+The Strike Out branch gates on spend alone. That is what makes the set a
+partition: anything that cleared the spend gate and did not qualify above is a
+strike out, whatever its metric is.
+
+Left off, `classificationCaseSQL()` emits byte-for-byte the SQL it always has, so
+every existing dashboard grades identically. There is a test pinning the legacy
+string in both CPA and ROAS mode.
+
+Chart buckets are built from `classificationTiers()` rather than a hardcoded
+list, so turning the flag on cannot leave a tier without a bucket to land in. The
+TikTok tab's own `ttClassificationCaseSQL()` honours the same flag for the same
+reason. A row carrying an unrecognised tier is bucketed and logged rather than
+dropped or thrown.
+
+**Turning this on changes the reported rates**, because ads that were invisible
+in `Unclassified` now count. Expect the strike-out rate to rise. That is the
+correction, not a regression: recalibrate the thresholds against the new
+denominator rather than reading the old numbers across.
 
 ## Thresholds
 

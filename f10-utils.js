@@ -148,7 +148,8 @@ const COHORT_COLORS = _BRAND.chartPalette ||
 const AGE_COLORS    = _BRAND.chartAge ||
   { '0–14 Days': CHART_PRIMARY, '15–90 Days': CHART_SECONDARY, '90+ Days': '#4b000f' };
 const CLASS_COLOR   = _BRAND.chartClass ||
-  { 'Home Run': CHART_PRIMARY, 'On Base': CHART_SECONDARY, 'Strike Out': CHART_NEGATIVE, 'Unclassified': CHART_NEUTRAL };
+  { 'Home Run': CHART_PRIMARY, 'On Base': CHART_SECONDARY, 'Strike Out': CHART_NEGATIVE,
+    'Unclassified': CHART_NEUTRAL, 'Testing': '#9aa0a6', 'Zero Spend': CHART_NEUTRAL };
 
 /* Ad state metadata: badge CSS class + chart colour. Colours default to the F10
  * set; BRANDING.chartState may override any subset by state name. */
@@ -442,6 +443,118 @@ function convLabelPlural(){
 }
 function showHowToNotes(){ return (typeof SHOW_HOW_TO_NOTES !== 'undefined') && SHOW_HOW_TO_NOTES === true; }
 
+/* ── Ad state display labels ──────────────────────────────────────────────
+ * The state keys produced by classify() are internal and never change: every
+ * lookup into STATE_META, BRANDING.chartState and the legend ordering keys off
+ * them. A dashboard may rename what a PERSON reads by defining, before the
+ * scripts load:
+ *
+ *   const STATE_LABELS = { 'Dropped Off': 'Zero Spend' };
+ *
+ * Only the mapped states are renamed; anything absent renders under its own
+ * name. With no STATE_LABELS every dashboard reads exactly as it does today.
+ *
+ * Renaming here and not in classify() is deliberate. If the key moved, a client
+ * config that themed 'Dropped Off' would silently stop matching and that state
+ * would lose its colour. */
+function stateLabels(){
+  return (typeof STATE_LABELS !== 'undefined' && STATE_LABELS) ? STATE_LABELS : {};
+}
+function stateLabel(state){
+  const map = stateLabels();
+  return Object.prototype.hasOwnProperty.call(map, state) ? String(map[state]) : state;
+}
+
+/* ── Metric and state definitions (hover text) ────────────────────────────
+ * Plain-English definitions surfaced as hover text on state badges, the board
+ * legend and the summary tiles. The state wording below describes what
+ * classify() actually does, so the two cannot drift: read it against the
+ * classifier if you change either.
+ *
+ * A dashboard may override or extend any entry before the scripts load:
+ *   const STATE_DEFINITIONS  = { 'Dropped Off': 'Custom wording.' };
+ *   const METRIC_DEFINITIONS = { spend: 'Custom wording.' };
+ *
+ * Hover text is on by default: it is inert additional context on an element a
+ * person is already looking at, and it costs nothing when unused. Set
+ * SHOW_DEFINITIONS = false to turn it off for a dashboard. */
+const _STATE_DEFINITIONS = {
+  'Scaling Winner':
+    'Spend grew more than the movement band and efficiency did not get materially worse. The ad is taking more budget and holding its result.',
+  'Efficient but Shrinking':
+    'Efficiency improved but spend fell more than the movement band. The ad is working better and getting less budget, so it is usually worth pushing.',
+  'Fading':
+    'Efficiency got materially worse, or the ad spent this window with no measurable result at all.',
+  'New Entrant':
+    'Spent nothing in the prior window and spent in this one. Too new to judge on efficiency yet.',
+  'Dropped Off':
+    'Spent nothing in this window after clearing the noise floor in the prior one. On Meta an active ad almost always picks up at least some spend, so this nearly always means the ad was turned off.',
+  'Steady':
+    'Neither spend nor efficiency moved more than the movement band. The ad is holding its position.',
+};
+const _METRIC_DEFINITIONS = {
+  spend:       'Total media cost across every ad in the current window.',
+  conversions: 'Total conversions across every ad in the current window, on whatever conversion this dashboard is configured to count.',
+  impressions: 'Number of times an ad from this account was served in the current window.',
+  cpa:         'Cost per conversion: spend divided by conversions. Lower is better.',
+  cpc:         'Cost per click: spend divided by clicks. Lower is better.',
+  cpm:         'Cost per thousand impressions: what it costs to reach a thousand people. Lower is better.',
+  ctr:         'Click-through rate: clicks divided by impressions. Higher is better.',
+  roas:        'Return on ad spend: revenue divided by spend. Higher is better.',
+  revenue:     'Revenue attributed to these ads in the current window.',
+  'home run':  'An ad that cleared the Home Run spend floor and beat the Home Run efficiency target. These are the ads worth scaling and worth making more of.',
+  'on base':   'An ad that cleared the On Base spend floor and beat the On Base efficiency target. Working, but not yet at Home Run level.',
+  'strike out':'An ad that spent enough to be judged and missed the efficiency target, including ads that spent real money and converted nothing.',
+  testing:     'An ad that has spent something but not yet enough to be judged fairly against the thresholds.',
+  'zero spend':'An ad with no spend in the current window. On Meta this nearly always means the ad was turned off.',
+};
+function showDefinitions(){ return (typeof SHOW_DEFINITIONS === 'undefined') || SHOW_DEFINITIONS !== false; }
+function stateDefinition(state){
+  const over = (typeof STATE_DEFINITIONS !== 'undefined' && STATE_DEFINITIONS) ? STATE_DEFINITIONS : {};
+  return over[state] || _STATE_DEFINITIONS[state] || '';
+}
+function metricDefinition(key){
+  const k = String(key || '').toLowerCase();
+  const over = (typeof METRIC_DEFINITIONS !== 'undefined' && METRIC_DEFINITIONS) ? METRIC_DEFINITIONS : {};
+  return over[k] || _METRIC_DEFINITIONS[k] || '';
+}
+/* Escaped `title=""` attribute for a definition, or '' when there is none or
+ * definitions are off. Returned WITH a leading space so it drops straight into
+ * a tag: `<span${defAttr(...)}>`. */
+function defAttr(text){
+  if(!showDefinitions() || !text) return '';
+  const esc = String(text).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return ` title="${esc}"`;
+}
+function stateDefAttr(state){ return defAttr(stateDefinition(state)); }
+function metricDefAttr(key){ return defAttr(metricDefinition(key)); }
+
+/* ── Zero-spend filter ────────────────────────────────────────────────────
+ * Hides ads that spent nothing in the current window from the Movement Board
+ * and Movement Map. These are the ads classify() marks 'Dropped Off': they
+ * cleared the noise floor last window and spent nothing this one, which on Meta
+ * nearly always means somebody switched them off. They are real history but
+ * they crowd out the ads a person can still act on.
+ *
+ * This is a DISPLAY filter, applied after classification rather than in SQL,
+ * because 'Dropped Off' is computed client-side by comparing two windows and
+ * has no column to filter on.
+ *
+ * Opt in per dashboard with SHOW_ZERO_SPEND_FILTER = true, which adds the
+ * control. Dashboards that do not set it get no control and no filtering, so
+ * nothing changes for them. */
+let hideZeroSpend = false;
+function zeroSpendFilterEnabled(){
+  return (typeof SHOW_ZERO_SPEND_FILTER !== 'undefined') && SHOW_ZERO_SPEND_FILTER === true;
+}
+/* True when this ad had no spend in the current window. Uses the same 1e-6
+ * epsilon as classify() so the two agree on what counts as zero. */
+function isZeroSpendAd(a){ return !(a && a.sCur > 1e-6); }
+function applyZeroSpendFilter(movers){
+  if(!zeroSpendFilterEnabled() || !hideZeroSpend) return movers;
+  return movers.filter(a => !isZeroSpendAd(a));
+}
+
 /* ── BQ fetch — expects BQ_FUNCTION to be defined by the dashboard ── */
 async function runQuery(sql){ const r=await fetch(BQ_FUNCTION,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:sql})}); if(!r.ok) throw new Error(await r.text()); return r.json(); }
 
@@ -509,17 +622,67 @@ function classify(ad, c){
  * in either query shape. NEVER hardcode one shape's column names — the scatter
  * per-ad CTE and the rollup unique_ads CTE alias the metric differently, and a
  * hardcoded name would silently break the rollup COUNTIF classification counts. */
+/* ── Full-coverage tiers ──────────────────────────────────────────────────
+ * The default CASE grades an ad Home Run / On Base / Strike Out and drops
+ * everything else into 'Unclassified'. Two kinds of ad land there, and they are
+ * not the same thing:
+ *
+ *   1. An ad that spent real money and converted NOTHING. In CPA mode its
+ *      metric is NULL (spend / 0), so it fails the Home Run and On Base tests
+ *      (which need metric > 0) AND the Strike Out test (metric > SO_CPA is NULL,
+ *      never true). An ad that burned budget for no result is the clearest
+ *      strike out there is, and today it is invisible.
+ *   2. An ad that has not spent enough to be judged at all.
+ *
+ * Because both fall in the same bucket, the graded rates cannot be read as
+ * shares of the ad base: Home Run + On Base + Strike Out never sums to 100%,
+ * and the strike-out rate understates reality.
+ *
+ * Set FULL_COVERAGE_TIERS = true to grade every ad into exactly one of five
+ * tiers that DO partition the base:
+ *
+ *   Home Run    spend >= HR_SPEND and the metric beats the Home Run target
+ *   On Base     spend >= OB_SPEND and the metric beats the On Base target
+ *   Strike Out  spend >= SO_SPEND and it did not, INCLUDING zero-conversion ads
+ *   Testing     spent something, but under the gate to be judged fairly
+ *   Zero Spend  no spend at all
+ *
+ * Left off (the default), the CASE is byte-for-byte what it was, so every
+ * existing dashboard grades identically. */
+function fullCoverageTiers(){
+  return (typeof FULL_COVERAGE_TIERS !== 'undefined') && FULL_COVERAGE_TIERS === true;
+}
+/* The tier labels the active CASE can emit, in display order. Chart code builds
+ * its buckets from this rather than hardcoding a list, so turning the flag on
+ * cannot leave a tier without a bucket to land in. */
+function classificationTiers(){
+  return fullCoverageTiers()
+    ? ['Home Run', 'On Base', 'Strike Out', 'Testing', 'Zero Spend']
+    : ['Home Run', 'On Base', 'Strike Out', 'Unclassified'];
+}
+
 function classificationCaseSQL(spendCol, metricCol){
-  if (targetMetric() === 'roas'){
-    return `CASE WHEN ${spendCol} >= ${HR_SPEND} AND ${metricCol} > ${HR_ROAS} THEN 'Home Run'`
-         + ` WHEN ${spendCol} >= ${OB_SPEND} AND ${metricCol} > ${OB_ROAS} THEN 'On Base'`
-         + ` WHEN ${spendCol} >= ${SO_SPEND} AND ${metricCol} < ${SO_ROAS} THEN 'Strike Out'`
-         + ` ELSE 'Unclassified' END`;
+  const roas = targetMetric() === 'roas';
+  const hr = roas
+    ? `WHEN ${spendCol} >= ${HR_SPEND} AND ${metricCol} > ${HR_ROAS} THEN 'Home Run'`
+    : `WHEN ${spendCol} >= ${HR_SPEND} AND ${metricCol} > 0 AND ${metricCol} < ${HR_CPA} THEN 'Home Run'`;
+  const ob = roas
+    ? `WHEN ${spendCol} >= ${OB_SPEND} AND ${metricCol} > ${OB_ROAS} THEN 'On Base'`
+    : `WHEN ${spendCol} >= ${OB_SPEND} AND ${metricCol} > 0 AND ${metricCol} < ${OB_CPA} THEN 'On Base'`;
+  if (fullCoverageTiers()){
+    /* Strike Out has no metric test here on purpose: anything that cleared the
+     * spend gate and did not qualify above is a strike out, INCLUDING the
+     * zero-conversion ads whose metric is NULL. That is what makes the five
+     * tiers a partition. */
+    return `CASE ${hr} ${ob}`
+         + ` WHEN ${spendCol} >= ${SO_SPEND} THEN 'Strike Out'`
+         + ` WHEN ${spendCol} > 0 THEN 'Testing'`
+         + ` ELSE 'Zero Spend' END`;
   }
-  return `CASE WHEN ${spendCol} >= ${HR_SPEND} AND ${metricCol} > 0 AND ${metricCol} < ${HR_CPA} THEN 'Home Run'`
-       + ` WHEN ${spendCol} >= ${OB_SPEND} AND ${metricCol} > 0 AND ${metricCol} < ${OB_CPA} THEN 'On Base'`
-       + ` WHEN ${spendCol} >= ${SO_SPEND} AND ${metricCol} > ${SO_CPA} THEN 'Strike Out'`
-       + ` ELSE 'Unclassified' END`;
+  const so = roas
+    ? `WHEN ${spendCol} >= ${SO_SPEND} AND ${metricCol} < ${SO_ROAS} THEN 'Strike Out'`
+    : `WHEN ${spendCol} >= ${SO_SPEND} AND ${metricCol} > ${SO_CPA} THEN 'Strike Out'`;
+  return `CASE ${hr} ${ob} ${so} ELSE 'Unclassified' END`;
 }
 
 /* Column alias the classifier's metric column carries in the active mode. CPA

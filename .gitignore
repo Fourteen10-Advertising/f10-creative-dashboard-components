@@ -8,3 +8,5 @@ yarn.lock
 
 # Netlify local state
 .netlify/
+
+.DS_Store

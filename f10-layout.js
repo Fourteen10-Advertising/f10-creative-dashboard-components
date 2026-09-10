@@ -165,12 +165,12 @@ function ttPanelsMarkup(ttTh){
       <div id="tt-production-scorecards" style="display:none;">
         <div class="scorecard-grid">
           <div class="scorecard"><div class="scorecard-label">Ads Produced</div><div class="scorecard-value" id="tt-sc-ads-produced">&ndash;</div></div>
-          <div class="scorecard highlight"><div class="scorecard-label">Home Runs</div><div class="scorecard-value" id="tt-sc-home-runs">&ndash;</div></div>
-          <div class="scorecard highlight"><div class="scorecard-label">Home Run Rate</div><div class="scorecard-value" id="tt-sc-hr-rate">&ndash;</div></div>
-          <div class="scorecard"><div class="scorecard-label">On Base</div><div class="scorecard-value" id="tt-sc-on-base">&ndash;</div></div>
-          <div class="scorecard"><div class="scorecard-label">On Base Rate</div><div class="scorecard-value" id="tt-sc-ob-rate">&ndash;</div></div>
-          <div class="scorecard warn"><div class="scorecard-label">Strike Outs</div><div class="scorecard-value" id="tt-sc-strike-outs">&ndash;</div></div>
-          <div class="scorecard warn"><div class="scorecard-label">Strike Out Rate</div><div class="scorecard-value" id="tt-sc-so-rate">&ndash;</div></div>
+          <div class="scorecard highlight"><div class="scorecard-label"${metricDefAttr('home run')}>Home Runs</div><div class="scorecard-value" id="tt-sc-home-runs">&ndash;</div></div>
+          <div class="scorecard highlight"><div class="scorecard-label"${metricDefAttr('home run')}>Home Run Rate</div><div class="scorecard-value" id="tt-sc-hr-rate">&ndash;</div></div>
+          <div class="scorecard"><div class="scorecard-label"${metricDefAttr('on base')}>On Base</div><div class="scorecard-value" id="tt-sc-on-base">&ndash;</div></div>
+          <div class="scorecard"><div class="scorecard-label"${metricDefAttr('on base')}>On Base Rate</div><div class="scorecard-value" id="tt-sc-ob-rate">&ndash;</div></div>
+          <div class="scorecard warn"><div class="scorecard-label"${metricDefAttr('strike out')}>Strike Outs</div><div class="scorecard-value" id="tt-sc-strike-outs">&ndash;</div></div>
+          <div class="scorecard warn"><div class="scorecard-label"${metricDefAttr('strike out')}>Strike Out Rate</div><div class="scorecard-value" id="tt-sc-so-rate">&ndash;</div></div>
         </div>
       </div>
       <div class="two-col">
@@ -516,6 +516,7 @@ function renderLayout(){
       <div id="ctrl-scope" class="ctrl-groups">
         <div class="ctrl"><label>Search ad</label><input type="search" id="ctrl-adsearch" class="ctrl-search" placeholder="Ad name&hellip;" autocomplete="off" /></div>
         <div class="ctrl"><label>Ad status</label><select id="ctrl-status"><option value="all" selected>All ads</option><option value="active">Active only</option></select></div>
+        ${zeroSpendFilterEnabled() ? `<div class="ctrl"><label>Zero spend ads</label><select id="ctrl-zerospend"><option value="show" selected>Show</option><option value="hide">Hide</option></select></div>` : ''}
       </div>
       <div id="weekly-controls" class="weekly-controls">
         <div class="ctrl"><label>Window length</label>
@@ -626,12 +627,12 @@ ${ttControls}
       <div id="production-scorecards" style="display:none;">
         <div class="scorecard-grid">
           <div class="scorecard"><div class="scorecard-label">Ads Produced</div><div class="scorecard-value" id="sc-ads-produced">&ndash;</div></div>
-          <div class="scorecard highlight"><div class="scorecard-label">Home Runs</div><div class="scorecard-value" id="sc-home-runs">&ndash;</div></div>
-          <div class="scorecard highlight"><div class="scorecard-label">Home Run Rate</div><div class="scorecard-value" id="sc-hr-rate">&ndash;</div></div>
-          <div class="scorecard"><div class="scorecard-label">On Base</div><div class="scorecard-value" id="sc-on-base">&ndash;</div></div>
-          <div class="scorecard"><div class="scorecard-label">On Base Rate</div><div class="scorecard-value" id="sc-ob-rate">&ndash;</div></div>
-          <div class="scorecard warn"><div class="scorecard-label">Strike Outs</div><div class="scorecard-value" id="sc-strike-outs">&ndash;</div></div>
-          <div class="scorecard warn"><div class="scorecard-label">Strike Out Rate</div><div class="scorecard-value" id="sc-so-rate">&ndash;</div></div>
+          <div class="scorecard highlight"><div class="scorecard-label"${metricDefAttr('home run')}>Home Runs</div><div class="scorecard-value" id="sc-home-runs">&ndash;</div></div>
+          <div class="scorecard highlight"><div class="scorecard-label"${metricDefAttr('home run')}>Home Run Rate</div><div class="scorecard-value" id="sc-hr-rate">&ndash;</div></div>
+          <div class="scorecard"><div class="scorecard-label"${metricDefAttr('on base')}>On Base</div><div class="scorecard-value" id="sc-on-base">&ndash;</div></div>
+          <div class="scorecard"><div class="scorecard-label"${metricDefAttr('on base')}>On Base Rate</div><div class="scorecard-value" id="sc-ob-rate">&ndash;</div></div>
+          <div class="scorecard warn"><div class="scorecard-label"${metricDefAttr('strike out')}>Strike Outs</div><div class="scorecard-value" id="sc-strike-outs">&ndash;</div></div>
+          <div class="scorecard warn"><div class="scorecard-label"${metricDefAttr('strike out')}>Strike Out Rate</div><div class="scorecard-value" id="sc-so-rate">&ndash;</div></div>
         </div>
       </div>
       <div class="two-col">

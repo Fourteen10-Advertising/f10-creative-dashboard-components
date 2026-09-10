@@ -171,6 +171,15 @@ function onStatusChange(e){
   if(!isWeekly(activeTab) && typeof loadMonthlyTab === 'function') loadMonthlyTab(activeTab);
 }
 
+/* The zero-spend selection changed. 'Dropped Off' is derived client-side from
+ * the two windows already in memory, so this needs no re-query: re-render the
+ * weekly board and map and leave every other tab alone. */
+function onZeroSpendChange(e){
+  hideZeroSpend = e.target.value === 'hide';
+  if (window.F10A) F10A.track('filter_changed', { filter: 'zero_spend', value: e.target.value });
+  if(WIN) refreshWeeklyBoard({ map: true });
+}
+
 /* The ad-name search changed: re-render the weekly board (so floor-bypass
  * applies) and re-filter every already-rendered table — no re-query. */
 function applyAdSearch(){
@@ -226,12 +235,17 @@ function renderWeekly(){
 
 /* Re-render only the Movement Board from the loaded window (no re-query, no
  * chart redraw) — used when the ad-name search changes so floor-bypass applies. */
-function refreshWeeklyBoard(){
+/* Re-render the weekly board from the windows already in memory. Pass
+ * { map: true } to redraw the Movement Map too — the ad-name search deliberately
+ * leaves the map alone (it is a board-level filter), but the zero-spend filter
+ * has to move both or the two views disagree about which ads exist. */
+function refreshWeeklyBoard(opts){
   if(!WIN) return;
   const c          = getControls();
   const classified = Object.values(WIN.ads).map(a => classify(a, c));
   const movers     = classified.filter(a => a.qCur || a.qPri);
   renderBoard(adSearchTerm ? classified : movers, c);
+  if(opts && opts.map) renderMap(movers, c);
 }
 
 /* ── Weekly Summary ── */
@@ -262,26 +276,29 @@ function renderSummary(all, c, w){
    * summed above (no query). Always false in CPA mode, so CPA is unchanged. */
   const revBroken = applyRevenueGuard('summary-revenue-guard', revenueSignalBroken(tot.cur.revenue, tot.cur.spend));
 
-  const spendCard = { label: 'Spend', val: fmt$(tot.cur.spend), d: deltaHtml(tot.cur.spend, tot.pri.spend, false) };
-  const convCard  = { label: 'Conversions', val: fmtNum(tot.cur.conv), d: deltaHtml(tot.cur.conv, tot.pri.conv, false) };
+  /* `def` is the hover definition for the tile. The blended tile defines the
+   * ACTIVE efficiency metric (CPA, ROAS, CPC, CPM, CTR), so it looks up by the
+   * metric's own label rather than the tile's. */
+  const spendCard = { label: 'Spend', def: metricDefinition('spend'), val: fmt$(tot.cur.spend), d: deltaHtml(tot.cur.spend, tot.pri.spend, false) };
+  const convCard  = { label: 'Conversions', def: metricDefinition('conversions'), val: fmtNum(tot.cur.conv), d: deltaHtml(tot.cur.conv, tot.pri.conv, false) };
   const blendCard = revBroken
-    ? { label: 'Blended '+m.label, val: '–', d: `<div class="scorecard-delta delta-flat">revenue check needed</div>` }
-    : { label: 'Blended '+m.label, val: fmtMetric(mCur,m), d: deltaHtml(mCur, mPri, m.dir==='lower') };
+    ? { label: 'Blended '+m.label, def: metricDefinition(m.label), val: '–', d: `<div class="scorecard-delta delta-flat">revenue check needed</div>` }
+    : { label: 'Blended '+m.label, def: metricDefinition(m.label), val: fmtMetric(mCur,m), d: deltaHtml(mCur, mPri, m.dir==='lower') };
   const cards = targetMetric() === 'roas'
     ? [
         spendCard,
-        { label: 'Revenue', val: fmt$(tot.cur.revenue), d: deltaHtml(tot.cur.revenue, tot.pri.revenue, false) },
+        { label: 'Revenue', def: metricDefinition('revenue'), val: fmt$(tot.cur.revenue), d: deltaHtml(tot.cur.revenue, tot.pri.revenue, false) },
         blendCard,
         convCard,
       ]
     : [
         spendCard,
         convCard,
-        { label: 'Impressions', val: fmtNum(tot.cur.impressions), d: deltaHtml(tot.cur.impressions, tot.pri.impressions, false) },
+        { label: 'Impressions', def: metricDefinition('impressions'), val: fmtNum(tot.cur.impressions), d: deltaHtml(tot.cur.impressions, tot.pri.impressions, false) },
         blendCard,
       ];
   document.getElementById('summary-scorecards').innerHTML = cards.map(c2 =>
-    `<div class="scorecard"><div class="scorecard-label">${c2.label}</div><div class="scorecard-value">${c2.val}</div>${c2.d}</div>`
+    `<div class="scorecard"><div class="scorecard-label"${defAttr(c2.def)}>${c2.label}</div><div class="scorecard-value">${c2.val}</div>${c2.d}</div>`
   ).join('');
 
   const denTotPri = tot.pri[m.den]; let efficiency = 0;
@@ -320,12 +337,15 @@ function renderBoard(movers, c){
   document.getElementById('board-m-head').textContent = m.label;
   const order = ['Scaling Winner','Fading','New Entrant','Efficient but Shrinking','Dropped Off','Steady'];
   document.getElementById('board-legend').innerHTML = order.map(s =>
-    `<span class="li"><span class="dot" style="background:${STATE_META[s].color}"></span>${s}</span>`
+    `<span class="li"${stateDefAttr(s)}><span class="dot" style="background:${STATE_META[s].color}"></span>${stateLabel(s)}</span>`
   ).join('');
-  const rows = movers.slice().sort((a,b) => b.sCur - a.sCur);
+  const rows = applyZeroSpendFilter(movers).slice().sort((a,b) => b.sCur - a.sCur);
   const body = document.getElementById('board-body');
   if(!rows.length){
-    body.innerHTML = `<tr><td colspan="11" class="no-data">No ads cleared the noise floor in this window. Lower the floor or widen the window.</td></tr>`;
+    const hidden = movers.length - rows.length;
+    body.innerHTML = hidden > 0
+      ? `<tr><td colspan="11" class="no-data">Every ad in this window is hidden by the zero-spend filter (${hidden} ${hidden === 1 ? 'ad' : 'ads'}). Switch it back to "Show" to see them.</td></tr>`
+      : `<tr><td colspan="11" class="no-data">No ads cleared the noise floor in this window. Lower the floor or widen the window.</td></tr>`;
   } else {
     renderPagedTable('board-body', rows.map(a => {
       const sm=STATE_META[a.state], sd=a.spendDelta;
@@ -335,7 +355,7 @@ function renderBoard(movers, c){
       const cr = creativeRates(a.cur); registerAdMetrics(a.ad_id, a.cur);
       return `<tr ${adNameAttr(a.ad_name)}>
         <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;" title="${a.ad_name||''}">${a.ad_name||'–'}<br><span style="color:var(--grey);font-size:10px;">${a.campaign_name||''}</span></td>
-        <td><span class="badge ${sm.cls}">${a.state}</span></td>
+        <td><span class="badge ${sm.cls}"${stateDefAttr(a.state)}>${stateLabel(a.state)}</span></td>
         <td class="num">${fmt$(a.sCur)}</td>
         <td class="num delta-cell ${sdCls}">${sd>0?'+':''}${fmt$(sd)}</td>
         <td class="num">${fmtMetric(a.mCur,m)}</td>
@@ -348,7 +368,9 @@ function renderBoard(movers, c){
       </tr>`;
     }));
   }
-  document.getElementById('board-title').textContent = `Ad Movement — ${rows.length} ads`;
+  const hiddenCount = movers.length - rows.length;
+  document.getElementById('board-title').textContent =
+    `Ad Movement — ${rows.length} ads` + (hiddenCount > 0 ? ` (${hiddenCount} zero spend hidden)` : '');
   hideEl('board-loading'); showEl('board-table');
 }
 
@@ -356,12 +378,12 @@ function renderBoard(movers, c){
 
 function renderMap(movers, c){
   const m   = c.metric;
-  const pts = movers.filter(a => a.improvePct!=null && a.sCur>0);
+  const pts = applyZeroSpendFilter(movers).filter(a => a.improvePct!=null && a.sCur>0);
   const byState = {};
   pts.forEach(a => { (byState[a.state]=byState[a.state]||[]).push({ x:a.sCur, y:a.improvePct*100, r:0, _spend:a.sCur, _name:a.ad_name, _state:a.state }); });
   const maxSpend   = Math.max(1, ...pts.map(p => p.sCur));
   const datasets   = Object.entries(byState).map(([s,arr]) => ({
-    label: s,
+    label: stateLabel(s),
     data:  arr.map(p => ({...p, r: 6+22*Math.sqrt(p._spend/maxSpend)})),
     backgroundColor: STATE_META[s].color+'bb',
     borderColor:     STATE_META[s].color,
@@ -380,7 +402,7 @@ function renderMap(movers, c){
         x:{ title:{display:true,text:'Current window spend ($)',font:{size:11}}, min:0, ticks:{callback:v=>'$'+v.toLocaleString()} },
         y:{ title:{display:true,text:`${m.label} change vs prior (%, up = better)`,font:{size:11}}, ticks:{callback:v=>v+'%'} },
       },
-      plugins:{ legend:{position:'top',labels:{font:{size:11}}}, tooltip:{ callbacks:{ label:ctx=>{ const p=ctx.raw; return [p._name||'', p._state, `Spend: $${p._spend.toLocaleString()}`, `${m.label} change: ${p.y>0?'+':''}${p.y.toFixed(1)}%`]; } } } } },
+      plugins:{ legend:{position:'top',labels:{font:{size:11}}}, tooltip:{ callbacks:{ label:ctx=>{ const p=ctx.raw; return [p._name||'', stateLabel(p._state), `Spend: $${p._spend.toLocaleString()}`, `${m.label} change: ${p.y>0?'+':''}${p.y.toFixed(1)}%`]; } } } } },
     plugins:[{ id:'zeroLine', afterDraw(chart){ const yA=chart.scales.y,xA=chart.scales.x; const y0=yA.getPixelForValue(0); if(y0>=yA.top&&y0<=yA.bottom){ const ctx2=chart.ctx; ctx2.save(); ctx2.setLineDash([5,4]); ctx2.strokeStyle='#727272'; ctx2.lineWidth=1.5; ctx2.beginPath(); ctx2.moveTo(xA.left,y0); ctx2.lineTo(xA.right,y0); ctx2.stroke(); ctx2.setLineDash([]); ctx2.fillStyle='#727272'; ctx2.font='10px Archivo'; ctx2.fillText('no change',xA.left+4,y0-4); ctx2.restore(); } } }] });
 }
 
@@ -425,6 +447,10 @@ function wireControls(){
   /* Ad status filter = new server query across all tabs */
   const statusSel = document.getElementById('ctrl-status');
   if(statusSel) statusSel.addEventListener('change', onStatusChange);
+  /* Zero-spend filter = client-side re-render of the weekly views only. The
+   * control exists only when the dashboard sets SHOW_ZERO_SPEND_FILTER. */
+  const zeroSel = document.getElementById('ctrl-zerospend');
+  if(zeroSel) zeroSel.addEventListener('change', onZeroSpendChange);
   /* Ad-name search = client-side filter of the current view (debounced) */
   const searchInput = document.getElementById('ctrl-adsearch');
   if(searchInput){
