@@ -180,6 +180,16 @@ function onZeroSpendChange(e){
   if(WIN) refreshWeeklyBoard({ map: true });
 }
 
+/* The ad-state selection changed. Ad states are computed client-side from the
+ * two windows already in memory, so this needs no re-query: re-render the
+ * Movement Board only (the Map keeps its full distribution) and leave every
+ * other tab alone. */
+function onStateChange(e){
+  stateFilter = e.target.value;
+  if (window.F10A) F10A.track('filter_changed', { filter: 'ad_state', value: e.target.value });
+  if(WIN) refreshWeeklyBoard();
+}
+
 /* The ad-name search changed: re-render the weekly board (so floor-bypass
  * applies) and re-filter every already-rendered table — no re-query. */
 function applyAdSearch(){
@@ -335,17 +345,22 @@ function drawDecomp(prior, mix, eff, current, m){
 function renderBoard(movers, c){
   const m = c.metric;
   document.getElementById('board-m-head').textContent = m.label;
-  const order = ['Scaling Winner','Fading','New Entrant','Efficient but Shrinking','Dropped Off','Steady'];
+  const order = STATE_ORDER;
   document.getElementById('board-legend').innerHTML = order.map(s =>
     `<span class="li"${stateDefAttr(s)}><span class="dot" style="background:${STATE_META[s].color}"></span>${stateLabel(s)}</span>`
   ).join('');
-  const rows = applyZeroSpendFilter(movers).slice().sort((a,b) => b.sCur - a.sCur);
+  const afterZero = applyZeroSpendFilter(movers);
+  const rows = applyStateFilter(afterZero).slice().sort((a,b) => b.sCur - a.sCur);
   const body = document.getElementById('board-body');
   if(!rows.length){
-    const hidden = movers.length - rows.length;
-    body.innerHTML = hidden > 0
-      ? `<tr><td colspan="11" class="no-data">Every ad in this window is hidden by the zero-spend filter (${hidden} ${hidden === 1 ? 'ad' : 'ads'}). Switch it back to "Show" to see them.</td></tr>`
-      : `<tr><td colspan="11" class="no-data">No ads cleared the noise floor in this window. Lower the floor or widen the window.</td></tr>`;
+    const zeroHidden = movers.length - afterZero.length;
+    if(stateFilterActive() && afterZero.length){
+      body.innerHTML = `<tr><td colspan="11" class="no-data">No ads in the "${stateLabel(stateFilter)}" state this window. Choose "All states" to see the rest.</td></tr>`;
+    } else if(zeroHidden > 0){
+      body.innerHTML = `<tr><td colspan="11" class="no-data">Every ad in this window is hidden by the zero-spend filter (${zeroHidden} ${zeroHidden === 1 ? 'ad' : 'ads'}). Switch it back to "Show" to see them.</td></tr>`;
+    } else {
+      body.innerHTML = `<tr><td colspan="11" class="no-data">No ads cleared the noise floor in this window. Lower the floor or widen the window.</td></tr>`;
+    }
   } else {
     renderPagedTable('board-body', rows.map(a => {
       const sm=STATE_META[a.state], sd=a.spendDelta;
@@ -368,9 +383,11 @@ function renderBoard(movers, c){
       </tr>`;
     }));
   }
-  const hiddenCount = movers.length - rows.length;
+  const zeroHidden = movers.length - afterZero.length;
   document.getElementById('board-title').textContent =
-    `Ad Movement — ${rows.length} ads` + (hiddenCount > 0 ? ` (${hiddenCount} zero spend hidden)` : '');
+    `Ad Movement — ${rows.length} ads`
+    + (stateFilterActive() ? ` · ${stateLabel(stateFilter)} only` : '')
+    + (zeroHidden > 0 ? ` (${zeroHidden} zero spend hidden)` : '');
   hideEl('board-loading'); showEl('board-table');
 }
 
@@ -451,6 +468,10 @@ function wireControls(){
    * control exists only when the dashboard sets SHOW_ZERO_SPEND_FILTER. */
   const zeroSel = document.getElementById('ctrl-zerospend');
   if(zeroSel) zeroSel.addEventListener('change', onZeroSpendChange);
+  /* Ad-state filter = client-side re-render of the Movement Board only. The
+   * control exists only when the dashboard sets SHOW_STATE_FILTER. */
+  const stateSel = document.getElementById('ctrl-state');
+  if(stateSel) stateSel.addEventListener('change', onStateChange);
   /* Ad-name search = client-side filter of the current view (debounced) */
   const searchInput = document.getElementById('ctrl-adsearch');
   if(searchInput){
