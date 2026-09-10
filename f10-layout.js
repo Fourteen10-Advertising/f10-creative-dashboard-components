@@ -537,6 +537,7 @@ function renderLayout(){
         <div class="ctrl"><label>Search ad</label><input type="search" id="ctrl-adsearch" class="ctrl-search" placeholder="Ad name&hellip;" autocomplete="off" /></div>
         <div class="ctrl"><label>Ad status</label><select id="ctrl-status"><option value="all" selected>All ads</option><option value="active">Active only</option></select></div>
         ${zeroSpendFilterEnabled() ? `<div class="ctrl"><label>Zero spend ads</label><select id="ctrl-zerospend"><option value="show" selected>Show</option><option value="hide">Hide</option></select></div>` : ''}
+        ${stateFilterEnabled() ? `<div class="ctrl"><label>Ad state</label><select id="ctrl-state">${stateFilterOptionsHTML()}</select></div>` : ''}
       </div>
       <div id="weekly-controls" class="weekly-controls">
         <div class="ctrl"><label>Window length</label>

@@ -565,6 +565,39 @@ function applyZeroSpendFilter(movers){
   return movers.filter(a => !isZeroSpendAd(a));
 }
 
+/* ── Movement Board state filter ───────────────────────────────────────────
+ * A dropdown that narrows the Movement Board to a single ad state (Scaling
+ * Winner, Fading, New Entrant, Efficient but Shrinking, Dropped Off, Steady).
+ * Opt in per dashboard with SHOW_STATE_FILTER = true. Like the zero-spend
+ * filter it is a DISPLAY filter applied after classification, and it acts on
+ * the Movement Board only; the Movement Map keeps the full distribution so its
+ * per-state shape stays readable. The sentinel '__all__' means no state filter.
+ *
+ * The dropdown VALUE is the internal state key (what classify() produces and
+ * STATE_META / STATE_LABELS key off); the dropdown LABEL is the display name via
+ * stateLabel(), so a renamed state (e.g. Dropped Off -> Zero Spend) reads the way
+ * the rest of the board does. */
+const STATE_FILTER_ALL = '__all__';
+let stateFilter = STATE_FILTER_ALL;
+/* Board legend / filter order, single-sourced so the dropdown and the legend
+ * cannot drift. */
+const STATE_ORDER = ['Scaling Winner','Fading','New Entrant','Efficient but Shrinking','Dropped Off','Steady'];
+function stateFilterEnabled(){
+  return (typeof SHOW_STATE_FILTER !== 'undefined') && SHOW_STATE_FILTER === true;
+}
+function stateFilterActive(){ return stateFilterEnabled() && stateFilter !== STATE_FILTER_ALL; }
+function applyStateFilter(movers){
+  if(!stateFilterActive()) return movers;
+  return movers.filter(a => a.state === stateFilter);
+}
+/* <option> set for the state dropdown: "All states" plus one per state in
+ * STATE_ORDER, value = internal key, text = display label. */
+function stateFilterOptionsHTML(){
+  const opts = STATE_ORDER.map(sname =>
+    `<option value="${sname}">${stateLabel(sname)}</option>`).join('');
+  return `<option value="${STATE_FILTER_ALL}" selected>All states</option>` + opts;
+}
+
 /* ── BQ fetch — expects BQ_FUNCTION to be defined by the dashboard ── */
 async function runQuery(sql){ const r=await fetch(BQ_FUNCTION,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:sql})}); if(!r.ok) throw new Error(await r.text()); return r.json(); }
 

@@ -195,6 +195,7 @@ lives in `test/review-list-bundles.test.js`.
 | `METRIC_DEFINITIONS` | no | Override the built-in hover wording for any metric or graded tier |
 | `SHOW_DEFINITIONS` | no | Set `false` to turn all hover definitions off. Default on |
 | `SHOW_ZERO_SPEND_FILTER` | no | Set `true` to add the zero-spend control to the controls bar (see [Zero-spend filter](#zero-spend-filter)) |
+| `SHOW_STATE_FILTER` | no | Set `true` to add an ad-state dropdown that narrows the Movement Board to one state (see [Movement Board state filter](#movement-board-state-filter)) |
 | `FULL_COVERAGE_TIERS` | no | Set `true` to grade every ad into one of five tiers that sum to 100% of the ad base (see [Full-coverage tiers](#full-coverage-tiers)) |
 | `THRESHOLDS_BY_GROUP` | no | Per-product Ad Production thresholds, e.g. grade SMSF ads on a different cost scale than Trade (see [Per-product thresholds](#per-product-thresholds)) |
 | `REVIEW` | no | F10-internal Creative Review surface only. The bundle list is now **auto-discovered** via the `list-bundles` action, so this block no longer carries `BUNDLES` or `LIMIT` and is effectively optional/empty; it holds only optional overrides (`CLIENT` slug override, `ACTOR`, `FEEDBACK_FUNCTION`). Live client dashboards never define it (see [Creative review](#creative-review)) |
@@ -491,7 +492,29 @@ Renamed states flow through the Movement Board badge, the board legend, the
 Movement Map scatter legend and its tooltip, and the same three surfaces on the
 TikTok tab.
 
-### Hover definitions
+### Movement Board state filter
+
+Opt in per dashboard:
+
+```js
+const SHOW_STATE_FILTER = true;
+```
+
+That adds an **Ad state** dropdown to the controls bar: `All states` plus one
+entry per ad state (Scaling Winner, Fading, New Entrant, Efficient but Shrinking,
+Dropped Off, Steady). Selecting one narrows the **Movement Board** to ads in that
+state. Dashboards that do not set it get no dropdown and no filtering.
+
+Like the zero-spend filter it is a **display** filter, applied after
+classification with no re-query, and it acts on the **Movement Board only** so the
+Movement Map keeps its full per-state distribution. The dropdown option value is
+the internal state key while its label is the display name, so a renamed state
+(e.g. `Dropped Off` shown as `Zero Spend` via `STATE_LABELS`) reads the same way
+everywhere. It composes with the zero-spend filter and the ad-name search; the
+board title notes the active state, and the empty state names the filter when a
+chosen state has no ads this window.
+
+## Hover definitions
 
 Every ad state, graded tier and summary tile carries plain-English hover text
 explaining what it means. This is **on by default** and needs no config: it is
