@@ -61,7 +61,7 @@ function _thresholdKeys(){
  * metric's bands are surfaced (CPA bands in CPA mode, ROAS bands in ROAS mode);
  * the shared spend floors are always present. */
 function getProductionThresholds(){
-  const all = { HR_SPEND, HR_CPA, OB_SPEND, OB_CPA, SO_SPEND, SO_CPA, HR_ROAS, OB_ROAS, SO_ROAS };
+  const all = _activeThresholdObj();
   const out = {};
   for (const k of _thresholdKeys()) out[k] = all[k];
   return out;
@@ -72,10 +72,15 @@ function getProductionThresholds(){
  * Returns the active set. */
 function setProductionThresholds(partial){
   const next = partial || {};
+  /* When the Product filter is on a configured group, edits land on that group's
+   * live thresholds; otherwise on the base globals. The classification SQL reads
+   * the same group store, so an applied edit regrades that product. */
+  const grp = _activeGroupThresholdStore();
   for (const k of ['HR_SPEND','HR_CPA','OB_SPEND','OB_CPA','SO_SPEND','SO_CPA','HR_ROAS','OB_ROAS','SO_ROAS']){
     if (!(k in next)) continue;
     const v = Number(next[k]);
     if (!Number.isFinite(v) || v < 0) continue;
+    if (grp){ grp[k] = v; continue; }
     if (k === 'HR_SPEND') HR_SPEND = v;
     else if (k === 'HR_CPA') HR_CPA = v;
     else if (k === 'OB_SPEND') OB_SPEND = v;
@@ -90,7 +95,12 @@ function setProductionThresholds(partial){
 }
 /* Restore the per-client (or built-in) defaults. Returns the active set. */
 function resetProductionThresholds(){
-  ({ HR_SPEND, HR_CPA, OB_SPEND, OB_CPA, SO_SPEND, SO_CPA, HR_ROAS, OB_ROAS, SO_ROAS } = PRODUCTION_DEFAULTS);
+  const name = activeThresholdGroup();
+  if (name){
+    _groupThresholdStore[name] = groupThresholdDefaults(name);
+  } else {
+    ({ HR_SPEND, HR_CPA, OB_SPEND, OB_CPA, SO_SPEND, SO_CPA, HR_ROAS, OB_ROAS, SO_ROAS } = PRODUCTION_DEFAULTS);
+  }
   return getProductionThresholds();
 }
 
@@ -704,6 +714,56 @@ function thresholdGroups(){
 }
 function thresholdGroupCol(){ const g = thresholdGroups(); return g ? g.col : null; }
 
+/* Live, editable per-group thresholds. Seeded lazily from THRESHOLDS_BY_GROUP
+ * overrides merged over the base config defaults (PRODUCTION_DEFAULTS), kept
+ * separate from the base HR_SPEND... globals so a live edit to one product never
+ * touches another. classificationCaseSQL and the Ad Production editor both read
+ * this, so an applied edit regrades that product. */
+const _groupThresholdStore = {};
+function groupThresholdDefaults(name){
+  const g = thresholdGroups();
+  const ov = (g && g.groups[name]) || {};
+  return Object.assign({}, PRODUCTION_DEFAULTS, ov);
+}
+function _seedGroupThresholds(){
+  const g = thresholdGroups();
+  if (!g) return;
+  for (const name of Object.keys(g.groups)){
+    if (!_groupThresholdStore[name]) _groupThresholdStore[name] = groupThresholdDefaults(name);
+  }
+}
+/* The live threshold object for a configured group, or null if not configured. */
+function getGroupThresholds(name){
+  _seedGroupThresholds();
+  return _groupThresholdStore[name] || null;
+}
+
+/* Which group, if any, the Ad Production panel currently reflects: the value of
+ * the group filter on the threshold column, but only when it is a configured
+ * group. Product = All (or a group with no override) reflects the base
+ * thresholds. This governs ONLY what the editor, benchmark copy and scatter
+ * guide lines show and edit; the classification SQL is always per-row and grades
+ * every product on its own thresholds regardless of the filter. */
+function activeThresholdGroup(){
+  const g = thresholdGroups();
+  if (!g) return null;
+  const sel = (typeof groupSelections !== 'undefined') ? groupSelections[g.col] : null;
+  if (!sel || sel === GROUP_ALL) return null;
+  return Object.prototype.hasOwnProperty.call(g.groups, sel) ? sel : null;
+}
+/* The live store object the editor should write to (a group's set), or null when
+ * the base globals are the active context. */
+function _activeGroupThresholdStore(){
+  const name = activeThresholdGroup();
+  return name ? getGroupThresholds(name) : null;
+}
+/* The active threshold values as a plain object: a group's set when one is in
+ * focus, else a snapshot of the base globals. Read-only view for display. */
+function _activeThresholdObj(){
+  const grp = _activeGroupThresholdStore();
+  return grp || { HR_SPEND, HR_CPA, OB_SPEND, OB_CPA, SO_SPEND, SO_CPA, HR_ROAS, OB_ROAS, SO_ROAS };
+}
+
 /* SQL fragment that carries the threshold group column into a per-ad grouped
  * CTE, so classificationCaseSQL can switch on it in the outer SELECT. The CTEs
  * GROUP BY ad_id, and each ad belongs to one group, so ANY_VALUE is exact.
@@ -759,8 +819,8 @@ function classificationCaseSQL(spendCol, metricCol){
    * the base, so a partial override inherits the rest). Every unlisted group,
    * and NULL, lands in the ELSE on the base thresholds. This grades correctly
    * even with the Product filter on "All", because the dispatch is per row. */
-  const branches = Object.entries(grp.groups).map(([name, ov]) => {
-    const th = Object.assign({}, base, ov);
+  const branches = Object.keys(grp.groups).map((name) => {
+    const th = getGroupThresholds(name);
     return `WHEN ${grp.col} = ${_sqlStr(name)} THEN (${_tierCaseSQL(spendCol, metricCol, th)})`;
   });
   return `CASE ${branches.join(' ')} ELSE (${_tierCaseSQL(spendCol, metricCol, base)}) END`;

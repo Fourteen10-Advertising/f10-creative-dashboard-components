@@ -187,6 +187,7 @@ function metaScoreOpts(){
 async function loadProduction(){
   ensureProductionControls();
   fillProductionInputs();
+  refreshProductionThresholdCopy();
   /* CPA is spend / conversions using the dashboard's CONV_EXPR (the same conversion
      definition every other tab uses), NOT the mart's primary-only lifetime_cpa. That
      way each ad is measured by the conversions it actually drives — e.g. SMSF ads on
@@ -274,15 +275,20 @@ async function loadProduction(){
     /* Y-axis max from the ACTIVE metric's values, not the CPA range. The floor
        keeps the Home Run threshold line on-chart even when data is sparse: 100
        ($) in CPA mode, HR_ROAS (x) in ROAS mode where values live around 1–10. */
-    const yFloor=isRoas?HR_ROAS:100;
+    /* Guide lines follow the active Product filter (getProductionThresholds is
+       filter-aware): when a per-group product is selected they show that
+       product's Ad Hit / CPA Limit, matching how those ads are actually graded. */
+    const guideTh=getProductionThresholds();
+    const guideHitSpend=guideTh.HR_SPEND, guideYThresh=isRoas?guideTh.HR_ROAS:guideTh.HR_CPA;
+    const yFloor=isRoas?guideYThresh:100;
     const maxY=Math.ceil(Math.max(...scatterData.filter(r=>Number(r[mCol])>0).map(r=>Number(r[mCol])||0),yFloor)*1.2);
     scatterChart=new Chart(document.getElementById('scatter-chart'),{ type:'scatter', data:{ datasets:scatterDatasets },
       options:{ responsive:true, maintainAspectRatio:false,
         scales:{ x:{ title:{display:true,text:'Lifetime Spend ($)',font:{size:11}}, min:0, max:maxSpend, ticks:{callback:v=>fmt$(v)} }, y:{ title:{display:true,text:`Lifetime ${targetMetricDef().label} (${isRoas?'x':'$'})`,font:{size:11}}, min:0, max:maxY, ticks:{callback:v=>fmtMetricCell(v)} } },
         plugins:{ legend:{position:'top',labels:{font:{size:11}}}, tooltip:{callbacks:{label:ctx=>{ const pt=ctx.raw; const mLine=isRoas?`${targetMetricDef().label}: ${fmtMetricCell(pt.y)}`:`CPA: ${pt.y>0?fmt$(pt.y):'N/A'}`; return [`${ctx.dataset.label}`,`Spend: ${fmt$(pt.x)}`,mLine]; }}} } },
       plugins:[{ id:'threshold-lines', afterDraw(chart){ const ctx2=chart.ctx,xAxis=chart.scales.x,yAxis=chart.scales.y;
-        const xHit=xAxis.getPixelForValue(HR_SPEND); if(xHit>=xAxis.left&&xHit<=xAxis.right){ ctx2.save(); ctx2.setLineDash([5,4]); ctx2.strokeStyle=CHART_SECONDARY; ctx2.lineWidth=1.5; ctx2.beginPath(); ctx2.moveTo(xHit,yAxis.top); ctx2.lineTo(xHit,yAxis.bottom); ctx2.stroke(); ctx2.setLineDash([]); ctx2.fillStyle=CHART_SECONDARY; ctx2.font='10px Archivo, sans-serif'; ctx2.fillText('Ad Hit ('+fmt$(HR_SPEND)+')',xHit+4,yAxis.top+14); ctx2.restore(); }
-        const yThresh=isRoas?HR_ROAS:HR_CPA; const yLine=yAxis.getPixelForValue(yThresh); if(yLine>=yAxis.top&&yLine<=yAxis.bottom){ ctx2.save(); ctx2.setLineDash([5,4]); ctx2.strokeStyle='#727272'; ctx2.lineWidth=1.5; ctx2.beginPath(); ctx2.moveTo(xAxis.left,yLine); ctx2.lineTo(xAxis.right,yLine); ctx2.stroke(); ctx2.setLineDash([]); ctx2.fillStyle='#727272'; ctx2.font='10px Archivo, sans-serif'; ctx2.fillText((isRoas?'ROAS Target (':'CPA Limit (')+fmtMetricCell(yThresh)+')',xAxis.left+4,yLine-4); ctx2.restore(); } } }] });
+        const xHit=xAxis.getPixelForValue(guideHitSpend); if(xHit>=xAxis.left&&xHit<=xAxis.right){ ctx2.save(); ctx2.setLineDash([5,4]); ctx2.strokeStyle=CHART_SECONDARY; ctx2.lineWidth=1.5; ctx2.beginPath(); ctx2.moveTo(xHit,yAxis.top); ctx2.lineTo(xHit,yAxis.bottom); ctx2.stroke(); ctx2.setLineDash([]); ctx2.fillStyle=CHART_SECONDARY; ctx2.font='10px Archivo, sans-serif'; ctx2.fillText('Ad Hit ('+fmt$(guideHitSpend)+')',xHit+4,yAxis.top+14); ctx2.restore(); }
+        const yThresh=guideYThresh; const yLine=yAxis.getPixelForValue(yThresh); if(yLine>=yAxis.top&&yLine<=yAxis.bottom){ ctx2.save(); ctx2.setLineDash([5,4]); ctx2.strokeStyle='#727272'; ctx2.lineWidth=1.5; ctx2.beginPath(); ctx2.moveTo(xAxis.left,yLine); ctx2.lineTo(xAxis.right,yLine); ctx2.stroke(); ctx2.setLineDash([]); ctx2.fillStyle='#727272'; ctx2.font='10px Archivo, sans-serif'; ctx2.fillText((isRoas?'ROAS Target (':'CPA Limit (')+fmtMetricCell(yThresh)+')',xAxis.left+4,yLine-4); ctx2.restore(); } } }] });
     const months=monthlyData.map(r=>r.launch_month).reverse();
     const adsArr=monthlyData.map(r=>Number(r.ads_launched)).reverse();
     const hrRates=monthlyData.map(r=>+(Number(r.home_runs)/Number(r.ads_launched)*100).toFixed(1)).reverse();

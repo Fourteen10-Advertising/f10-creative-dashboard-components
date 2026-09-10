@@ -19,47 +19,43 @@
 
 /* Production threshold copy — built from the live HR_SPEND/HR_CPA/... globals so
  * it can be regenerated whenever a user tunes the thresholds in the UI. */
-function prodBenchmarkHTML(){
-  /* ROAS is higher-is-better: good grades clear the target (Spend & ROAS &ge; band),
-     Strike Out falls below it. CPA is lower-is-better and keeps its legacy copy. */
+/* The three tier bands for one threshold set, optionally prefixed with a product
+ * name. ROAS is higher-is-better (good grades clear the target); CPA is
+ * lower-is-better and keeps the legacy wording. */
+function _benchTiersHTML(th, prefix){
+  const p = prefix ? prefix + ' ' : '';
+  const cls = prefix ? ' bm-group' : '';
   if (targetMetric() === 'roas'){
-    return `<span class="bm-item"><strong>Home Run:</strong> Spend &ge; ${fmt$(HR_SPEND)} &amp; ROAS &ge; ${fmtRatio(HR_ROAS)}</span>` +
-      `<span class="bm-item"><strong>On Base:</strong> Spend &ge; ${fmt$(OB_SPEND)} &amp; ROAS &ge; ${fmtRatio(OB_ROAS)}</span>` +
-      `<span class="bm-item"><strong>Strike Out:</strong> Spend &ge; ${fmt$(SO_SPEND)} &amp; ROAS &lt; ${fmtRatio(SO_ROAS)}</span>`;
+    return `<span class="bm-item${cls}"><strong>${p}Home Run:</strong> Spend &ge; ${fmt$(th.HR_SPEND)} &amp; ROAS &ge; ${fmtRatio(th.HR_ROAS)}</span>` +
+      `<span class="bm-item${cls}"><strong>${p}On Base:</strong> Spend &ge; ${fmt$(th.OB_SPEND)} &amp; ROAS &ge; ${fmtRatio(th.OB_ROAS)}</span>` +
+      `<span class="bm-item${cls}"><strong>${p}Strike Out:</strong> Spend &ge; ${fmt$(th.SO_SPEND)} &amp; ROAS &lt; ${fmtRatio(th.SO_ROAS)}</span>`;
   }
-  return `<span class="bm-item"><strong>Home Run:</strong> Spend &ge; ${fmt$(HR_SPEND)} &amp; CPA &lt; ${fmt$(HR_CPA)}</span>` +
-    `<span class="bm-item"><strong>On Base:</strong> Spend &ge; ${fmt$(OB_SPEND)} &amp; CPA &lt; ${fmt$(OB_CPA)}</span>` +
-    `<span class="bm-item"><strong>Strike Out:</strong> Spend &ge; ${fmt$(SO_SPEND)} &amp; CPA &gt; ${fmt$(SO_CPA)}</span>` +
-    prodBenchmarkGroupHTML();
+  return `<span class="bm-item${cls}"><strong>${p}Home Run:</strong> Spend &ge; ${fmt$(th.HR_SPEND)} &amp; CPA &lt; ${fmt$(th.HR_CPA)}</span>` +
+    `<span class="bm-item${cls}"><strong>${p}On Base:</strong> Spend &ge; ${fmt$(th.OB_SPEND)} &amp; CPA &lt; ${fmt$(th.OB_CPA)}</span>` +
+    `<span class="bm-item${cls}"><strong>${p}Strike Out:</strong> Spend &ge; ${fmt$(th.SO_SPEND)} &amp; CPA &gt; ${fmt$(th.SO_CPA)}</span>`;
 }
 
-/* When per-group thresholds are configured, spell out each group's own bands so
- * the benchmark copy is honest about the two scales. The base copy above is the
- * fallback every unlisted group uses; these lines are the exceptions. Returns ''
- * when no per-group thresholds are set, so single-scale dashboards are
- * unchanged. */
-function prodBenchmarkGroupHTML(){
-  const g = (typeof thresholdGroups === 'function') ? thresholdGroups() : null;
-  if (!g) return '';
-  const roas = targetMetric() === 'roas';
-  const base = _baseThresholdObj();
-  return Object.entries(g.groups).map(([name, ov]) => {
-    const th = Object.assign({}, base, ov);
-    const band = roas
-      ? `ROAS &ge; ${fmtRatio(th.HR_ROAS)}`
-      : `CPA &lt; ${fmt$(th.HR_CPA)}`;
-    const bandOb = roas
-      ? `ROAS &ge; ${fmtRatio(th.OB_ROAS)}`
-      : `CPA &lt; ${fmt$(th.OB_CPA)}`;
-    return `<span class="bm-item bm-group"><strong>${name} Home Run:</strong> Spend &ge; ${fmt$(th.HR_SPEND)} &amp; ${band}</span>` +
-      `<span class="bm-item bm-group"><strong>${name} On Base:</strong> Spend &ge; ${fmt$(th.OB_SPEND)} &amp; ${bandOb}</span>`;
-  }).join('');
+/* Threshold copy for the Ad Production tab, filter-aware:
+ *   - Product on a configured group  -> that group's three tiers only.
+ *   - Product = All with per-group thresholds -> base three tiers, then every
+ *     group's full three tiers (all three, so nothing is half-shown).
+ *   - No per-group thresholds -> the base three tiers, exactly as before. */
+function prodBenchmarkHTML(){
+  const hasGroups = (typeof thresholdGroups === 'function') && thresholdGroups();
+  const active = hasGroups ? activeThresholdGroup() : null;
+  if (active) return _benchTiersHTML(getGroupThresholds(active), active);
+  const base = _benchTiersHTML(_baseThresholdObj(), '');
+  if (!hasGroups) return base;
+  const groups = Object.keys(hasGroups.groups)
+    .map((name) => _benchTiersHTML(getGroupThresholds(name), name)).join('');
+  return base + groups;
 }
 function prodThresholdLegendHTML(){
+  const th = getProductionThresholds();
   if (targetMetric() === 'roas'){
-    return `<span class="tl-item"><span class="tl-line dashed" style="color:#727272;"></span> ROAS Target (${fmtRatio(HR_ROAS)})</span><span class="tl-item"><span class="tl-line dashed" style="color:#4a90e2;"></span> Ad Hit (${fmt$(HR_SPEND)})</span>`;
+    return `<span class="tl-item"><span class="tl-line dashed" style="color:#727272;"></span> ROAS Target (${fmtRatio(th.HR_ROAS)})</span><span class="tl-item"><span class="tl-line dashed" style="color:#4a90e2;"></span> Ad Hit (${fmt$(th.HR_SPEND)})</span>`;
   }
-  return `<span class="tl-item"><span class="tl-line dashed" style="color:#727272;"></span> CPA Limit (${fmt$(HR_CPA)})</span><span class="tl-item"><span class="tl-line dashed" style="color:#4a90e2;"></span> Ad Hit (${fmt$(HR_SPEND)})</span>`;
+  return `<span class="tl-item"><span class="tl-line dashed" style="color:#727272;"></span> CPA Limit (${fmt$(th.HR_CPA)})</span><span class="tl-item"><span class="tl-line dashed" style="color:#4a90e2;"></span> Ad Hit (${fmt$(th.HR_SPEND)})</span>`;
 }
 /* Live threshold-tuning inputs for the Ad Production tab, metric-aware. The three
  * spend floors are shared across metrics; the efficiency band flips with the
@@ -90,7 +86,7 @@ function refreshProductionThresholdCopy(){
   const legend = document.getElementById('prod-threshold-legend');
   if (legend) legend.innerHTML = prodThresholdLegendHTML();
   const hit = document.getElementById('prod-hit-spend');
-  if (hit) hit.textContent = fmt$(HR_SPEND);
+  if (hit) hit.textContent = fmt$(getProductionThresholds().HR_SPEND);
 }
 
 /* Efficiency-metric <option> set, metric-aware and shared by the Meta and TikTok
