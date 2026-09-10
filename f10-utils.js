@@ -661,28 +661,109 @@ function classificationTiers(){
     : ['Home Run', 'On Base', 'Strike Out', 'Unclassified'];
 }
 
-function classificationCaseSQL(spendCol, metricCol){
+/* ── Per-product (per-group) thresholds ───────────────────────────────────
+ * A multi-product account can convert on different actions per product, so one
+ * cost scale cannot grade them all. Stake is the case in point: Trade converts
+ * on app installs (~$60 each) while SMSF converts on Calendly bookings (~$255
+ * each), roughly 8x apart. A single Home Run / On Base ceiling would strike out
+ * every SMSF ad for missing an install-priced target it was never running for.
+ *
+ * A dashboard opts in by defining, before the scripts load:
+ *
+ *   const THRESHOLDS_BY_GROUP = {
+ *     col: 'group_name',            // a real mart column to switch on
+ *     groups: {
+ *       SMSF: { HR_SPEND: 3000, HR_CPA: 300, OB_SPEND: 1000, OB_CPA: 1000, SO_SPEND: 1000 },
+ *     },
+ *   };
+ *
+ * A listed group grades on its own thresholds; a partial override inherits the
+ * rest from the base THRESHOLDS. Any unlisted group, and NULL, falls through to
+ * the base thresholds. With no config the behaviour and the emitted SQL are
+ * exactly what they were.
+ *
+ * This governs only the Ad Production tier grading (the Meta production tab).
+ * The weekly Movement states never used these thresholds, and the TikTok tab
+ * keeps its own single TT_TH scale. */
+function thresholdGroups(){
+  const cfg = (typeof THRESHOLDS_BY_GROUP !== 'undefined' && THRESHOLDS_BY_GROUP) ? THRESHOLDS_BY_GROUP : null;
+  if (!cfg || !cfg.col || !cfg.groups) return null;
+  /* col is interpolated straight into SQL, so it must be a plain identifier. A
+   * bad value disables per-group thresholds (falls back to base) rather than
+   * risking an injected or malformed query. */
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(cfg.col)){
+    console.warn('THRESHOLDS_BY_GROUP.col is not a plain column identifier; ignoring per-group thresholds:', cfg.col);
+    return null;
+  }
+  const groups = {};
+  for (const [k, v] of Object.entries(cfg.groups)){
+    if (v && typeof v === 'object') groups[k] = v;
+  }
+  if (!Object.keys(groups).length) return null;
+  return { col: cfg.col, groups };
+}
+function thresholdGroupCol(){ const g = thresholdGroups(); return g ? g.col : null; }
+
+/* SQL fragment that carries the threshold group column into a per-ad grouped
+ * CTE, so classificationCaseSQL can switch on it in the outer SELECT. The CTEs
+ * GROUP BY ad_id, and each ad belongs to one group, so ANY_VALUE is exact.
+ * Returns '' when no per-group thresholds are configured, so existing query
+ * shapes are untouched. */
+function thresholdGroupSelect(){
+  const g = thresholdGroups();
+  return g ? `, ANY_VALUE(${g.col}) AS ${g.col}` : '';
+}
+
+/* Single-quoted SQL string literal, doubling any embedded quote. */
+function _sqlStr(v){ return `'${String(v).replace(/'/g, "''")}'`; }
+
+/* The live base thresholds as a plain object (both metrics' bands). */
+function _baseThresholdObj(){
+  return { HR_SPEND, HR_CPA, OB_SPEND, OB_CPA, SO_SPEND, SO_CPA, HR_ROAS, OB_ROAS, SO_ROAS };
+}
+
+/* The tier CASE for ONE threshold set. Everything metric-aware and the
+ * full-coverage switch live here; classificationCaseSQL composes one or many of
+ * these. Byte-identical to the previous inline logic when passed the base
+ * thresholds. */
+function _tierCaseSQL(spendCol, metricCol, th){
   const roas = targetMetric() === 'roas';
   const hr = roas
-    ? `WHEN ${spendCol} >= ${HR_SPEND} AND ${metricCol} > ${HR_ROAS} THEN 'Home Run'`
-    : `WHEN ${spendCol} >= ${HR_SPEND} AND ${metricCol} > 0 AND ${metricCol} < ${HR_CPA} THEN 'Home Run'`;
+    ? `WHEN ${spendCol} >= ${th.HR_SPEND} AND ${metricCol} > ${th.HR_ROAS} THEN 'Home Run'`
+    : `WHEN ${spendCol} >= ${th.HR_SPEND} AND ${metricCol} > 0 AND ${metricCol} < ${th.HR_CPA} THEN 'Home Run'`;
   const ob = roas
-    ? `WHEN ${spendCol} >= ${OB_SPEND} AND ${metricCol} > ${OB_ROAS} THEN 'On Base'`
-    : `WHEN ${spendCol} >= ${OB_SPEND} AND ${metricCol} > 0 AND ${metricCol} < ${OB_CPA} THEN 'On Base'`;
+    ? `WHEN ${spendCol} >= ${th.OB_SPEND} AND ${metricCol} > ${th.OB_ROAS} THEN 'On Base'`
+    : `WHEN ${spendCol} >= ${th.OB_SPEND} AND ${metricCol} > 0 AND ${metricCol} < ${th.OB_CPA} THEN 'On Base'`;
   if (fullCoverageTiers()){
     /* Strike Out has no metric test here on purpose: anything that cleared the
      * spend gate and did not qualify above is a strike out, INCLUDING the
      * zero-conversion ads whose metric is NULL. That is what makes the five
      * tiers a partition. */
     return `CASE ${hr} ${ob}`
-         + ` WHEN ${spendCol} >= ${SO_SPEND} THEN 'Strike Out'`
+         + ` WHEN ${spendCol} >= ${th.SO_SPEND} THEN 'Strike Out'`
          + ` WHEN ${spendCol} > 0 THEN 'Testing'`
          + ` ELSE 'Zero Spend' END`;
   }
   const so = roas
-    ? `WHEN ${spendCol} >= ${SO_SPEND} AND ${metricCol} < ${SO_ROAS} THEN 'Strike Out'`
-    : `WHEN ${spendCol} >= ${SO_SPEND} AND ${metricCol} > ${SO_CPA} THEN 'Strike Out'`;
+    ? `WHEN ${spendCol} >= ${th.SO_SPEND} AND ${metricCol} < ${th.SO_ROAS} THEN 'Strike Out'`
+    : `WHEN ${spendCol} >= ${th.SO_SPEND} AND ${metricCol} > ${th.SO_CPA} THEN 'Strike Out'`;
   return `CASE ${hr} ${ob} ${so} ELSE 'Unclassified' END`;
+}
+
+function classificationCaseSQL(spendCol, metricCol){
+  const base = _baseThresholdObj();
+  const grp = thresholdGroups();
+  if (!grp) return _tierCaseSQL(spendCol, metricCol, base);
+  /* Per-group: an outer CASE on the group column dispatches each listed group to
+   * a tier CASE built with that group's thresholds (its overrides merged over
+   * the base, so a partial override inherits the rest). Every unlisted group,
+   * and NULL, lands in the ELSE on the base thresholds. This grades correctly
+   * even with the Product filter on "All", because the dispatch is per row. */
+  const branches = Object.entries(grp.groups).map(([name, ov]) => {
+    const th = Object.assign({}, base, ov);
+    return `WHEN ${grp.col} = ${_sqlStr(name)} THEN (${_tierCaseSQL(spendCol, metricCol, th)})`;
+  });
+  return `CASE ${branches.join(' ')} ELSE (${_tierCaseSQL(spendCol, metricCol, base)}) END`;
 }
 
 /* Column alias the classifier's metric column carries in the active mode. CPA
