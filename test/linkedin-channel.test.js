@@ -8,6 +8,10 @@
  *   2. TWO SOURCE MODES — the SQL builder reads a per-client mart by default, and
  *      switches to the shared all_clients_linkedin_ads dataset when ACCOUNT_URN is
  *      set. ACCOUNT_URN WINS: DATASET/TABLE are ignored in shared-account mode.
+ *   2b. PER-COLUMN OVERRIDES — a per-client mart that does not publish the contract
+ *      verbatim can map or blank the soft columns with *_EXPR keys. No override must
+ *      change nothing; an override must actually reach the generated SQL; and a NULL
+ *      literal must not break the query shape.
  *   3. SHARED-ACCOUNT SQL SHAPE — the joins, the account scope, costInLocalCurrency
  *      as spend, and the feed permalink are the verified-against-live-data forms.
  *   4. LinkedIn-specific metric mapping and thresholds do not leak into, or inherit
@@ -134,6 +138,149 @@ check('mode 2 WINS: DATASET / TABLE are ignored when ACCOUNT_URN is set', () => 
 check('mode 2: SHARED_DATASET / PROJECT overrides are honoured', () => {
   const ctx = makeCtx({ linkedin: { ACCOUNT_URN: 'urn:li:sponsoredAccount:1', PROJECT: 'p2', SHARED_DATASET: 'li_raw' } });
   assert.ok(internals(ctx).source().includes('`p2.li_raw.ad_creative_analytics`'));
+});
+
+// ── 2b. Mode 1 per-column overrides ────────────────────────────────────────
+/* Skip's real mart (mcc-poc-477801.skip_marts.linkedin_creative_reporting): keyed on
+ * creative_id with no ad_id, an always-empty creative_name, a campaign_id with no
+ * campaign_name, and no ad-group / outbound-click / lead / revenue / video-quartile
+ * columns at all. Every generated query below was dry-run AND executed against it. */
+const SKIP_OVERRIDES = {
+  DATASET: 'skip_marts',
+  TABLE:   'linkedin_creative_reporting',
+  AD_ID_EXPR:               'creative_id',
+  AD_NAME_EXPR:             'creative_id',
+  CAMPAIGN_NAME_EXPR:       'campaign_id',
+  ADGROUP_NAME_EXPR:        "'(no ad group)'",
+  LANDING_PAGE_CLICKS_EXPR: 'clicks',
+  ONE_CLICK_LEADS_EXPR:     'NULL',
+  VIDEO_STARTS_EXPR:        'NULL',
+  VIDEO_P25_EXPR: 'NULL', VIDEO_P50_EXPR: 'NULL', VIDEO_P75_EXPR: 'NULL', VIDEO_P100_EXPR: 'NULL',
+  CONV_EXPR: 'clicks',
+};
+
+check('no overrides: the source stays the bare table reference (default unchanged)', () => {
+  const I = internals(makeCtx({ linkedin: { DATASET: 'acme_marts', TABLE: 'li_custom', CONV_EXPR: 'conversions' } }));
+  assert.strictEqual(I.martNormalised(), false, 'no wrapper without an override');
+  assert.deepStrictEqual(Object.keys(I.martOverrides()), [], 'no overrides collected');
+  assert.strictEqual(I.source(), '`mcc-poc-477801.acme_marts.li_custom`', 'bare table reference');
+  assert.ok(!/\bSELECT\b/.test(I.source()), 'no normalising subquery is introduced');
+});
+
+check('no overrides: every tab query is byte-identical to the pre-override builder', () => {
+  /* The guarantee that matters to existing clients: a mart built to the contract keeps
+   * generating exactly the SQL it generated before *_EXPR existed. Asserted by shape —
+   * each query reads `FROM `proj.ds.table`` directly with no wrapper. */
+  const I = internals(makeCtx({ linkedin: {} }));
+  const p = I.productionSQL();
+  const ref = '`mcc-poc-477801.acme_marts.linkedin_creative_reporting`';
+  [I.maxDateSQL(), I.windowsSQL('2026-09-08', '2026-09-14', '2026-09-01', '2026-09-07'), p.scatterSQL, p.monthlySQL, I.creativeSQL()]
+    .forEach((sql, i) => {
+      assert.ok(sql.includes('FROM ' + ref), 'query ' + i + ' reads the table directly');
+      assert.ok(!sql.includes('AS ad_id'), 'query ' + i + ' has no normalising alias');
+    });
+});
+
+check('an override switches the source to a normalising subquery over the same table', () => {
+  const I = internals(makeCtx({ linkedin: SKIP_OVERRIDES }));
+  assert.strictEqual(I.martNormalised(), true);
+  assert.strictEqual(I.martRef(), '`mcc-poc-477801.skip_marts.linkedin_creative_reporting`', 'still the same physical table');
+  const sql = I.source();
+  assert.ok(sql.trim().startsWith('('), 'the source is now a subquery');
+  assert.ok(sql.includes('FROM `mcc-poc-477801.skip_marts.linkedin_creative_reporting`'), 'reads the client mart');
+});
+
+check('each override is substituted verbatim and aliased to its contract name', () => {
+  const sql = internals(makeCtx({ linkedin: SKIP_OVERRIDES })).source();
+  [['creative_id AS ad_id', 'AD_ID_EXPR'],
+   ['creative_id AS ad_name', 'AD_NAME_EXPR'],
+   ['campaign_id AS campaign_name', 'CAMPAIGN_NAME_EXPR'],
+   ["'(no ad group)' AS adgroup_name", 'ADGROUP_NAME_EXPR'],
+   ['clicks AS landing_page_clicks', 'LANDING_PAGE_CLICKS_EXPR'],
+   ['NULL AS one_click_leads', 'ONE_CLICK_LEADS_EXPR'],
+   ['NULL AS video_starts', 'VIDEO_STARTS_EXPR'],
+   ['NULL AS video_p25', 'VIDEO_P25_EXPR'],
+   ['NULL AS video_p50', 'VIDEO_P50_EXPR'],
+   ['NULL AS video_p75', 'VIDEO_P75_EXPR'],
+   ['NULL AS video_p100', 'VIDEO_P100_EXPR']].forEach(([frag, key]) => {
+    assert.ok(sql.includes(frag), key + ' substituted: expected "' + frag + '"');
+  });
+});
+
+check('an arbitrary SQL expression (not just a column name) survives verbatim', () => {
+  const expr = "COALESCE(NULLIF(creative_name, ''), CONCAT('Creative ', creative_id))";
+  const sql = internals(makeCtx({ linkedin: { AD_NAME_EXPR: expr } })).source();
+  assert.ok(sql.includes(expr + ' AS ad_name'), 'the whole expression is pasted, not parsed');
+});
+
+check('un-overridden contract columns keep their own name inside the wrapper', () => {
+  /* Only AD_ID_EXPR is set, so everything else must pass through unmapped. */
+  const sql = internals(makeCtx({ linkedin: { AD_ID_EXPR: 'creative_id' } })).source();
+  assert.ok(sql.includes('creative_id AS ad_id'), 'the one override applies');
+  ['ad_name', 'campaign_name', 'adgroup_name', 'landing_page_clicks', 'one_click_leads',
+   'video_starts', 'video_p25', 'video_p50', 'video_p75', 'video_p100'].forEach((col) => {
+    assert.ok(!sql.includes('AS ' + col), col + ' must not be aliased when not overridden');
+    assert.ok(new RegExp('^\\s+' + col + ',?$', 'm').test(sql), col + ' passes through by name');
+  });
+  /* The hard-required columns are never aliased either. */
+  ['creative_link', 'date_start', 'min_date', 'lifetime_spend', 'spend', 'impressions',
+   'clicks', 'conversions', 'video_views'].forEach((col) => {
+    assert.ok(new RegExp('^\\s+' + col + ',?$', 'm').test(sql), 'mandatory column present: ' + col);
+  });
+});
+
+check('blank / non-string override values are ignored, never emitted as a bare alias', () => {
+  const I = internals(makeCtx({ linkedin: { AD_ID_EXPR: '   ', AD_NAME_EXPR: '', ADGROUP_NAME_EXPR: null, VIDEO_P25_EXPR: 0 } }));
+  assert.deepStrictEqual(Object.keys(I.martOverrides()), [], 'nothing collected from empty values');
+  assert.strictEqual(I.martNormalised(), false, 'and therefore no wrapper');
+  assert.ok(!/AS ad_id/.test(I.source()), 'no dangling "  AS ad_id"');
+});
+
+check('a NULL literal override does not break the query shape of any tab', () => {
+  const I = internals(makeCtx({ linkedin: SKIP_OVERRIDES }));
+  const p = I.productionSQL();
+  const queries = { maxDate: I.maxDateSQL(), windows: I.windowsSQL('2026-09-07', '2026-09-13', '2026-08-31', '2026-09-06'), scatter: p.scatterSQL, monthly: p.monthlySQL, creative: I.creativeSQL() };
+  Object.entries(queries).forEach(([name, sql]) => {
+    assert.ok(sql.includes('skip_marts.linkedin_creative_reporting'), name + ' reads the mart');
+    assert.ok(sql.includes('NULL AS video_p50'), name + ' carries the blanked metric');
+    /* Balanced parens is the cheap proof the wrapper is closed properly — an unclosed
+     * subquery is exactly how a naive string-splice breaks. */
+    const open = (sql.match(/\(/g) || []).length, close = (sql.match(/\)/g) || []).length;
+    assert.strictEqual(open, close, name + ': parens balance (' + open + ' vs ' + close + ')');
+  });
+  /* The blanked columns are still aggregated by name, so nothing downstream had to
+   * learn about the override. */
+  assert.ok(p.scatterSQL.includes('SUM(video_p50) AS video_p50'), 'scatter still sums the contract name');
+});
+
+check('CONV_EXPR is read AFTER normalising, so it names a contract column', () => {
+  const I = internals(makeCtx({ linkedin: SKIP_OVERRIDES }));
+  const p = I.productionSQL();
+  assert.ok(p.scatterSQL.includes('SUM(clicks), 0) AS total_conversions'), 'cost per raw click is the Skip metric');
+  assert.ok(/lifetime_cpa/.test(p.scatterSQL), 'still the CPA-shaped lifetime metric column');
+});
+
+check('overrides do not leak into shared-account mode', () => {
+  const I = internals(makeCtx({ linkedin: Object.assign({ ACCOUNT_URN: 'urn:li:sponsoredAccount:1' }, SKIP_OVERRIDES) }));
+  assert.strictEqual(I.martNormalised(), false, 'shared-account mode has its own normaliser');
+  const sql = I.source();
+  assert.ok(sql.includes('all_clients_linkedin_ads'), 'shared-account mode still wins');
+  assert.ok(!sql.includes('skip_marts'), 'the per-client mart must not appear');
+  assert.ok(!sql.includes('creative_id AS ad_id'), 'Mode 1 overrides are not applied to Mode 2 SQL');
+});
+
+check('ROAS mode: REVENUE_EXPR is applied ONCE, inside the wrapper', () => {
+  const I = internals(makeCtx({ targetMetric: 'roas', linkedin: Object.assign({}, SKIP_OVERRIDES, { REVENUE_EXPR: 'conversion_value' }) }));
+  const src = I.source();
+  assert.ok(src.includes('conversion_value AS revenue'), 'the wrapper aliases the gated column to the contract name');
+  const p = I.productionSQL();
+  assert.ok(p.monthlySQL.includes('SUM(revenue)'), 'the tab reads the normalised name');
+  assert.ok(!/SUM\(conversion_value\)/.test(p.monthlySQL), 'the gated expression is not applied a second time');
+});
+
+check('CPA mode: the wrapper emits no revenue column (a lean mart has none)', () => {
+  const src = internals(makeCtx({ linkedin: SKIP_OVERRIDES })).source();
+  assert.ok(!/AS revenue/.test(src), 'no revenue selected in CPA mode');
 });
 
 // ── 3. Shared-account SQL shape (verified against the live Sucasa account) ──

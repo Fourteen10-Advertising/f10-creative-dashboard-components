@@ -14,7 +14,7 @@ A dashboard is now just a config block plus script tags: the markup, styling, an
 | `f10-monthly.js` | Monthly engine: loadPowerLaw/Production/Decay/Age/CreativeEffectiveness (video-only: static images excluded) + the `loadMonthlyTab()` dispatcher. All SQL is shared and config-driven |
 | `f10-layout.js` | `renderLayout()` — builds the sidebar, controls bar, and all seven tab panels into `<div id="app"></div>`. Production benchmark copy is derived from the threshold constants |
 | `f10-preview.js` | Inline creative hover previews for `.preview-link` targets; renders a swipeable carousel when an ad has multiple cards. Exposes `f10MediaMarkup({type,url}, opts)` — the shared `<img>`/`<video>` builder reused by the competitor tab — plus `f10PreviewCards(media)` and `f10CarouselHtml(cards, idx)` |
-| `f10-linkedin.js` | LinkedIn channel section (config-gated: a no-op unless the dashboard defines a `LINKEDIN` object). Adds a **LinkedIn** nav group with its own Weekly Summary / Movement Board / Ad Production / Creative Effectiveness tabs, driven by the same shared query and render engines as TikTok with `li-` ids and state. Two source modes: a **per-client LinkedIn mart**, or the **shared `all_clients_linkedin_ads` dataset scoped by ad-account URN** for a client who has no mart of their own (see [LinkedIn channel](#linkedin-channel)) |
+| `f10-linkedin.js` | LinkedIn channel section (config-gated: a no-op unless the dashboard defines a `LINKEDIN` object). Adds a **LinkedIn** nav group with its own Weekly Summary / Movement Board / Ad Production / Creative Effectiveness tabs, driven by the same shared query and render engines as TikTok with `li-` ids and state. Two source modes: a **per-client LinkedIn mart** (with optional per-column `*_EXPR` overrides when the mart does not publish the contract verbatim), or the **shared `all_clients_linkedin_ads` dataset scoped by ad-account URN** for a client who has no mart of their own (see [LinkedIn channel](#linkedin-channel)) |
 | `f10-competitors.js` | Competitor Ad Library tab (probe-driven: appears automatically when the client has competitor rows in `all_clients_adlib`): groups a client's tracked competitor Meta ads by competitor in the F10 card layout, with Status / Timeframe / Competitor filters, per-competitor pagination (20/page), and a metadata + on-demand creatives split that fetches only the visible page's signed media. Reuses `f10MediaMarkup` from `f10-preview.js` |
 | `f10-components.js` | Component Scale tab (probe-driven: appears automatically when the client has a `{client}_marts.component_performance` mart): grades the five creative components (hook, format, CTA, message angle, visual style) against the client's own baseline, with lift, evidence count, confidence tier, the verbatim descriptive caveat, and a co-occurrence mark; plus the cross-client whitespace lane as a separate, clearly-labelled hypotheses section. Adds `f10ActivateTab()` (in `f10-layout.js`) as the single generic tab dispatcher (see [Component Scale](#component-scale)) |
 | `f10-brief-editor.js` | Brief Editor tab (probe-driven: appears only when the client has a saved brief revision to edit): a canonical-constrained editor for the F10 internal review app. Loads a brief revision and saves a NEW one via the US-003 persistence contract (GCS `brief-revisions/{client}/{id}.json` + a `brief_revisions` BigQuery row). The four creative axes (visual style, hook, message angle, CTA) are dropdowns locked to the canonical vocabularies, so a non-canonical value can never be saved; copy is free text. (US-004 retired the dead Format axis: photo versus illustration is a visual_style concept and every ad is static for now; the `brief_revisions.format` column is kept for backward compatibility but is no longer edited or driven.) Dual-mode: the same file exports the persistence core behind an injectable writer seam for the brief backend (see [Brief editor](#brief-editor)) |
@@ -189,7 +189,7 @@ lives in `test/review-list-bundles.test.js`.
 | `GROUP_FILTERS` | no | Array of `{ col, label }` segment dropdowns (default none) |
 | `THRESHOLDS` | no | Ad Production threshold overrides (see below) |
 | `TIKTOK` | no | Optional TikTok channel section: `{ DATASET?, TABLE, CONV_EXPR?, REVENUE_EXPR?, THRESHOLDS? }`. `TABLE` is required — no `TABLE`, no TikTok nav group. `DATASET` defaults to the dashboard's `DATASET`, `CONV_EXPR` to `'conversions'`, thresholds to `HR 5000/$70 · OB 1000/$100 · SO 500/$140` (ROAS bands `4`/`2`/`1`) |
-| `LINKEDIN` | no | Optional LinkedIn channel section. Two mutually exclusive modes — a per-client mart, or the shared `all_clients_linkedin_ads` dataset scoped by `ACCOUNT_URN`. Defining the object at all is the gate (no `TABLE` required). See [LinkedIn channel](#linkedin-channel) |
+| `LINKEDIN` | no | Optional LinkedIn channel section. Two mutually exclusive modes — a per-client mart (optionally with per-column `*_EXPR` overrides for a mart that does not publish the contract verbatim), or the shared `all_clients_linkedin_ads` dataset scoped by `ACCOUNT_URN`. Defining the object at all is the gate (no `TABLE` required). See [LinkedIn channel](#linkedin-channel) |
 | `CREATIVE_SCORE_CONFIG` | no | Creative Score weights, maturity target, per-rate quality ceilings and band cutoffs (see [Creative Score column](#creative-score-column)) |
 | `COMPETITORS` | no | Optional Competitor Ad Library overrides — the tab itself is automatic (see below) |
 | `COMPONENTS` | no | Optional Component Scale overrides; the tab itself is automatic (see [Component Scale](#component-scale)) |
@@ -232,7 +232,118 @@ const LINKEDIN = {
 };
 ```
 
-The mart must publish the normalised LinkedIn column contract below.
+When the mart publishes the [normalised LinkedIn column contract](#normalised-linkedin-column-contract)
+verbatim, that is the whole config: the builder reads the table directly and nothing in
+Mode 1b applies.
+
+#### Mode 1b — per-client mart with column overrides (`*_EXPR`)
+
+Real marts are rarely built to somebody else's contract. Rather than force every client's
+warehouse into one rigid shape (or make them fabricate columns they have no data for),
+the contract columns a lean mart most often lacks each accept an optional **raw SQL
+expression** override on `LINKEDIN`:
+
+| Override key | Contract column it supplies |
+|---|---|
+| `AD_ID_EXPR` | `ad_id` |
+| `AD_NAME_EXPR` | `ad_name` |
+| `CAMPAIGN_NAME_EXPR` | `campaign_name` |
+| `ADGROUP_NAME_EXPR` | `adgroup_name` |
+| `LANDING_PAGE_CLICKS_EXPR` | `landing_page_clicks` |
+| `ONE_CLICK_LEADS_EXPR` | `one_click_leads` |
+| `REVENUE_EXPR` | `revenue` (ROAS mode only — the same key the engine already used) |
+| `VIDEO_STARTS_EXPR` | `video_starts` |
+| `VIDEO_P25_EXPR` / `VIDEO_P50_EXPR` / `VIDEO_P75_EXPR` / `VIDEO_P100_EXPR` | the video quartiles |
+
+Set **any** of them and the builder stops reading the table bare and wraps it in a
+normalising subquery — exactly what shared-account mode already does — aliasing each
+expression to its contract name, so every tab below stays mode-agnostic. Each value is
+pasted **verbatim** into the SELECT list (the same escape hatch as Mode 2's
+`CREATIVE_REF_EXPR`), so it can be:
+
+- a differently-named column — `AD_ID_EXPR: 'creative_id'`;
+- a real expression — `AD_NAME_EXPR: "COALESCE(NULLIF(creative_name, ''), creative_id)"`;
+- a literal for a metric the mart genuinely does not carry — `VIDEO_P25_EXPR: 'NULL'`,
+  `ONE_CLICK_LEADS_EXPR: '0'` — so the tab renders an honest blank instead of the query
+  erroring on a missing column.
+
+These values come from the dashboard's own trusted config code, never from user input,
+and are **not** escaped or validated — treat them like any other line of the dashboard's
+source. (`ACCOUNT_URN` is the one value that *is* sanitised, because it is a bare
+identifier with a known alphabet.)
+
+**Omit an override and the column keeps its contract name**, so a client whose mart does
+publish the contract needs no config change and generates the same SQL as before.
+
+The columns with **no** override are the ones no LinkedIn mart is useful without, and
+stay mandatory: `date_start`, `min_date`, `lifetime_spend`, `spend`, `impressions`,
+`clicks`, `conversions`, `video_views`, `creative_link`. `CONV_EXPR` and `REVENUE_EXPR`
+are read **after** normalising, so when overrides are active they must name a *contract*
+column (e.g. `CONV_EXPR: 'clicks'`), not a raw mart column the wrapper does not emit.
+
+##### Worked example — Skip's real mart, and why this mode exists
+
+`mcc-poc-477801.skip_marts.linkedin_creative_reporting` is Skip's own creative-level
+LinkedIn mart, built for Skip's Growth dashboard. It parallels Skip's Meta mart in spirit
+(same precomputed `lifetime_spend` / `lifetime_cpa` / `creative_age` pattern) but is
+leaner, and it is **not** the contract: it keys on `creative_id` with no `ad_id`, carries
+an always-empty `creative_name` and a `campaign_id` with no `campaign_name`, and has no
+ad-group, outbound-click, lead, revenue or video-quartile columns at all.
+
+```js
+const LINKEDIN = {
+  DATASET: 'skip_marts',
+  TABLE:   'linkedin_creative_reporting',
+  AD_ID_EXPR:               'creative_id',      // no ad_id; creative_id is the key
+  AD_NAME_EXPR:             'creative_id',      // creative_name is '' on every row
+  CAMPAIGN_NAME_EXPR:       'campaign_id',      // no campaign_name column
+  ADGROUP_NAME_EXPR:        "'(no ad group)'",  // no ad-group level at all
+  LANDING_PAGE_CLICKS_EXPR: 'clicks',           // no outbound-only click column
+  ONE_CLICK_LEADS_EXPR:     'NULL',
+  VIDEO_STARTS_EXPR:        'NULL',
+  VIDEO_P25_EXPR: 'NULL', VIDEO_P50_EXPR: 'NULL',
+  VIDEO_P75_EXPR: 'NULL', VIDEO_P100_EXPR: 'NULL',
+  CONV_EXPR: 'clicks',                          // `conversions` is 0.0 on every row
+  THRESHOLDS: { HR_SPEND: 2000, HR_CPA: 1, OB_SPEND: 750, OB_CPA: 2, SO_SPEND: 300, SO_CPA: 5 },
+};
+```
+
+which generates, as the source every tab then reads:
+
+```sql
+(
+      SELECT
+        creative_id AS ad_id,
+        creative_id AS ad_name,
+        campaign_id AS campaign_name,
+        '(no ad group)' AS adgroup_name,
+        creative_link, date_start, min_date, lifetime_spend,
+        spend, impressions, clicks,
+        clicks AS landing_page_clicks,
+        conversions,
+        NULL AS one_click_leads,
+        NULL AS video_starts,
+        video_views,
+        NULL AS video_p25, NULL AS video_p50, NULL AS video_p75, NULL AS video_p100
+      FROM `mcc-poc-477801.skip_marts.linkedin_creative_reporting`
+    )
+```
+
+Two consequences worth reading before copying any of it:
+
+- **A blanked video quartile makes the whole creative read as a static.** Skip has real
+  `video_views` but no quartiles, so Hold % and Completion % render `–` and the Creative
+  Score's `hasVideo` gate is false. That is the honest read — without quartiles there is
+  no video-quality signal to score — but it means video creatives are scored on the
+  static baseline, not flattered by a partial one.
+- **`THRESHOLDS` are not inheritable across override sets.** The moment `CONV_EXPR`
+  points at a different metric, the `*_CPA` bands mean a different thing: Skip's Ad
+  Production tab reads as **cost per raw click**, not cost per conversion. The LinkedIn
+  defaults (150 / 250 / 400, set for a conversion) would classify Skip's entire account
+  Home Run — its real per-creative cost per click runs **$0.10–$48.67**, median ≈ $3.75.
+  Always pull the real per-creative distribution of the metric you actually chose and set
+  the bands off that. The numbers above are Skip's, from Skip's data, and are not a
+  template.
 
 #### Mode 2 — shared account (`ACCOUNT_URN`)
 
@@ -279,8 +390,10 @@ The shared-account query, verified against that live account:
 
 ### Normalised LinkedIn column contract
 
-Both modes present these columns, one row per creative per day. Build a per-client mart
-to this contract and Mode 1 works with no further config.
+Every mode presents these columns, one row per creative per day. Build a per-client mart
+to this contract and Mode 1 works with no further config; a mart that cannot publish one
+of them verbatim maps or blanks it with the [Mode 1b `*_EXPR` overrides](#mode-1b--per-client-mart-with-column-overrides-_expr)
+rather than fabricating the column.
 
 ```
 ad_id, ad_name, campaign_name, adgroup_name, creative_link,

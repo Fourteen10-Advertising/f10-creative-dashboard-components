@@ -26,7 +26,69 @@
  *        THRESHOLDS:{ HR_SPEND: 2000, HR_CPA: 150, ... },  // optional
  *      };
  *
- *    The mart must publish the NORMALISED LinkedIn column contract (below).
+ *    The mart should publish the NORMALISED LinkedIn column contract (below). When it
+ *    publishes the contract verbatim, that is the whole config — the builder reads the
+ *    table directly and nothing below applies.
+ *
+ * 1b. PER-CLIENT MART WITH COLUMN OVERRIDES. Real marts are rarely built to somebody
+ *    else's contract. Rather than force every client's warehouse into one rigid shape,
+ *    the columns a lean mart most often lacks accept an optional per-column SQL
+ *    EXPRESSION override on LINKEDIN:
+ *
+ *      AD_ID_EXPR  AD_NAME_EXPR  CAMPAIGN_NAME_EXPR  ADGROUP_NAME_EXPR
+ *      LANDING_PAGE_CLICKS_EXPR  ONE_CLICK_LEADS_EXPR  REVENUE_EXPR
+ *      VIDEO_STARTS_EXPR  VIDEO_P25_EXPR  VIDEO_P50_EXPR  VIDEO_P75_EXPR  VIDEO_P100_EXPR
+ *
+ *    Set ANY of them and the builder stops reading the table bare and wraps it in a
+ *    normalising subquery — exactly what shared-account mode already does — aliasing
+ *    each expression to its contract name so every tab below stays mode-agnostic. Each
+ *    value is a RAW SQL expression pasted verbatim into the SELECT list (the same
+ *    escape hatch as Mode 2's CREATIVE_REF_EXPR): it can be a differently-named column
+ *    (`creative_id`), a real expression (`COALESCE(NULLIF(name,''), id)`), or a literal
+ *    (`NULL`, `0`) for a metric the mart genuinely does not carry, so a tab renders an
+ *    honest blank instead of erroring on a missing column. These values come from the
+ *    dashboard's own trusted config code, never from user input, and are NOT escaped —
+ *    treat them like any other line of the dashboard's source.
+ *
+ *    Omit an override and that column keeps its contract name verbatim, so an existing
+ *    or future client whose mart DOES publish the contract needs no config change at
+ *    all and generates byte-identical SQL to before.
+ *
+ *    The columns NOT overridable are the ones no LinkedIn mart can be useful without:
+ *    date_start, min_date, lifetime_spend, spend, impressions, clicks, conversions,
+ *    video_views, creative_link. CONV_EXPR and (in ROAS mode) REVENUE_EXPR are read
+ *    AFTER normalising, so when overrides are active they must name a CONTRACT column
+ *    (e.g. CONV_EXPR: 'clicks'), not a raw mart column the wrapper does not emit.
+ *
+ *    WORKED EXAMPLE — Skip's real mart, `mcc-poc-477801.skip_marts.linkedin_creative_reporting`.
+ *    It parallels Skip's Meta mart (same precomputed lifetime_spend / lifetime_cpa /
+ *    creative_age pattern) but is leaner: it keys on creative_id with no ad_id, carries
+ *    an always-empty creative_name and a campaign_id with no campaign_name, and has no
+ *    ad-group, outbound-click, lead, revenue or video-quartile columns at all:
+ *
+ *      const LINKEDIN = {
+ *        DATASET: 'skip_marts',
+ *        TABLE:   'linkedin_creative_reporting',
+ *        AD_ID_EXPR:               'creative_id',
+ *        AD_NAME_EXPR:             'creative_id',  // creative_name is '' on every row
+ *        CAMPAIGN_NAME_EXPR:       'campaign_id',  // no campaign_name column
+ *        ADGROUP_NAME_EXPR:        'NULL',
+ *        LANDING_PAGE_CLICKS_EXPR: 'clicks',       // no outbound-only click column
+ *        ONE_CLICK_LEADS_EXPR:     'NULL',
+ *        VIDEO_STARTS_EXPR:        'NULL',
+ *        VIDEO_P25_EXPR: 'NULL', VIDEO_P50_EXPR: 'NULL',
+ *        VIDEO_P75_EXPR: 'NULL', VIDEO_P100_EXPR: 'NULL',
+ *        CONV_EXPR: 'clicks',                      // `conversions` is 0.0 on every row
+ *        THRESHOLDS: { HR_SPEND: 2000, HR_CPA: 1, OB_SPEND: 750, OB_CPA: 2, SO_SPEND: 300, SO_CPA: 5 },
+ *      };
+ *
+ *    THRESHOLDS ARE NOT INHERITABLE ACROSS OVERRIDE SETS. The moment CONV_EXPR points
+ *    at a different metric, the HR/OB/SO *_CPA bands mean a different thing — the Ad
+ *    Production tab there reads as cost-per-CLICK, not cost-per-conversion, and the
+ *    LinkedIn defaults (150/250/400, set for a conversion) would classify the whole
+ *    account Home Run. Always pull the real per-creative distribution of the metric you
+ *    actually chose and set the bands off that; the numbers above are Skip's, from
+ *    Skip's data, and are not a template.
  *
  * 2. SHARED ACCOUNT (set ACCOUNT_URN). The client has NO LinkedIn mart: their spend
  *    lives in the shared, multi-client `all_clients_linkedin_ads` dataset and is
@@ -65,6 +127,8 @@
  *     impressions on live data, so outbound CTR is the honest intent read.
  *   • `creative_link` is the post permalink, rebuilt from the creative's share /
  *     ugcPost URN: CONCAT('https://www.linkedin.com/feed/update/', reference).
+ *   • a mart that cannot publish one of these verbatim does not have to fabricate it —
+ *     map or blank it with the Mode 1b *_EXPR overrides above.
  *
  * Metric-aware like the Meta and TikTok engines: with TARGET_METRIC='roas' the
  * dropdown, Ad Production classification, scatter, tables and copy switch to ROAS,
@@ -88,14 +152,97 @@
    * the normalised `revenue` column is conversionValueInLocalCurrency, which is
    * LinkedIn's own reported conversion value, so treat ROAS here as provisional
    * unless the client's conversion values are known to be trustworthy. */
-  const liRevExpr = () => (liCfg().REVENUE_EXPR || (typeof revenueExpr === 'function' ? revenueExpr() : 'revenue'));
+  const liRawRevExpr = () => (liCfg().REVENUE_EXPR || (typeof revenueExpr === 'function' ? revenueExpr() : 'revenue'));
+  /* What the TABS read. REVENUE_EXPR is applied ONCE: when a normalising wrapper is in
+   * play (Mode 1b) the wrapper has already aliased it to `revenue`, so applying it
+   * again downstream would look for a column the wrapper never emitted. */
+  const liRevExpr = () => (liMartNormalised() ? 'revenue' : liRawRevExpr());
   const liIsRoas  = () => (typeof targetMetric === 'function') && targetMetric() === 'roas';
   const LI_TH     = linkedinThresholds();
 
   /* ── Source resolution: the one place the two modes diverge ── */
 
-  /* Mode 1: the client's own LinkedIn creative mart, already in the contract shape. */
-  const liMartTable = () => `\`${liProject()}.${liDataset()}.${liCfg().TABLE || 'linkedin_creative_reporting'}\``;
+  /* Mode 1: the client's own LinkedIn creative mart.
+   *
+   * The contract columns a lean real-world mart most often cannot publish verbatim,
+   * paired with the LINKEDIN key that supplies a replacement SQL expression for each.
+   * Order is the SELECT-list order of the normalising wrapper. The columns deliberately
+   * absent from this list (date_start, min_date, lifetime_spend, spend, impressions,
+   * clicks, conversions, video_views, creative_link) are the ones no LinkedIn mart is
+   * useful without, so they stay mandatory and unmapped. */
+  const LI_MART_OVERRIDES = [
+    ['ad_id',               'AD_ID_EXPR'],
+    ['ad_name',             'AD_NAME_EXPR'],
+    ['campaign_name',       'CAMPAIGN_NAME_EXPR'],
+    ['adgroup_name',        'ADGROUP_NAME_EXPR'],
+    ['landing_page_clicks', 'LANDING_PAGE_CLICKS_EXPR'],
+    ['one_click_leads',     'ONE_CLICK_LEADS_EXPR'],
+    ['video_starts',        'VIDEO_STARTS_EXPR'],
+    ['video_p25',           'VIDEO_P25_EXPR'],
+    ['video_p50',           'VIDEO_P50_EXPR'],
+    ['video_p75',           'VIDEO_P75_EXPR'],
+    ['video_p100',          'VIDEO_P100_EXPR'],
+  ];
+
+  /* The overrides this dashboard actually set, as { contract_column: sql_expression }.
+   * Blank / non-string values are ignored so an empty key can never emit `AS ad_id`
+   * with nothing in front of it. */
+  function liMartOverrides(){
+    const cfg = liCfg(), out = {};
+    LI_MART_OVERRIDES.forEach(([col, key]) => {
+      const v = cfg[key];
+      if (typeof v === 'string' && v.trim()) out[col] = v.trim();
+    });
+    return out;
+  }
+
+  /* True only when a per-client mart is being read THROUGH the normalising wrapper.
+   * Shared-account mode has its own normaliser and never uses this one. */
+  const liMartNormalised = () => !linkedinSharedAccount() && Object.keys(liMartOverrides()).length > 0;
+
+  /* The bare table reference. Kept separate from liMartTable so the doc/test seam can
+   * still see which physical table a normalised source is reading. */
+  const liMartRef = () => `\`${liProject()}.${liDataset()}.${liCfg().TABLE || 'linkedin_creative_reporting'}\``;
+
+  /* With no overrides this returns the bare table reference — byte-identical to the
+   * original Mode 1 behaviour, so a mart built to the contract is unaffected. With any
+   * override set it returns a normalising subquery that renames/synthesises the mapped
+   * columns into their contract names, so every tab below stays mode-agnostic. The
+   * expressions are pasted verbatim (trusted dashboard config, not user input), the
+   * same escape-hatch contract as Mode 2's CREATIVE_REF_EXPR. Revenue is emitted ONLY
+   * in ROAS mode, mirroring the rest of the engine: a CPA-mode mart may have no revenue
+   * column at all and selecting one would error. */
+  function liMartTable(){
+    const ov = liMartOverrides();
+    if (!Object.keys(ov).length) return liMartRef();
+    /* An un-overridden column passes through by its own name — no `x AS x` noise, so
+     * the wrapper reads as a diff of what this client's mart actually differs on. */
+    const col = (name) => `        ${ov[name] ? `${ov[name]} AS ${name}` : name}`;
+    const list = [
+      col('ad_id'), col('ad_name'), col('campaign_name'), col('adgroup_name'),
+      '        creative_link',
+      '        date_start',
+      '        min_date',
+      '        lifetime_spend',
+      '        spend',
+      '        impressions',
+      '        clicks',
+      col('landing_page_clicks'),
+      '        conversions',
+      col('one_click_leads'),
+    ];
+    if (liIsRoas()) list.push(`        ${liRawRevExpr()} AS revenue`);
+    list.push(
+      col('video_starts'),
+      '        video_views',
+      col('video_p25'), col('video_p50'), col('video_p75'), col('video_p100')
+    );
+    return `(
+      SELECT
+${list.join(',\n')}
+      FROM ${liMartRef()}
+    )`;
+  }
 
   /* Mode 2: the shared multi-client dataset, scoped to one ad account and normalised
    * into the contract shape. Verified against the live Sucasa account:
@@ -689,6 +836,9 @@
     source: liTable,
     sharedSource: liSharedSourceSQL,
     martTable: liMartTable,
+    martRef: liMartRef,
+    martOverrides: liMartOverrides,
+    martNormalised: liMartNormalised,
     classificationCaseSQL: liClassificationCaseSQL,
     scoreOpts: liScoreOpts,
     maxDateSQL: liMaxDateSQL,
