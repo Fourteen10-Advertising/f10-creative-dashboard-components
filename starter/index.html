@@ -57,6 +57,38 @@ const GROUP_FILTERS = [
 //   THRESHOLDS:{ HR_SPEND: 4000, HR_CPA: 90, OB_SPEND: 1000, OB_CPA: 120, SO_SPEND: 500, SO_CPA: 160 },
 // };
 
+/* Optional LinkedIn section. Define LINKEDIN to add a "LinkedIn" nav group with its own
+   Weekly Summary, Movement Board, Ad Production and Creative Effectiveness tabs.
+   Leave commented for a dashboard with no LinkedIn channel.
+
+   Unlike TikTok there are TWO modes — pick the one that matches how this client's
+   LinkedIn spend is actually warehoused. See the README "LinkedIn channel" section.
+
+   MODE 1 — PER-CLIENT MART. The client has their own LinkedIn creative mart at
+   {PROJECT}.{DATASET}.{TABLE}, published to the normalised LinkedIn column contract. */
+// const LINKEDIN = {
+//   DATASET:   'acme_marts',                 // optional; defaults to DATASET above
+//   TABLE:     'linkedin_creative_reporting',// optional; this is the default
+//   CONV_EXPR: 'conversions',                // optional; defaults to 'conversions'
+//   THRESHOLDS:{ HR_SPEND: 2000, HR_CPA: 150, OB_SPEND: 750, OB_CPA: 250, SO_SPEND: 300, SO_CPA: 400 },
+// };
+
+/* MODE 2 — SHARED ACCOUNT. The client has NO LinkedIn mart: their spend sits in the
+   shared, multi-client `all_clients_linkedin_ads` dataset and is separable only by ad
+   account URN (this is the real Skip case — Skip's LinkedIn runs through the 'Sucasa
+   Ad Account' and is in no skip_* dataset). Setting ACCOUNT_URN switches the SQL
+   builder to the shared tables and IGNORES DATASET/TABLE entirely.
+   Note: `conversions` on the shared tables is externalWebsiteConversions, which is
+   often zero on a brand/thought-leadership LinkedIn account — check before trusting
+   CPA, and consider CONV_EXPR: 'landing_page_clicks' as the funnel-entry proxy (then
+   re-base the CPA thresholds on cost per landing-page click). */
+// const LINKEDIN = {
+//   ACCOUNT_URN: 'urn:li:sponsoredAccount:510299552',  // shared-account mode wins over DATASET/TABLE
+//   PROJECT:     'mcc-poc-477801',          // optional; defaults to PROJECT above
+//   CONV_EXPR:   'landing_page_clicks',     // optional; defaults to 'conversions'
+//   THRESHOLDS:  { HR_SPEND: 2000, HR_CPA: 25, OB_SPEND: 750, OB_CPA: 40, SO_SPEND: 300, SO_CPA: 60 },
+// };
+
 /* Optional "How to read this tab" notes — plain-English client guidance shown at the top
    of every tab, plus a one-line definition of what a "conversion" is for this account.
    Off by default. Set SHOW_HOW_TO_NOTES = true to enable; CONV_LABEL words the definition
@@ -128,6 +160,9 @@ const GROUP_FILTERS = [
 <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.11.0/f10-weekly.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.11.0/f10-monthly.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.11.0/f10-tiktok.js"></script>
+<!-- LinkedIn channel: a no-op unless LINKEDIN is defined above. Pin this tag (and the
+     others) to a release tag that actually contains f10-linkedin.js before enabling it. -->
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.11.0/f10-linkedin.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.11.0/f10-competitors.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.11.0/f10-layout.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.11.0/f10-preview.js"></script>

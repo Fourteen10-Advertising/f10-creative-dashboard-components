@@ -12,6 +12,11 @@ config; the UI and logic come from the shared components via jsDelivr.
    - `CLIENT_NAME` — sidebar label (and update the `<title>`).
    - `GROUP_FILTERS` — optional segment dropdowns (product, marketplace, …).
    - `THRESHOLDS` — optional Ad Production overrides (uncomment to change).
+   - `TIKTOK` / `LINKEDIN` — optional extra channel sections (uncomment to add).
+     `LINKEDIN` has two modes: a per-client mart (`DATASET`/`TABLE`) or the shared
+     `all_clients_linkedin_ads` dataset scoped by `ACCOUNT_URN`. Setting
+     `ACCOUNT_URN` ignores `DATASET`/`TABLE` — see the components README's
+     "LinkedIn channel" section before choosing.
 3. In Netlify, set the `GOOGLE_SERVICE_ACCOUNT` environment variable to the
    service account JSON with BigQuery access (project `mcc-poc-477801`,
    location `australia-southeast1`).

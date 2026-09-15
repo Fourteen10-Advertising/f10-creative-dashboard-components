@@ -31,6 +31,7 @@ const read = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8');
 const UTILS = read('f10-utils.js');
 const MONTHLY = read('f10-monthly.js');
 const TIKTOK = read('f10-tiktok.js');
+const LINKEDIN = read('f10-linkedin.js');
 const LAYOUT = read('f10-layout.js');
 const CSS = read('f10-shared.css');
 
@@ -131,9 +132,19 @@ check('TikTok Production + Creative Effectiveness compute and render the score',
   assert.ok(/AS active_days/.test(TIKTOK), 'TikTok score needs an active_days column');
 });
 
-check('all four per-ad theads carry a Creative Score column', () => {
+check('LinkedIn Production + Creative Effectiveness compute and render the score', () => {
+  assert.ok(/creativeScoreSQL\('lifetime_spend', mCol, liScoreOpts\(\)\)\} AS creative_score/.test(LINKEDIN), 'LinkedIn Production must add creative_score');
+  assert.ok(/creativeScoreSQL\('lifetime_spend', liLifetimeMetricCol\(\), liScoreOpts\(\)\)\} AS creative_score/.test(LINKEDIN), 'LinkedIn Creative Effectiveness must add creative_score');
+  const badges = LINKEDIN.match(/creativeScoreBadge\(r\.creative_score\)/g) || [];
+  assert.strictEqual(badges.length, 2, 'both LinkedIn tabs must render the score badge');
+  assert.ok(/AS active_days/.test(LINKEDIN), 'LinkedIn score needs an active_days column');
+});
+
+check('every per-ad thead carries a Creative Score column', () => {
+  /* One per channel per per-ad table: Meta, TikTok and LinkedIn x (Production,
+   * Creative Effectiveness). Bump this with the channel count, never down. */
   const headers = LAYOUT.match(/<th>Creative Score<\/th>/g) || [];
-  assert.strictEqual(headers.length, 4, 'expected 4 Creative Score headers (Meta+TikTok x Production+CE), found ' + headers.length);
+  assert.strictEqual(headers.length, 6, 'expected 6 Creative Score headers (Meta+TikTok+LinkedIn x Production+CE), found ' + headers.length);
 });
 
 check('score band styles live in f10-shared.css and reuse the stabilo vars', () => {
