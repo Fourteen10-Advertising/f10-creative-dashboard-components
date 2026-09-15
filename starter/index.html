@@ -57,6 +57,72 @@ const GROUP_FILTERS = [
 //   THRESHOLDS:{ HR_SPEND: 4000, HR_CPA: 90, OB_SPEND: 1000, OB_CPA: 120, SO_SPEND: 500, SO_CPA: 160 },
 // };
 
+/* Optional LinkedIn section. Define LINKEDIN to add a "LinkedIn" nav group with its own
+   Weekly Summary, Movement Board, Ad Production and Creative Effectiveness tabs.
+   Leave commented for a dashboard with no LinkedIn channel.
+
+   Unlike TikTok there are TWO modes — pick the one that matches how this client's
+   LinkedIn spend is actually warehoused. See the README "LinkedIn channel" section.
+
+   MODE 1 — PER-CLIENT MART. The client has their own LinkedIn creative mart at
+   {PROJECT}.{DATASET}.{TABLE}, published to the normalised LinkedIn column contract. */
+// const LINKEDIN = {
+//   DATASET:   'acme_marts',                 // optional; defaults to DATASET above
+//   TABLE:     'linkedin_creative_reporting',// optional; this is the default
+//   CONV_EXPR: 'conversions',                // optional; defaults to 'conversions'
+//   THRESHOLDS:{ HR_SPEND: 2000, HR_CPA: 150, OB_SPEND: 750, OB_CPA: 250, SO_SPEND: 300, SO_CPA: 400 },
+// };
+
+/* MODE 1b — PER-CLIENT MART WITH COLUMN OVERRIDES. Use when the client already HAS a
+   LinkedIn creative mart but it does not publish the contract verbatim — which is the
+   normal case, because real marts are built for their own dashboard, not for this one.
+   Each *_EXPR key below is a RAW SQL EXPRESSION pasted straight into the SELECT list: a
+   differently-named column, a real expression, or a literal ('NULL', '0') for a metric
+   the mart genuinely does not carry, so the tab renders a blank instead of erroring.
+   Omit a key and that column keeps its contract name, so a mart that DOES publish the
+   contract needs none of this. Overridable: AD_ID_EXPR, AD_NAME_EXPR, CAMPAIGN_NAME_EXPR,
+   ADGROUP_NAME_EXPR, LANDING_PAGE_CLICKS_EXPR, ONE_CLICK_LEADS_EXPR, REVENUE_EXPR (ROAS
+   only), VIDEO_STARTS_EXPR, VIDEO_P25/P50/P75/P100_EXPR. Always required from the mart:
+   date_start, min_date, lifetime_spend, spend, impressions, clicks, conversions,
+   video_views, creative_link. CONV_EXPR / REVENUE_EXPR are read AFTER normalising, so
+   they must name a CONTRACT column.
+   The example is Skip's real mart (mcc-poc-477801.skip_marts.linkedin_creative_reporting). */
+// const LINKEDIN = {
+//   DATASET: 'skip_marts',
+//   TABLE:   'linkedin_creative_reporting',
+//   AD_ID_EXPR:               'creative_id',      // no ad_id; creative_id is the key
+//   AD_NAME_EXPR:             'creative_id',      // creative_name is '' on every row
+//   CAMPAIGN_NAME_EXPR:       'campaign_id',      // no campaign_name column
+//   ADGROUP_NAME_EXPR:        "'(no ad group)'",  // no ad-group level at all
+//   LANDING_PAGE_CLICKS_EXPR: 'clicks',           // no outbound-only click column
+//   ONE_CLICK_LEADS_EXPR:     'NULL',
+//   VIDEO_STARTS_EXPR:        'NULL',
+//   VIDEO_P25_EXPR: 'NULL', VIDEO_P50_EXPR: 'NULL', VIDEO_P75_EXPR: 'NULL', VIDEO_P100_EXPR: 'NULL',
+//   CONV_EXPR: 'clicks',                          // `conversions` is 0.0 on every row
+//   /* THRESHOLDS ARE NOT COPYABLE. Once CONV_EXPR names a different metric the *_CPA
+//      bands mean a different thing — these read as cost per RAW CLICK, not cost per
+//      conversion, and the LinkedIn defaults (150/250/400) would classify the whole
+//      account Home Run. Pull the real per-creative distribution of the metric you chose
+//      and set the bands off that. These are Skip's numbers, from Skip's data. */
+//   THRESHOLDS: { HR_SPEND: 2000, HR_CPA: 1, OB_SPEND: 750, OB_CPA: 2, SO_SPEND: 300, SO_CPA: 5 },
+// };
+
+/* MODE 2 — SHARED ACCOUNT. The client has NO LinkedIn mart: their spend sits in the
+   shared, multi-client `all_clients_linkedin_ads` dataset and is separable only by ad
+   account URN (this is the real Skip case — Skip's LinkedIn runs through the 'Sucasa
+   Ad Account' and is in no skip_* dataset). Setting ACCOUNT_URN switches the SQL
+   builder to the shared tables and IGNORES DATASET/TABLE entirely.
+   Note: `conversions` on the shared tables is externalWebsiteConversions, which is
+   often zero on a brand/thought-leadership LinkedIn account — check before trusting
+   CPA, and consider CONV_EXPR: 'landing_page_clicks' as the funnel-entry proxy (then
+   re-base the CPA thresholds on cost per landing-page click). */
+// const LINKEDIN = {
+//   ACCOUNT_URN: 'urn:li:sponsoredAccount:510299552',  // shared-account mode wins over DATASET/TABLE
+//   PROJECT:     'mcc-poc-477801',          // optional; defaults to PROJECT above
+//   CONV_EXPR:   'landing_page_clicks',     // optional; defaults to 'conversions'
+//   THRESHOLDS:  { HR_SPEND: 2000, HR_CPA: 25, OB_SPEND: 750, OB_CPA: 40, SO_SPEND: 300, SO_CPA: 60 },
+// };
+
 /* Optional "How to read this tab" notes — plain-English client guidance shown at the top
    of every tab, plus a one-line definition of what a "conversion" is for this account.
    Off by default. Set SHOW_HOW_TO_NOTES = true to enable; CONV_LABEL words the definition
@@ -128,6 +194,9 @@ const GROUP_FILTERS = [
 <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.11.0/f10-weekly.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.11.0/f10-monthly.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.11.0/f10-tiktok.js"></script>
+<!-- LinkedIn channel: a no-op unless LINKEDIN is defined above. Pin this tag (and the
+     others) to a release tag that actually contains f10-linkedin.js before enabling it. -->
+<script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.11.0/f10-linkedin.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.11.0/f10-competitors.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.11.0/f10-layout.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/fourteen10-advertising/f10-creative-dashboard-components@v1.11.0/f10-preview.js"></script>

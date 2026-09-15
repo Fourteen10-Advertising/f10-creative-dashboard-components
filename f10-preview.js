@@ -167,8 +167,13 @@
   }
   window.f10MetricsHtml = metricsHtml;
 
+  // LinkedIn creatives have no stored asset in the creative bucket (the warehouse only
+  // carries the post URN, not the media bytes), so a LinkedIn link ALWAYS lands here —
+  // the metrics panel plus a click-through to the post permalink.
   function showFallback(adId, platform) {
-    var where = platform === 'tiktok' ? 'Opens on TikTok' : 'Opens on Facebook';
+    var where = platform === 'tiktok' ? 'Opens on TikTok'
+      : platform === 'linkedin' ? 'Opens on LinkedIn'
+      : 'Opens on Facebook';
     show('<div class="f10-preview-msg">' + where + '&nbsp;&#8599;</div>' + metricsHtml(adId));
   }
 

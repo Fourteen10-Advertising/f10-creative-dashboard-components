@@ -238,6 +238,135 @@ function ttPanelsMarkup(ttTh){
 `;
 }
 
+/* LinkedIn Ad Production benchmark copy — same polarity rules as ttProdBenchmarkHTML,
+ * built from the LinkedIn thresholds (liTh, see linkedinThresholds() in f10-utils.js)
+ * rather than the global or TikTok bands. */
+function liProdBenchmarkHTML(liTh){
+  if (targetMetric() === 'roas'){
+    return `<span class="bm-item"><strong>Home Run:</strong> Spend &ge; ${fmt$(liTh.HR_SPEND)} &amp; ROAS &ge; ${fmtRatio(liTh.HR_ROAS)}</span>` +
+      `<span class="bm-item"><strong>On Base:</strong> Spend &ge; ${fmt$(liTh.OB_SPEND)} &amp; ROAS &ge; ${fmtRatio(liTh.OB_ROAS)}</span>` +
+      `<span class="bm-item"><strong>Strike Out:</strong> Spend &ge; ${fmt$(liTh.SO_SPEND)} &amp; ROAS &lt; ${fmtRatio(liTh.SO_ROAS)}</span>`;
+  }
+  return `<span class="bm-item"><strong>Home Run:</strong> Spend &ge; ${fmt$(liTh.HR_SPEND)} &amp; CPA &lt; ${fmt$(liTh.HR_CPA)}</span><span class="bm-item"><strong>On Base:</strong> Spend &ge; ${fmt$(liTh.OB_SPEND)} &amp; CPA &lt; ${fmt$(liTh.OB_CPA)}</span><span class="bm-item"><strong>Strike Out:</strong> Spend &ge; ${fmt$(liTh.SO_SPEND)} &amp; CPA &gt; ${fmt$(liTh.SO_CPA)}</span>`;
+}
+
+/* LinkedIn section markup (controls bar + four panels), rendered only when a LINKEDIN
+ * config object is present. Mirrors the TikTok panels with li- ids and the LinkedIn
+ * metric columns: Hook % is the 2s in-view videoViews rate, Hold % is the midpoint
+ * (50%) quartile, and the click column shown next to CTR is the OUTBOUND (landing
+ * page) CTR, because LinkedIn's raw `clicks` counts unit-level clicks (profile,
+ * reactions, expands) and overstates intent. f10-linkedin.js drives these. */
+function liControlsMarkup(){
+  return `<div class="controls-bar" id="li-controls-bar" style="display:none;">
+      <div class="weekly-controls" style="display:flex;">
+        <div class="ctrl"><label>Window length</label>
+          <select id="li-ctrl-length"><option value="7" selected>7 days</option><option value="14">14 days</option><option value="28">28 days</option></select>
+        </div>
+        <div class="ctrl"><label>Current window ends</label><input type="date" id="li-ctrl-enddate" /></div>
+        <div class="ctrl"><label>Efficiency metric</label>
+          <select id="li-ctrl-metric">${efficiencyMetricOptionsHTML()}</select>
+        </div>
+        <div class="ctrl"><label>Min spend ($)</label><input type="number" id="li-ctrl-minspend" value="1" min="0" step="50" /></div>
+      </div>
+    </div>`;
+}
+function liPanelsMarkup(liTh){
+  return `
+    <!-- LINKEDIN: WEEKLY SUMMARY -->
+    <div class="tab-panel li-tab-panel" id="panel-li-summary">
+      <div class="insight-box"><strong>LinkedIn Weekly Summary:</strong> spend, conversions and blended efficiency this window vs the previous equal-length window, plus the account-level <strong>view rate</strong> (share of impressions that watched 2 seconds in view) and <strong>hold rate</strong> (watched to the halfway point).</div>
+      <div class="window-note" id="li-summary-window-note"></div>
+      <div id="li-summary-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+      <div id="li-summary-body" style="display:none;">
+        ${targetMetric() === 'roas' ? '<div id="li-summary-revenue-guard"></div>\n        ' : ''}<div class="scorecard-grid" id="li-summary-scorecards"></div>
+        <div class="chart-card">
+          <h3>Blended Metric Decomposition &mdash; Prior &rarr; Current</h3>
+          <div class="legend-row"><span class="li"><span class="dot" style="background:var(--good)"></span> Improves the metric</span><span class="li"><span class="dot" style="background:var(--bad)"></span> Worsens the metric</span></div>
+          <div class="chart-wrapper" style="height:360px;"><canvas id="li-decomp-chart"></canvas></div>
+          <div class="window-note" id="li-decomp-note" style="margin-top:12px;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- LINKEDIN: MOVEMENT BOARD -->
+    <div class="tab-panel li-tab-panel" id="panel-li-board">
+      <div class="insight-box"><strong>LinkedIn Movement Board:</strong> every creative that cleared the spend floor in either window, current vs previous, tagged by what it did. <strong>View %</strong> (2s in view) and <strong>Hold %</strong> (50% watched) show attention; <strong>Out CTR</strong> is the landing-page click rate, the click that actually means intent on LinkedIn. Sorted by current spend.</div>
+      <div class="window-note" id="li-board-window-note"></div>
+      <div class="legend-row" id="li-board-legend"></div>
+      <div class="table-card">
+        <h3 id="li-board-title">Ad Movement</h3>
+        <div class="table-scroll">
+          <div id="li-board-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+          <table id="li-board-table" style="display:none;">
+            <thead><tr><th>Ad</th><th>State</th><th class="num">Spend</th><th class="num">&Delta; Spend</th><th class="num" id="li-board-m-head">Metric</th><th class="num">&Delta; Metric</th><th class="num">Conv.</th><th class="num">Impr.</th><th class="num">View %</th><th class="num">Hold %</th><th class="num">Out CTR</th><th>Preview</th></tr></thead>
+            <tbody id="li-board-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- LINKEDIN: AD PRODUCTION -->
+    <div class="tab-panel li-tab-panel" id="panel-li-production">
+      <div class="insight-box"><strong>LinkedIn Ad Production:</strong> how many creatives were launched and the share that become hits (lifetime spend &ge; the Home Run threshold ${targetMetric() === 'roas' ? 'at a strong ROAS' : 'at an efficient CPA'}). LinkedIn runs at a much smaller per-creative spend scale than Meta, so these bands default lower &mdash; tune them per client.<br/><br/><strong>Thresholds:</strong>
+        <div class="benchmark">${liProdBenchmarkHTML(liTh)}</div>
+      </div>
+      ${targetMetric() === 'roas' ? '<div id="li-production-revenue-guard"></div>\n      ' : ''}<div id="li-production-scorecards-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+      <div id="li-production-scorecards" style="display:none;">
+        <div class="scorecard-grid">
+          <div class="scorecard"><div class="scorecard-label">Ads Produced</div><div class="scorecard-value" id="li-sc-ads-produced">&ndash;</div></div>
+          <div class="scorecard highlight"><div class="scorecard-label"${metricDefAttr('home run')}>Home Runs</div><div class="scorecard-value" id="li-sc-home-runs">&ndash;</div></div>
+          <div class="scorecard highlight"><div class="scorecard-label"${metricDefAttr('home run')}>Home Run Rate</div><div class="scorecard-value" id="li-sc-hr-rate">&ndash;</div></div>
+          <div class="scorecard"><div class="scorecard-label"${metricDefAttr('on base')}>On Base</div><div class="scorecard-value" id="li-sc-on-base">&ndash;</div></div>
+          <div class="scorecard"><div class="scorecard-label"${metricDefAttr('on base')}>On Base Rate</div><div class="scorecard-value" id="li-sc-ob-rate">&ndash;</div></div>
+          <div class="scorecard warn"><div class="scorecard-label"${metricDefAttr('strike out')}>Strike Outs</div><div class="scorecard-value" id="li-sc-strike-outs">&ndash;</div></div>
+          <div class="scorecard warn"><div class="scorecard-label"${metricDefAttr('strike out')}>Strike Out Rate</div><div class="scorecard-value" id="li-sc-so-rate">&ndash;</div></div>
+        </div>
+      </div>
+      <div class="two-col">
+        <div class="chart-card" style="margin-bottom:0;"><h3>Lifetime Spend vs ${targetMetricDef().label} &mdash; All Ads</h3>
+          <div id="li-scatter-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+          <div class="chart-wrapper" id="li-scatter-wrapper" style="display:none; height:320px;"><canvas id="li-scatter-chart"></canvas></div>
+        </div>
+        <div class="chart-card" style="margin-bottom:0;"><h3>Ads Launched &amp; Hit Rates by Month</h3>
+          <div id="li-production-chart-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+          <div class="chart-wrapper" id="li-production-chart-wrapper" style="display:none; height:320px;"><canvas id="li-production-chart"></canvas></div>
+        </div>
+      </div>
+      <div class="table-card"><h3>Ad-Level Classification</h3>
+        <div class="table-scroll">
+          <div id="li-scatter-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+          <table id="li-scatter-table" style="display:none;">
+            <thead><tr><th>Ad</th><th>Campaign</th><th>Objective</th><th>Launch Date</th><th>Lifetime Spend</th><th>Lifetime ${targetMetricDef().label}</th><th>Conversions</th><th class="num">View %</th><th class="num">Hold %</th><th class="num">Compl. %</th><th>Preview</th><th>Classification</th><th>Creative Score</th></tr></thead>
+            <tbody id="li-scatter-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- LINKEDIN: CREATIVE EFFECTIVENESS -->
+    <div class="tab-panel li-tab-panel" id="panel-li-creative">
+      <div class="insight-box"><strong>LinkedIn Creative Effectiveness:</strong> attention beyond ${targetMetricDef().label}. <strong>View rate</strong> is the share of impressions that watched 2 continuous seconds with the post at least half in view (LinkedIn's own view gate &mdash; the closest thing it has to a thumbstop); <strong>Hold rate</strong> reached the halfway point; <strong>completion</strong> watched to the end; the <strong>retention curve</strong> (25 &rarr; 100%) shows where viewers drop off. <strong>Out CTR</strong> is the landing-page click rate &mdash; read it ahead of raw CTR, which on LinkedIn counts every click on the unit. Rates cover the last 90 days.</div>
+      <div class="scorecard-grid" style="margin-bottom:16px;">
+        <div class="scorecard highlight"><div class="scorecard-label">Avg View Rate (2s)</div><div class="scorecard-value" id="li-creative-hook">&ndash;</div></div>
+        <div class="scorecard"><div class="scorecard-label">Avg Hold Rate (50%)</div><div class="scorecard-value" id="li-creative-hold">&ndash;</div></div>
+      </div>
+      <div class="chart-card"><h3>Average Video Retention Curve &mdash; % of Impressions Reaching Each Quartile</h3>
+        <div id="li-creative-chart-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+        <div class="chart-wrapper" id="li-creative-chart-wrapper" style="display:none; height:320px;"><canvas id="li-creative-chart"></canvas></div>
+      </div>
+      <div class="table-card"><h3>Creative Effectiveness by Ad &mdash; Last 90 Days</h3>
+        <div class="table-scroll">
+          <div id="li-creative-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+          <table id="li-creative-table" style="display:none;">
+            <thead><tr><th>Ad</th><th>Campaign</th><th class="num">Spend</th><th class="num">Impr.</th><th class="num">View %</th><th class="num">Hold %</th><th class="num">Compl. %</th><th class="num">25%</th><th class="num">50%</th><th class="num">75%</th><th class="num">100%</th><th class="num">CTR</th><th class="num">Out CTR</th><th>Preview</th><th>Creative Score</th></tr></thead>
+            <tbody id="li-creative-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+`;
+}
+
 /* Competitor Ad Library markup (single panel), rendered only when the
  * visibility probe finds competitor rows for this client (probe-driven, US-003).
  * Not part of the base layout: f10-competitors.js injects this panel (and the
@@ -459,10 +588,11 @@ function f10ActivateTab(opts){
   if (opts.panelId) { const panel = document.getElementById(opts.panelId); if (panel) panel.classList.add('active'); }
   if (opts.navLink && opts.navLink.classList) opts.navLink.classList.add('active');
   if (opts.title) { const t = document.getElementById('page-title'); if (t) t.textContent = opts.title; }
-  /* Leaving the Meta / TikTok engines: hide their control bars so a module tab never
-   * shows stray controls (mirrors the competitor tab's behaviour). */
+  /* Leaving the Meta / TikTok / LinkedIn engines: hide their control bars so a module
+   * tab never shows stray controls (mirrors the competitor tab's behaviour). */
   const mc = document.getElementById('controls-bar'); if (mc) mc.style.display = 'none';
   const tc = document.getElementById('tt-controls-bar'); if (tc) tc.style.display = 'none';
+  const lc = document.getElementById('li-controls-bar'); if (lc) lc.style.display = 'none';
 }
 
 function renderLayout(){
@@ -488,6 +618,22 @@ function renderLayout(){
       <a href="#" class="tt-nav-link" data-tt-tab="tt-creative">Creative Effectiveness</a>` : '';
   const ttControls = hasTikTok ? ttControlsMarkup() : '';
   const ttPanels = hasTikTok ? ttPanelsMarkup(ttTh) : '';
+
+  /* LinkedIn is the optional THIRD channel, gated the same way (see linkedinEnabled()
+   * in f10-utils.js). Unlike TikTok it needs no TABLE: a client with no per-client
+   * LinkedIn mart runs in shared-account mode off LINKEDIN.ACCOUNT_URN, so the mere
+   * presence of a LINKEDIN object is the gate. Nav order is Meta → TikTok → LinkedIn,
+   * i.e. channels append in the order they were added to the framework, so an existing
+   * TikTok dashboard's sidebar does not reshuffle when LinkedIn is switched on. */
+  const hasLinkedIn = linkedinEnabled();
+  const liTh = linkedinThresholds();
+  const liNav = hasLinkedIn ? `<div class="nav-section">LinkedIn</div>
+      <a href="#" class="li-nav-link" data-li-tab="li-summary">Weekly Summary</a>
+      <a href="#" class="li-nav-link" data-li-tab="li-board">Movement Board</a>
+      <a href="#" class="li-nav-link" data-li-tab="li-production">Ad Production</a>
+      <a href="#" class="li-nav-link" data-li-tab="li-creative">Creative Effectiveness</a>` : '';
+  const liControls = hasLinkedIn ? liControlsMarkup() : '';
+  const liPanels = hasLinkedIn ? liPanelsMarkup(liTh) : '';
 
   /* Efficiency-metric dropdown is metric-aware. In ROAS mode ROAS leads the list
    * and is selected by default so the Movement Board/Map and blended tile render
@@ -517,6 +663,7 @@ function renderLayout(){
       <a href="#" class="nav-link" data-tab="age">Ad Age</a>
       <a href="#" class="nav-link" data-tab="creative">Creative Effectiveness</a>
       ${ttNav}
+      ${liNav}
     </nav>
     <div class="sidebar-footer">${footerHTML}</div>
   </div>
@@ -559,6 +706,7 @@ function renderLayout(){
     </div>
 
 ${ttControls}
+${liControls}
 
         <!-- WEEKLY: SUMMARY -->
     <div class="tab-panel active" id="tab-summary">
@@ -752,6 +900,8 @@ ${ttControls}
 
   ${ttPanels}
 
+  ${liPanels}
+
   </div>`;
   /* Apply theme overrides on the document root (:root), not #app. CSS still
    * cascades (root is an ancestor of everything), AND the chart code's getCSS()
@@ -767,6 +917,10 @@ ${ttControls}
   }
 
   if (hasTikTok && typeof initTikTok === 'function') initTikTok();
+  /* LinkedIn section (config-gated, same shape as TikTok): f10-linkedin.js only
+   * defines initLinkedIn when a LINKEDIN config exists, so a Meta-only or
+   * Meta+TikTok dashboard that still loads the script is untouched. */
+  if (hasLinkedIn && typeof initLinkedIn === 'function') initLinkedIn();
   /* Competitor tab visibility is probe-driven (US-003): f10-competitors.js runs a
    * cheap existence probe and registers its own nav entry + panel only when the
    * client has competitor rows — so this call is unconditional. */

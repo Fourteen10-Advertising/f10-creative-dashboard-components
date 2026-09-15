@@ -224,8 +224,67 @@ const PLATFORM_PROFILES = {
     retentionCols: { p25:'video_views_p25', p50:'video_views_p50', p75:'video_views_p75', p100:'video_views_p100' },
     holdLabel:     'Hold % (6s)',
   },
+  /* LinkedIn exposes no second-based view gate, but its `videoViews` metric IS an
+   * early-attention gate (2 continuous seconds at 50% in view), so it is the honest
+   * hook/thumbstop analogue — closer to TikTok's 2s than to Meta's play. There is no
+   * time-based hold, so hold is the MIDPOINT quartile (50% of the video watched).
+   * LinkedIn also has a true outbound click (`landingPageClicks`): its raw `clicks`
+   * counts every click on the unit (profile, reactions, expands) and runs ~8% on the
+   * live Sucasa account, so CTR alone would badly overstate intent — outbound CTR is
+   * the click metric to read. Column names are the NORMALISED LinkedIn mart contract
+   * (see the LinkedIn channel section of the README), which f10-linkedin.js also
+   * produces from the shared all_clients_linkedin_ads tables in ACCOUNT_URN mode. */
+  linkedin: {
+    hookCol:       'video_views',        /* videoViews ÷ impr = 2s in-view thumbstop */
+    holdCol:       'video_p50',          /* midpoint completions ÷ impr = hold */
+    completionCol: 'video_p100',
+    playsCol:      'video_starts',
+    outboundCol:   'landing_page_clicks',
+    retentionCols: { p25:'video_p25', p50:'video_p50', p75:'video_p75', p100:'video_p100' },
+    holdLabel:     'Hold % (50%)',
+  },
 };
 if (typeof window !== 'undefined') window.PLATFORM_PROFILES = PLATFORM_PROFILES;
+
+/* ── LinkedIn channel config (optional third channel) ──
+ * The LinkedIn section is config-gated exactly like TikTok: no `LINKEDIN` config
+ * object in the dashboard's index.html ⇒ the module, the nav group and the panels
+ * do not exist. These helpers live here (not in f10-linkedin.js) because BOTH
+ * f10-layout.js (nav + panel markup + benchmark copy) and f10-linkedin.js (SQL +
+ * classification) need them, and a duplicated default-threshold literal is exactly
+ * how the two drift apart.
+ *
+ * TWO MODES, and a client is in exactly one of them:
+ *   1. PER-CLIENT MART (the TikTok-shaped default) — the client has their own
+ *      `{PROJECT}.{DATASET}.{TABLE}` LinkedIn creative mart. DATASET defaults to the
+ *      dashboard's own DATASET, TABLE to 'linkedin_creative_reporting'.
+ *   2. SHARED ACCOUNT (`ACCOUNT_URN` set) — the client has NO LinkedIn mart and their
+ *      spend sits in the shared `all_clients_linkedin_ads` dataset alongside other
+ *      clients', separable only by ad-account URN (this is the real Skip case: their
+ *      LinkedIn runs through the 'Sucasa Ad Account',
+ *      urn:li:sponsoredAccount:510299552, and is in NO skip_* dataset). Setting
+ *      ACCOUNT_URN switches the SQL builder to the shared tables and IGNORES
+ *      DATASET/TABLE entirely — shared-account mode always wins.
+ */
+function linkedinEnabled(){ return typeof LINKEDIN !== 'undefined' && !!LINKEDIN; }
+function linkedinConfig(){ return linkedinEnabled() ? LINKEDIN : {}; }
+/* True when this dashboard reads the shared multi-client LinkedIn dataset scoped by
+ * ad-account URN, rather than a per-client mart. */
+function linkedinSharedAccount(){ return !!(linkedinConfig().ACCOUNT_URN); }
+/* Ad-account URN, sanitised before it is inlined into SQL. LINKEDIN.ACCOUNT_URN is a
+ * trusted, F10-authored dashboard constant (like DATASET/TABLE), but a URN is the one
+ * value here that gets copied out of a client spreadsheet, so anything outside the
+ * LinkedIn URN alphabet is stripped rather than concatenated into a query. */
+function linkedinAccountUrn(){ return String(linkedinConfig().ACCOUNT_URN || '').replace(/[^A-Za-z0-9:_.-]/g, ''); }
+/* Ad Production bands for LinkedIn. Deliberately NOT the Meta/TikTok defaults:
+ * LinkedIn runs at a far smaller spend scale per creative and a far higher cost per
+ * action (B2B auction), so the Meta HR_SPEND of $5,000 would admit ~one creative on a
+ * real account. Calibrated against the live Sucasa LinkedIn account (8 months,
+ * 20 creatives, median lifetime spend ≈ A$304, max ≈ A$6.8k). These are a starting
+ * point, not a truth — set LINKEDIN.THRESHOLDS per client. */
+const LI_THRESHOLD_DEFAULTS = { HR_SPEND: 2000, HR_CPA: 150, OB_SPEND: 750, OB_CPA: 250, SO_SPEND: 300, SO_CPA: 400, HR_ROAS: 4, OB_ROAS: 2, SO_ROAS: 1 };
+function linkedinThresholds(){ return Object.assign({}, LI_THRESHOLD_DEFAULTS, linkedinConfig().THRESHOLDS || {}); }
+if (typeof window !== 'undefined') window.LI_THRESHOLD_DEFAULTS = LI_THRESHOLD_DEFAULTS;
 
 /* ── Creative-effectiveness metrics ──
  * The mart stores raw ad×day counts (video gates, outbound_clicks, plus
