@@ -139,15 +139,17 @@ check('nav order mirrors Meta: Map after Board, then a Monthly divider, then PL/
   const at = (s) => { const i = html.indexOf(s); assert.notStrictEqual(i, -1, 'present: ' + s); return i; };
   const order = [
     'data-tt-tab="tt-summary"', 'data-tt-tab="tt-board"', 'data-tt-tab="tt-map"',
-    '<div class="nav-section">TikTok &middot; Monthly</div>',
+    '<div class="nav-section">TikTok - Monthly</div>',
     'data-tt-tab="tt-powerlaw"', 'data-tt-tab="tt-production"', 'data-tt-tab="tt-decay"',
     'data-tt-tab="tt-age"', 'data-tt-tab="tt-creative"',
   ].map(at);
   for (let i = 1; i < order.length; i++) assert.ok(order[i] > order[i - 1], 'nav item ' + i + ' follows the previous one');
-  /* The original channel header is untouched, so an existing sidebar does not reshuffle. */
-  assert.ok(at('<div class="nav-section">TikTok</div>') < order[0], 'the TikTok weekly header still leads the group');
+  /* Both channel dividers are now explicitly labelled, matching Meta's 'Meta - Weekly' /
+   * 'Meta - Monthly' headers, so an existing TikTok sidebar's header text does change
+   * (from 'TikTok' to 'TikTok - Weekly') — deliberate, per explicit request. */
+  assert.ok(at('<div class="nav-section">TikTok - Weekly</div>') < order[0], 'the TikTok weekly header still leads the group');
   /* And the whole TikTok group still sits after the Meta nav. */
-  assert.ok(at('data-tab="summary"') < at('<div class="nav-section">TikTok</div>'), 'Meta nav comes first');
+  assert.ok(at('data-tab="summary"') < at('<div class="nav-section">TikTok - Weekly</div>'), 'Meta nav comes first');
 });
 
 check('the four new panels carry the DOM ids their loaders write into', () => {

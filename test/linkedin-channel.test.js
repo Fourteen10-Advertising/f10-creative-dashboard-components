@@ -96,7 +96,7 @@ check('LINKEDIN config present: nav group, controls bar and four panels render',
   assert.strictEqual(typeof ctx.window.initLinkedIn, 'function', 'initLinkedIn is exported');
   ctx.renderLayout();
   const html = ctx._slots['app'].innerHTML;
-  assert.ok(html.includes('<div class="nav-section">LinkedIn</div>'), 'LinkedIn nav group');
+  assert.ok(html.includes('<div class="nav-section">LinkedIn - Weekly</div>'), 'LinkedIn nav group');
   assert.ok(html.includes('id="li-controls-bar"'), 'LinkedIn controls bar');
   internals(ctx).tabs.forEach((t) => {
     assert.ok(html.includes('id="panel-' + t + '"'), 'panel for ' + t);

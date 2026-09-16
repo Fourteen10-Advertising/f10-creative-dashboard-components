@@ -753,13 +753,14 @@ function renderLayout(){
   const ttTh = Object.assign({ HR_SPEND:5000, HR_CPA:70, OB_SPEND:1000, OB_CPA:100, SO_SPEND:500, SO_CPA:140, HR_ROAS:4, OB_ROAS:2, SO_ROAS:1 }, (hasTikTok && TIKTOK.THRESHOLDS) || {});
   /* Full eight-tab parity with the Meta nav, split by the same two nav-section
    * dividers Meta uses (Weekly / Monthly) and in Meta's exact tab order, so a reader
-   * moving between channels finds the same tabs in the same places. The first divider
-   * keeps the bare channel name so an existing TikTok sidebar's header is unchanged. */
-  const ttNav = hasTikTok ? `<div class="nav-section">TikTok</div>
+   * moving between channels finds the same tabs in the same places. Both dividers are
+   * explicitly labelled '{Channel} - Weekly' / '{Channel} - Monthly', matching Meta's
+   * own 'Meta - Weekly' / 'Meta - Monthly' headers exactly (same '-' separator). */
+  const ttNav = hasTikTok ? `<div class="nav-section">TikTok - Weekly</div>
       <a href="#" class="tt-nav-link" data-tt-tab="tt-summary">Weekly Summary</a>
       <a href="#" class="tt-nav-link" data-tt-tab="tt-board">Movement Board</a>
       <a href="#" class="tt-nav-link" data-tt-tab="tt-map">Movement Map</a>
-      <div class="nav-section">TikTok &middot; Monthly</div>
+      <div class="nav-section">TikTok - Monthly</div>
       <a href="#" class="tt-nav-link" data-tt-tab="tt-powerlaw">Ad Power Law</a>
       <a href="#" class="tt-nav-link" data-tt-tab="tt-production">Ad Production</a>
       <a href="#" class="tt-nav-link" data-tt-tab="tt-decay">Ad Decay</a>
@@ -776,11 +777,11 @@ function renderLayout(){
    * TikTok dashboard's sidebar does not reshuffle when LinkedIn is switched on. */
   const hasLinkedIn = linkedinEnabled();
   const liTh = linkedinThresholds();
-  const liNav = hasLinkedIn ? `<div class="nav-section">LinkedIn</div>
+  const liNav = hasLinkedIn ? `<div class="nav-section">LinkedIn - Weekly</div>
       <a href="#" class="li-nav-link" data-li-tab="li-summary">Weekly Summary</a>
       <a href="#" class="li-nav-link" data-li-tab="li-board">Movement Board</a>
       <a href="#" class="li-nav-link" data-li-tab="li-map">Movement Map</a>
-      <div class="nav-section">LinkedIn &middot; Monthly</div>
+      <div class="nav-section">LinkedIn - Monthly</div>
       <a href="#" class="li-nav-link" data-li-tab="li-powerlaw">Ad Power Law</a>
       <a href="#" class="li-nav-link" data-li-tab="li-production">Ad Production</a>
       <a href="#" class="li-nav-link" data-li-tab="li-decay">Ad Decay</a>
