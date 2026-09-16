@@ -153,13 +153,13 @@ check('nav order mirrors Meta: Map after Board, then a Monthly divider, then PL/
   const at = (s) => { const i = html.indexOf(s); assert.notStrictEqual(i, -1, 'present: ' + s); return i; };
   const order = [
     'data-li-tab="li-summary"', 'data-li-tab="li-board"', 'data-li-tab="li-map"',
-    '<div class="nav-section">LinkedIn &middot; Monthly</div>',
+    '<div class="nav-section">LinkedIn - Monthly</div>',
     'data-li-tab="li-powerlaw"', 'data-li-tab="li-production"', 'data-li-tab="li-decay"',
     'data-li-tab="li-age"', 'data-li-tab="li-creative"',
   ].map(at);
   for (let i = 1; i < order.length; i++) assert.ok(order[i] > order[i - 1], 'nav item ' + i + ' follows the previous one');
-  assert.ok(at('<div class="nav-section">LinkedIn</div>') < order[0], 'the LinkedIn weekly header still leads the group');
-  assert.ok(at('data-tab="summary"') < at('<div class="nav-section">LinkedIn</div>'), 'Meta nav comes first');
+  assert.ok(at('<div class="nav-section">LinkedIn - Weekly</div>') < order[0], 'the LinkedIn weekly header still leads the group');
+  assert.ok(at('data-tab="summary"') < at('<div class="nav-section">LinkedIn - Weekly</div>'), 'Meta nav comes first');
 });
 
 check('the four new panels carry the DOM ids their loaders write into', () => {

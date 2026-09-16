@@ -211,14 +211,18 @@ channels — now have the **same eight**, in the same order, with the same nav g
 | | Weekly | | Monthly | | | | |
 |---|---|---|---|---|---|---|---|
 | **Meta** (`Meta - Weekly` / `Meta - Monthly`) | Weekly Summary · Movement Board · Movement Map | | Ad Power Law · Ad Production · Ad Decay · Ad Age · Creative Effectiveness | | | | |
-| **TikTok** | same, `tt-` ids | | same, `tt-` ids | | | | |
-| **LinkedIn** | same, `li-` ids | | same, `li-` ids | | | | |
+| **TikTok** (`TikTok - Weekly` / `TikTok - Monthly`) | same, `tt-` ids | | same, `tt-` ids | | | | |
+| **LinkedIn** (`LinkedIn - Weekly` / `LinkedIn - Monthly`) | same, `li-` ids | | same, `li-` ids | | | | |
 
 **No new config is needed.** Configure `TIKTOK` (or `LINKEDIN`) exactly as before and all
 eight tabs appear; a dashboard already running either channel gets Movement Map, Ad Power
-Law, Ad Decay and Ad Age on the next version bump with **zero** config changes. The nav
-group gains a second `nav-section` divider (`TikTok · Monthly`, `LinkedIn · Monthly`) so
-the split reads the same as Meta's own `Meta - Weekly` / `Meta - Monthly` split.
+Law, Ad Decay and Ad Age on the next version bump with **zero** config changes. Every
+channel's nav group is split by two explicitly-labelled `nav-section` dividers —
+`{Channel} - Weekly` / `{Channel} - Monthly` — the same `-` separator and shape as Meta's
+own `Meta - Weekly` / `Meta - Monthly` headers. Note this does relabel an existing
+TikTok/LinkedIn dashboard's first nav header (from the bare channel name to
+`{Channel} - Weekly`) on the next version bump — a deliberate, requested change, not
+config-gated.
 
 The one new (optional) key is `AGE_BUCKET_EXPR`, described below.
 
