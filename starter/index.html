@@ -45,10 +45,15 @@ const GROUP_FILTERS = [
 // const THRESHOLDS = { HR_SPEND: 5000, HR_CPA: 70, OB_SPEND: 1000, OB_CPA: 100, SO_SPEND: 500, SO_CPA: 140 };
 // const THRESHOLDS = { HR_SPEND: 5000, HR_ROAS: 4, OB_SPEND: 1000, OB_ROAS: 2, SO_SPEND: 500, SO_ROAS: 1 }; /* ROAS mode */
 
-/* Optional TikTok section. Define TIKTOK to add a "TikTok" nav group with its own
-   Weekly Summary, Movement Board, Ad Production and Creative Effectiveness tabs,
-   querying a TikTok mart (tiktok_creative_reporting). The TikTok metric profile
-   adds a real 2s hook (thumbstop) and 6s hold rate that Meta cannot provide.
+/* Optional TikTok section. Define TIKTOK to add a "TikTok" nav group carrying the SAME
+   EIGHT TABS Meta has, in the same order — Weekly Summary, Movement Board, Movement Map,
+   then Ad Power Law, Ad Production, Ad Decay, Ad Age, Creative Effectiveness — querying a
+   TikTok mart (tiktok_creative_reporting). The TikTok metric profile adds a real 2s hook
+   (thumbstop) and 6s hold rate that Meta cannot provide.
+
+   ALL EIGHT TABS NEED NO EXTRA CONFIG. The config below is the whole thing; Movement Map,
+   Ad Power Law, Ad Decay and Ad Age appear on their own. The one optional extra is
+   AGE_BUCKET_EXPR (see the LinkedIn block below — it behaves identically here).
    Leave commented for a Meta-only dashboard. */
 // const TIKTOK = {
 //   DATASET:   'acme_marts',              // optional; defaults to DATASET above
@@ -57,9 +62,14 @@ const GROUP_FILTERS = [
 //   THRESHOLDS:{ HR_SPEND: 4000, HR_CPA: 90, OB_SPEND: 1000, OB_CPA: 120, SO_SPEND: 500, SO_CPA: 160 },
 // };
 
-/* Optional LinkedIn section. Define LINKEDIN to add a "LinkedIn" nav group with its own
-   Weekly Summary, Movement Board, Ad Production and Creative Effectiveness tabs.
+/* Optional LinkedIn section. Define LINKEDIN to add a "LinkedIn" nav group carrying the
+   SAME EIGHT TABS Meta has, in the same order — Weekly Summary, Movement Board, Movement
+   Map, then Ad Power Law, Ad Production, Ad Decay, Ad Age, Creative Effectiveness.
    Leave commented for a dashboard with no LinkedIn channel.
+
+   ALL EIGHT TABS NEED NO EXTRA CONFIG. Whichever mode below you pick, Movement Map, Ad
+   Power Law, Ad Decay and Ad Age appear on their own — they reuse the source that mode
+   already resolves. The one optional extra key is AGE_BUCKET_EXPR (see Mode 1b).
 
    Unlike TikTok there are TWO modes — pick the one that matches how this client's
    LinkedIn spend is actually warehoused. See the README "LinkedIn channel" section.
@@ -86,7 +96,22 @@ const GROUP_FILTERS = [
    date_start, min_date, lifetime_spend, spend, impressions, clicks, conversions,
    video_views, creative_link. CONV_EXPR / REVENUE_EXPR are read AFTER normalising, so
    they must name a CONTRACT column.
-   The example is Skip's real mart (mcc-poc-477801.skip_marts.linkedin_creative_reporting). */
+   The example is Skip's real mart (mcc-poc-477801.skip_marts.linkedin_creative_reporting).
+
+   SEPARATE FROM THE *_EXPR SET: AGE_BUCKET_EXPR. It does not supply a contract column —
+   it replaces the Ad Age tab's bucketing expression outright, in any mode. By DEFAULT the
+   Ad Age bucket is DERIVED in SQL from days since launch, DATE_DIFF(date_start, min_date,
+   DAY), rather than read from a precomputed `creative_age` column, because `creative_age`
+   is not a contract column and shared-account mode has none at all. (Checked against
+   Skip's real mart: the derived bucket reproduces that mart's own creative_age on
+   1,469/1,469 rows, so nothing is lost.) Set AGE_BUCKET_EXPR only if a mart's own
+   bucketing should win; it must evaluate to '0–14 Days', '15–90 Days' or '90+ Days', and
+   it can only name columns the RESOLVED source emits — so a creative_age reference works
+   when the mart is read bare (Mode 1) but NOT through a Mode 1b wrapper or Mode 2:
+     AGE_BUCKET_EXPR: "CASE WHEN creative_age IN ('1. 0-7 Days','2. 8-14 Days') THEN '0–14 Days' "
+                    + "WHEN creative_age IN ('3. 15-30 Days','4. 31-60 Days','5. 61-90 Days') THEN '15–90 Days' "
+                    + "ELSE '90+ Days' END"
+   TIKTOK.AGE_BUCKET_EXPR behaves identically. */
 // const LINKEDIN = {
 //   DATASET: 'skip_marts',
 //   TABLE:   'linkedin_creative_reporting',

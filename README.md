@@ -12,9 +12,9 @@ A dashboard is now just a config block plus script tags: the markup, styling, an
 | `f10-utils.js` | Formatters, constants (METRICS, STATE_META, thresholds), `classify()`, aggregation helpers, group/status filter helpers (`scopeWhere()`), ad-name search (`adNameAttr`, `filterRowsBySearch`, `refilterAllTables`), `scatterMaxSpend()` |
 | `f10-weekly.js` | Weekly engine: fetchWindows, renderSummary/Board/Map, tab system, group filters, wireControls, initWeekly |
 | `f10-monthly.js` | Monthly engine: loadPowerLaw/Production/Decay/Age/CreativeEffectiveness (video-only: static images excluded) + the `loadMonthlyTab()` dispatcher. All SQL is shared and config-driven |
-| `f10-layout.js` | `renderLayout()` — builds the sidebar, controls bar, and all seven tab panels into `<div id="app"></div>`. Production benchmark copy is derived from the threshold constants |
+| `f10-layout.js` | `renderLayout()` — builds the sidebar, controls bar, and every tab panel into `<div id="app"></div>` (Meta's eight, plus TikTok's and LinkedIn's eight each when those channels are configured). Production benchmark copy is derived from the threshold constants |
 | `f10-preview.js` | Inline creative hover previews for `.preview-link` targets; renders a swipeable carousel when an ad has multiple cards. Exposes `f10MediaMarkup({type,url}, opts)` — the shared `<img>`/`<video>` builder reused by the competitor tab — plus `f10PreviewCards(media)` and `f10CarouselHtml(cards, idx)` |
-| `f10-linkedin.js` | LinkedIn channel section (config-gated: a no-op unless the dashboard defines a `LINKEDIN` object). Adds a **LinkedIn** nav group with its own Weekly Summary / Movement Board / Ad Production / Creative Effectiveness tabs, driven by the same shared query and render engines as TikTok with `li-` ids and state. Two source modes: a **per-client LinkedIn mart** (with optional per-column `*_EXPR` overrides when the mart does not publish the contract verbatim), or the **shared `all_clients_linkedin_ads` dataset scoped by ad-account URN** for a client who has no mart of their own (see [LinkedIn channel](#linkedin-channel)) |
+| `f10-linkedin.js` | LinkedIn channel section (config-gated: a no-op unless the dashboard defines a `LINKEDIN` object). Adds a **LinkedIn** nav group with its own full eight-tab set — Weekly Summary / Movement Board / Movement Map, then Ad Power Law / Ad Production / Ad Decay / Ad Age / Creative Effectiveness — driven by the same shared query and render engines as TikTok with `li-` ids and state (see [Secondary-channel tab parity](#secondary-channel-tab-parity-tiktok--linkedin)). Two source modes: a **per-client LinkedIn mart** (with optional per-column `*_EXPR` overrides when the mart does not publish the contract verbatim), or the **shared `all_clients_linkedin_ads` dataset scoped by ad-account URN** for a client who has no mart of their own (see [LinkedIn channel](#linkedin-channel)) |
 | `f10-competitors.js` | Competitor Ad Library tab (probe-driven: appears automatically when the client has competitor rows in `all_clients_adlib`): groups a client's tracked competitor Meta ads by competitor in the F10 card layout, with Status / Timeframe / Competitor filters, per-competitor pagination (20/page), and a metadata + on-demand creatives split that fetches only the visible page's signed media. Reuses `f10MediaMarkup` from `f10-preview.js` |
 | `f10-components.js` | Component Scale tab (probe-driven: appears automatically when the client has a `{client}_marts.component_performance` mart): grades the five creative components (hook, format, CTA, message angle, visual style) against the client's own baseline, with lift, evidence count, confidence tier, the verbatim descriptive caveat, and a co-occurrence mark; plus the cross-client whitespace lane as a separate, clearly-labelled hypotheses section. Adds `f10ActivateTab()` (in `f10-layout.js`) as the single generic tab dispatcher (see [Component Scale](#component-scale)) |
 | `f10-brief-editor.js` | Brief Editor tab (probe-driven: appears only when the client has a saved brief revision to edit): a canonical-constrained editor for the F10 internal review app. Loads a brief revision and saves a NEW one via the US-003 persistence contract (GCS `brief-revisions/{client}/{id}.json` + a `brief_revisions` BigQuery row). The four creative axes (visual style, hook, message angle, CTA) are dropdowns locked to the canonical vocabularies, so a non-canonical value can never be saved; copy is free text. (US-004 retired the dead Format axis: photo versus illustration is a visual_style concept and every ad is static for now; the `brief_revisions.format` column is kept for backward compatibility but is no longer edited or driven.) Dual-mode: the same file exports the persistence core behind an injectable writer seam for the brief backend (see [Brief editor](#brief-editor)) |
@@ -188,8 +188,8 @@ lives in `test/review-list-bundles.test.js`.
 | `REVENUE_EXPR` | no | SQL expression for the mart's **gated** revenue column (default `'revenue'`). Only consumed in ROAS mode. Never sum raw `conversion_value` |
 | `GROUP_FILTERS` | no | Array of `{ col, label }` segment dropdowns (default none) |
 | `THRESHOLDS` | no | Ad Production threshold overrides (see below) |
-| `TIKTOK` | no | Optional TikTok channel section: `{ DATASET?, TABLE, CONV_EXPR?, REVENUE_EXPR?, THRESHOLDS? }`. `TABLE` is required — no `TABLE`, no TikTok nav group. `DATASET` defaults to the dashboard's `DATASET`, `CONV_EXPR` to `'conversions'`, thresholds to `HR 5000/$70 · OB 1000/$100 · SO 500/$140` (ROAS bands `4`/`2`/`1`) |
-| `LINKEDIN` | no | Optional LinkedIn channel section. Two mutually exclusive modes — a per-client mart (optionally with per-column `*_EXPR` overrides for a mart that does not publish the contract verbatim), or the shared `all_clients_linkedin_ads` dataset scoped by `ACCOUNT_URN`. Defining the object at all is the gate (no `TABLE` required). See [LinkedIn channel](#linkedin-channel) |
+| `TIKTOK` | no | Optional TikTok channel section: `{ DATASET?, TABLE, CONV_EXPR?, REVENUE_EXPR?, THRESHOLDS?, AGE_BUCKET_EXPR? }`. `TABLE` is required — no `TABLE`, no TikTok nav group. `DATASET` defaults to the dashboard's `DATASET`, `CONV_EXPR` to `'conversions'`, thresholds to `HR 5000/$70 · OB 1000/$100 · SO 500/$140` (ROAS bands `4`/`2`/`1`). All **eight** tabs appear automatically; only `AGE_BUCKET_EXPR` is new and it is optional (see [Secondary-channel tab parity](#secondary-channel-tab-parity-tiktok--linkedin)) |
+| `LINKEDIN` | no | Optional LinkedIn channel section. Two mutually exclusive modes — a per-client mart (optionally with per-column `*_EXPR` overrides for a mart that does not publish the contract verbatim), or the shared `all_clients_linkedin_ads` dataset scoped by `ACCOUNT_URN`. Defining the object at all is the gate (no `TABLE` required). All **eight** tabs appear automatically; the only new optional key is `AGE_BUCKET_EXPR`. See [LinkedIn channel](#linkedin-channel) and [Secondary-channel tab parity](#secondary-channel-tab-parity-tiktok--linkedin) |
 | `CREATIVE_SCORE_CONFIG` | no | Creative Score weights, maturity target, per-rate quality ceilings and band cutoffs (see [Creative Score column](#creative-score-column)) |
 | `COMPETITORS` | no | Optional Competitor Ad Library overrides — the tab itself is automatic (see below) |
 | `COMPONENTS` | no | Optional Component Scale overrides; the tab itself is automatic (see [Component Scale](#component-scale)) |
@@ -203,6 +203,121 @@ lives in `test/review-list-bundles.test.js`.
 | `THRESHOLDS_BY_GROUP` | no | Per-product Ad Production thresholds, e.g. grade SMSF ads on a different cost scale than Trade (see [Per-product thresholds](#per-product-thresholds)) |
 | `REVIEW` | no | F10-internal Creative Review surface only. The bundle list is now **auto-discovered** via the `list-bundles` action, so this block no longer carries `BUNDLES` or `LIMIT` and is effectively optional/empty; it holds only optional overrides (`CLIENT` slug override, `ACTOR`, `FEEDBACK_FUNCTION`). Live client dashboards never define it (see [Creative review](#creative-review)) |
 
+## Secondary-channel tab parity (TikTok + LinkedIn)
+
+Meta has eight tabs. TikTok and LinkedIn — the framework's two optional secondary
+channels — now have the **same eight**, in the same order, with the same nav grouping:
+
+| | Weekly | | Monthly | | | | |
+|---|---|---|---|---|---|---|---|
+| **Meta** | Weekly Summary · Movement Board · Movement Map | | Ad Power Law · Ad Production · Ad Decay · Ad Age · Creative Effectiveness | | | | |
+| **TikTok** | same, `tt-` ids | | same, `tt-` ids | | | | |
+| **LinkedIn** | same, `li-` ids | | same, `li-` ids | | | | |
+
+**No new config is needed.** Configure `TIKTOK` (or `LINKEDIN`) exactly as before and all
+eight tabs appear; a dashboard already running either channel gets Movement Map, Ad Power
+Law, Ad Decay and Ad Age on the next version bump with **zero** config changes. The nav
+group gains a second `nav-section` divider (`TikTok · Monthly`, `LinkedIn · Monthly`) so
+the split reads the same as Meta's Weekly/Monthly split.
+
+The one new (optional) key is `AGE_BUCKET_EXPR`, described below.
+
+### What each new tab does
+
+- **Movement Map** — the Movement Board's ads as a bubble chart: x = current-window
+  spend, y = % change in the active efficiency metric vs the prior window, bubble size =
+  spend, colour = ad state. It issues **no query at all**: it re-reads the same `movers`
+  array the Weekly Summary and Movement Board already compute from the single
+  per-window fetch, so it is free and always consistent with the Board.
+- **Ad Power Law** — every ad ranked by its share of channel spend over the last 90 days,
+  with a rolling cumulative line. Ads with **no spend inside the window** are not ranked
+  (they contribute nothing to a concentration read and would otherwise take a rank with a
+  blank spend).
+- **Ad Decay** — launch-month cohorts: ads launched, average days running, cohort spend
+  and cohort efficiency, plus the daily spend curve per cohort in absolute dollars and as
+  a % share.
+- **Ad Age** — daily spend mix across the 0–14 / 15–90 / 90+ day age buckets, plus the
+  per-ad library sorted by lifetime spend.
+
+Everything is metric-aware in the usual way: in ROAS mode the efficiency column becomes
+`lifetime_roas`, reads the gated revenue column, and CPA-mode marts are never queried for
+a revenue column at all.
+
+### Two shape divergences from the Meta SQL, and why
+
+The Meta mart publishes two columns the normalised TikTok and LinkedIn contracts do not:
+
+1. **`max_date`.** Meta's Ad Decay and Ad Age read a precomputed per-ad last-active date.
+   The secondary channels derive it as `MAX(date_start)`. For Ad Decay that means the
+   cohort summary collapses to one row per ad in a `per_ad` CTE **before** rolling up by
+   launch month — which also makes "avg days running" a true per-ad average rather than
+   one weighted by how many daily rows each ad happens to have.
+2. **`creative_age`.** See below.
+
+### Ad Age: why the bucket is derived
+
+Meta's Ad Age tab reads a precomputed `creative_age` label column. TikTok and LinkedIn
+**derive** the bucket in SQL from days since launch instead:
+
+```sql
+CASE WHEN DATE_DIFF(date_start, min_date, DAY) <= 14 THEN '0–14 Days'
+     WHEN DATE_DIFF(date_start, min_date, DAY) <= 90 THEN '15–90 Days'
+     ELSE '90+ Days' END
+```
+
+This is the same thing `creative_age` encodes, computed fresh. The reasons, in order of
+weight:
+
+1. **`creative_age` is not in either contract, and on LinkedIn it cannot be.**
+   Shared-account mode (Mode 2) builds its rows from the raw LinkedIn API tables, which
+   have no age column at all, and a Mode 1b normalising wrapper only passes contract
+   columns through. Deriving is the only rule that gives all three LinkedIn source modes
+   the same tab. TikTok's contract does not define one either.
+2. **A mart is not required to publish it.** A tab that depended on the column would
+   break on a lean mart rather than degrade.
+3. **It costs nothing in accuracy.** Verified 2026-09-16 against Skip's real mart
+   `mcc-poc-477801.skip_marts.linkedin_creative_reporting`: the derived bucket reproduces
+   that mart's own `creative_age` on **1,469 of 1,469 rows (100%)**, with the
+   0-7 / 8-14 / 15-30 / 31-60 / 61-90 / 90+ boundaries landing exactly where `DATE_DIFF`
+   puts them.
+
+**The Meta engine is unchanged** — `f10-monthly.js` still reads the Meta mart's
+`creative_age` column. This is a secondary-channel divergence only.
+
+#### `AGE_BUCKET_EXPR` — the escape hatch
+
+A client who wants their mart's own bucketing instead sets a raw SQL expression that must
+evaluate to one of the three bucket labels:
+
+```js
+const LINKEDIN = {
+  // ...
+  AGE_BUCKET_EXPR: "CASE WHEN creative_age IN ('1. 0-7 Days','2. 8-14 Days') THEN '0–14 Days' "
+                 + "WHEN creative_age IN ('3. 15-30 Days','4. 31-60 Days','5. 61-90 Days') THEN '15–90 Days' "
+                 + "ELSE '90+ Days' END",
+};
+```
+
+`TIKTOK.AGE_BUCKET_EXPR` works identically. Both are pasted **verbatim** (the same
+trusted-config escape hatch as the Mode 1b `*_EXPR` overrides) and are evaluated against
+the **resolved source**, so the expression may only name columns that source emits: any
+mart column when the mart is read bare (LinkedIn Mode 1, or TikTok), but only
+**normalised contract columns** once a Mode 1b wrapper or shared-account mode is in play.
+A client who needs a precomputed age column *and* column overrides at the same time
+should map the age column into the contract in the mart itself.
+
+A blank, missing or non-string value falls back to the derived default.
+
+### Verification status
+
+- **LinkedIn** — every generated query was **dry-run and executed live** against Skip's
+  real mart through Skip's real Mode 1b override set.
+- **TikTok** — there is currently **no real TikTok data anywhere in the BigQuery
+  project**, so the TikTok queries are verified by BigQuery dry-run against a synthetic
+  source declaring the contract schema (parse, type-check and column resolution, in both
+  CPA and ROAS mode) plus the `test/tiktok-monthly-parity.test.js` suite. The **numbers**
+  are unverified until a real TikTok mart exists.
+
 ## LinkedIn channel
 
 `f10-linkedin.js` adds LinkedIn as an optional **third channel**, alongside Meta (the
@@ -210,9 +325,12 @@ built-in default) and TikTok. It is gated exactly like TikTok: no `LINKEDIN` con
 object in the dashboard's `index.html` and the module, the nav group and the panels do
 not exist, so every existing Meta-only and Meta+TikTok dashboard is unaffected even
 though the script tag is present. When `LINKEDIN` is defined, a **LinkedIn** nav group
-appears under TikTok with the same four tabs — **Weekly Summary**, **Movement Board**,
-**Ad Production**, **Creative Effectiveness** — driven by the same shared query,
-classification and render engines, with its own `li-` ids and state.
+appears under TikTok with the same **eight** tabs Meta has — **Weekly Summary**,
+**Movement Board**, **Movement Map**, then **Ad Power Law**, **Ad Production**,
+**Ad Decay**, **Ad Age**, **Creative Effectiveness** — driven by the same shared query,
+classification and render engines, with its own `li-` ids and state. See
+[Secondary-channel tab parity](#secondary-channel-tab-parity-tiktok--linkedin) for what
+the four non-original tabs do and the one new config key they introduce.
 
 ### Two config modes — pick the one that matches the warehouse
 
@@ -254,6 +372,10 @@ expression** override on `LINKEDIN`:
 | `REVENUE_EXPR` | `revenue` (ROAS mode only — the same key the engine already used) |
 | `VIDEO_STARTS_EXPR` | `video_starts` |
 | `VIDEO_P25_EXPR` / `VIDEO_P50_EXPR` / `VIDEO_P75_EXPR` / `VIDEO_P100_EXPR` | the video quartiles |
+
+> `AGE_BUCKET_EXPR` is **not** in this table. It does not supply a contract column — it
+> replaces the Ad Age tab's bucketing expression outright, and it works in every source
+> mode. See [Ad Age: why the bucket is derived](#ad-age-why-the-bucket-is-derived).
 
 Set **any** of them and the builder stops reading the table bare and wraps it in a
 normalising subquery — exactly what shared-account mode already does — aliasing each
