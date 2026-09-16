@@ -210,7 +210,7 @@ channels — now have the **same eight**, in the same order, with the same nav g
 
 | | Weekly | | Monthly | | | | |
 |---|---|---|---|---|---|---|---|
-| **Meta** | Weekly Summary · Movement Board · Movement Map | | Ad Power Law · Ad Production · Ad Decay · Ad Age · Creative Effectiveness | | | | |
+| **Meta** (`Meta - Weekly` / `Meta - Monthly`) | Weekly Summary · Movement Board · Movement Map | | Ad Power Law · Ad Production · Ad Decay · Ad Age · Creative Effectiveness | | | | |
 | **TikTok** | same, `tt-` ids | | same, `tt-` ids | | | | |
 | **LinkedIn** | same, `li-` ids | | same, `li-` ids | | | | |
 
@@ -218,7 +218,7 @@ channels — now have the **same eight**, in the same order, with the same nav g
 eight tabs appear; a dashboard already running either channel gets Movement Map, Ad Power
 Law, Ad Decay and Ad Age on the next version bump with **zero** config changes. The nav
 group gains a second `nav-section` divider (`TikTok · Monthly`, `LinkedIn · Monthly`) so
-the split reads the same as Meta's Weekly/Monthly split.
+the split reads the same as Meta's own `Meta - Weekly` / `Meta - Monthly` split.
 
 The one new (optional) key is `AGE_BUCKET_EXPR`, described below.
 
@@ -317,6 +317,17 @@ A blank, missing or non-string value falls back to the derived default.
   source declaring the contract schema (parse, type-check and column resolution, in both
   CPA and ROAS mode) plus the `test/tiktok-monthly-parity.test.js` suite. The **numbers**
   are unverified until a real TikTok mart exists.
+
+### Fixed: sub-dollar CPA/CPC values rounding to `$0`/`$1`
+
+Live-testing LinkedIn's Ad Production and Ad Decay tabs against Skip's real data
+surfaced a display bug: `fmt$()` hardcoded whole-dollar rounding, so a genuine sub-dollar
+figure (Skip's real cost-per-click ran $0.10-$0.67 for several creatives) rounded to
+`$0` or `$1` and read as missing or free rather than as a very cheap, very good number.
+Fixed by mirroring the same `<$10 → 2dp` threshold `fmtMetric()`'s `money` branch already
+used for ROAS: values under $10 now show two decimal places (`$0.10`, `$6.83`); $10 and
+over stay whole-dollar, so every existing dashboard's ordinary spend/CPA figures render
+byte-for-byte unchanged. Covered by `test/sub-dollar-formatting.test.js`.
 
 ## LinkedIn channel
 

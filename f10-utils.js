@@ -178,7 +178,11 @@ const STATE_META = {
 
 /* ── Formatters ── */
 function bqStr(v){ if(v==null) return null; if(typeof v==='object'&&v.value!==undefined) return String(v.value); return String(v); }
-function fmt$(n){ if(n==null||n===''||isNaN(n)) return '–'; return '$'+Number(n).toLocaleString('en-AU',{maximumFractionDigits:0}); }
+/* Sub-$10 values get 2 dp so a genuine sub-dollar figure (e.g. LinkedIn cost-per-
+ * click, often $0.10-$0.70) doesn't round to '$0' or '$1' and read as missing/free.
+ * $10+ stays whole-dollar, matching every existing dashboard's look unchanged.
+ * Mirrors the same threshold fmtMetric()'s 'money' branch already uses for ROAS. */
+function fmt$(n){ if(n==null||n===''||isNaN(n)) return '–'; const dp = Number(n)<10?2:0; return '$'+Number(n).toLocaleString('en-AU',{minimumFractionDigits:dp, maximumFractionDigits:dp}); }
 function fmtPct(n, dp=1){ if(n==null||isNaN(n)) return '–'; return Number(n).toFixed(dp)+'%'; }
 function fmtNum(n){ if(n==null||isNaN(n)) return '–'; return Number(n).toLocaleString('en-AU',{maximumFractionDigits:0}); }
 function fmtRatio(n, dp=1){ if(n==null||isNaN(n)||!isFinite(n)) return '–'; return Number(n).toFixed(dp)+'x'; }
