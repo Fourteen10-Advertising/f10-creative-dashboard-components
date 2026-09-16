@@ -806,11 +806,11 @@ function renderLayout(){
       <div class="report-name">${report}</div>
     </div>
     <nav>
-      <div class="nav-section">Weekly</div>
+      <div class="nav-section">Meta - Weekly</div>
       <a href="#" class="nav-link active" data-tab="summary">Weekly Summary</a>
       <a href="#" class="nav-link" data-tab="board">Movement Board</a>
       <a href="#" class="nav-link" data-tab="map">Movement Map</a>
-      <div class="nav-section">Monthly</div>
+      <div class="nav-section">Meta - Monthly</div>
       <a href="#" class="nav-link" data-tab="powerlaw">Ad Power Law</a>
       <a href="#" class="nav-link" data-tab="production">Ad Production</a>
       <a href="#" class="nav-link" data-tab="decay">Ad Decay</a>
