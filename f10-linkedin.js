@@ -361,16 +361,78 @@ ${list.join(',\n')}
     };
   }
 
-  const LI_TABS = ['li-summary', 'li-board', 'li-production', 'li-creative'];
+  /* ── Ad Age bucketing ──
+   * Meta's Ad Age tab reads a PRECOMPUTED `creative_age` label column off the Meta
+   * mart. LinkedIn DERIVES the bucket instead, from days since launch (date_start
+   * minus the per-creative lifetime min_date) — the same semantic `creative_age`
+   * encodes, computed fresh. Three reasons, in order of weight:
+   *
+   *   1. `creative_age` is NOT in the normalised LinkedIn column contract, and cannot
+   *      be: shared-account mode (Mode 2) builds its rows from the raw LinkedIn API
+   *      tables, which have no age column at all, and a Mode 1b normalising wrapper
+   *      only passes contract columns through. Deriving is the ONLY rule that gives
+   *      all three source modes the same tab.
+   *   2. A per-client mart is not required to publish an age column, so a tab that
+   *      depended on one would break on a lean mart rather than degrade.
+   *   3. It costs nothing in accuracy. Verified 2026-09-16 against Skip's real mart
+   *      `mcc-poc-477801.skip_marts.linkedin_creative_reporting`: the derived bucket
+   *      reproduces that mart's own `creative_age` on 1,469 of 1,469 rows (100%),
+   *      with the 0-7/8-14/15-30/31-60/61-90/90+ boundaries landing exactly where
+   *      DATE_DIFF puts them. So computing it is a strictly safer way to get the same
+   *      answer, not a different answer.
+   *
+   *   (An earlier note on this build claimed Skip's `creative_age` read '1. 0-7 Days'
+   *   on every row. That does NOT reproduce against the mart as it stands — the
+   *   column is well-formed today. The derivation is kept for reasons 1 and 2, which
+   *   hold regardless, not because that column is currently broken.)
+   *
+   * LINKEDIN.AGE_BUCKET_EXPR is the escape hatch for a client who wants their mart's
+   * own bucketing instead: a raw SQL expression that must evaluate to one of the three
+   * bucket labels below, e.g.
+   *   AGE_BUCKET_EXPR: "CASE WHEN creative_age IN ('1. 0-7 Days','2. 8-14 Days') THEN '0–14 Days' ... END"
+   * It is pasted verbatim from trusted dashboard config (the same escape-hatch
+   * contract as the Mode 1b *_EXPR overrides) and is evaluated against the RESOLVED
+   * source, so it may only name columns that source emits: any mart column in Mode 1
+   * (bare table), but only NORMALISED CONTRACT columns once a Mode 1b wrapper or
+   * shared-account mode is in play — those wrappers do not pass `creative_age`
+   * through. A client who needs a precomputed age column AND column overrides at the
+   * same time should map the age column into the contract via the mart itself. */
+  const LI_AGE_DAYS = 'DATE_DIFF(date_start, min_date, DAY)';
+  const LI_AGE_BUCKETS = ['0–14 Days', '15–90 Days', '90+ Days'];
+  const liAgeBucketSQL = () => {
+    const ov = liCfg().AGE_BUCKET_EXPR;
+    if (typeof ov === 'string' && ov.trim()) return ov.trim();
+    return `CASE WHEN ${LI_AGE_DAYS} <= 14 THEN '${LI_AGE_BUCKETS[0]}'`
+         + ` WHEN ${LI_AGE_DAYS} <= 90 THEN '${LI_AGE_BUCKETS[1]}'`
+         + ` ELSE '${LI_AGE_BUCKETS[2]}' END`;
+  };
+
+  /* Full eight-tab parity with the Meta engine. Order mirrors the Meta sidebar:
+   * Weekly (Summary, Board, Map) then Monthly (Power Law, Production, Decay, Age,
+   * Creative Effectiveness). */
+  const LI_TABS = ['li-summary', 'li-board', 'li-map', 'li-powerlaw', 'li-production', 'li-decay', 'li-age', 'li-creative'];
   const liTitles = {
     'li-summary':    'LinkedIn · Weekly Summary',
     'li-board':      'LinkedIn · Movement Board',
+    'li-map':        'LinkedIn · Movement Map',
+    'li-powerlaw':   'LinkedIn · Ad Power Law',
     'li-production': 'LinkedIn · Ad Production',
+    'li-decay':      'LinkedIn · Ad Decay',
+    'li-age':        'LinkedIn · Ad Age',
     'li-creative':   'LinkedIn · Creative Effectiveness',
   };
-  const liIsWeekly = (t) => t === 'li-summary' || t === 'li-board';
+  /* The Movement Map is fed by the SAME per-window `movers` array the Summary and
+   * Board already compute, so it is a weekly tab: it needs no query of its own and
+   * re-renders with the weekly controls. */
+  const liIsWeekly = (t) => t === 'li-summary' || t === 'li-board' || t === 'li-map';
 
   let LI_WIN = null, LI_MAXDATE = null, liCharts = {}, liActive = null, liLoaded = {};
+
+  /* Null-safe show/hide. The shared showEl/hideEl throw on a missing id, which is
+   * fine for the panels that always exist; the tabs added for Meta parity render into
+   * ids a partially-stubbed DOM may not carry, so they go through these. */
+  const liShow = (id) => { const el = document.getElementById(id); if (el) el.style.display = ''; };
+  const liHide = (id) => { const el = document.getElementById(id); if (el) el.style.display = 'none'; };
 
   /* ── Data fetching ── */
 
@@ -456,6 +518,7 @@ ${list.join(',\n')}
     try {
       showEl('li-summary-loading'); hideEl('li-summary-body');
       showEl('li-board-loading');   hideEl('li-board-table');
+      liShow('li-map-loading');     liHide('li-map-wrapper');
       LI_WIN = await liFetchWindows(liControls());
       liRenderWeekly();
     } catch (err) {
@@ -470,9 +533,12 @@ ${list.join(',\n')}
     const classified = Object.values(LI_WIN.ads).map((a) => classify(a, c));
     const movers = classified.filter((a) => a.qCur || a.qPri);
     const windowTxt = `Current: ${fmtDate(LI_WIN.curStart)} – ${fmtDate(LI_WIN.curEnd)} vs Prior: ${fmtDate(LI_WIN.priStart)} – ${fmtDate(LI_WIN.priEnd)} · Metric: ${c.metric.label} · ${movers.length} ads cleared the floor`;
-    ['li-summary-window-note', 'li-board-window-note'].forEach((id) => { const el = document.getElementById(id); if (el) el.textContent = windowTxt; });
+    ['li-summary-window-note', 'li-board-window-note', 'li-map-window-note'].forEach((id) => { const el = document.getElementById(id); if (el) el.textContent = windowTxt; });
     liRenderSummary(classified, c);
     liRenderBoard(movers, c);
+    /* The Map reads the SAME movers array the Board just rendered — one window
+     * fetch feeds all three weekly tabs, exactly as the Meta engine does. */
+    liRenderMap(movers, c);
     const lu = document.getElementById('last-updated'); if (lu) lu.textContent = 'Updated ' + new Date().toLocaleTimeString('en-AU');
   }
 
@@ -596,6 +662,48 @@ ${list.join(',\n')}
     hideEl('li-board-loading'); showEl('li-board-table');
   }
 
+  /* ── Movement Map ──
+   * Bubble chart of the same qualifying creatives the Board lists: x = current-window
+   * spend (how much the creative carries), y = % change in the active efficiency
+   * metric vs the prior window (up = better), bubble size = current spend, colour =
+   * ad state. Mirrors renderMap() in f10-weekly.js; it needs NO query of its own
+   * because the movers array is already computed once per window fetch. */
+  function liRenderMap(movers, c) {
+    const m = c.metric;
+    const pts = movers.filter((a) => a.improvePct != null && a.sCur > 0);
+    const byState = {};
+    pts.forEach((a) => { (byState[a.state] = byState[a.state] || []).push({ x: a.sCur, y: a.improvePct * 100, r: 0, _spend: a.sCur, _name: a.ad_name, _state: a.state }); });
+    const maxSpend = Math.max(1, ...pts.map((p) => p.sCur));
+    const datasets = Object.entries(byState).map(([s, arr]) => ({
+      label: stateLabel(s),
+      data: arr.map((p) => Object.assign({}, p, { r: 6 + 22 * Math.sqrt(p._spend / maxSpend) })),
+      backgroundColor: STATE_META[s].color + 'bb',
+      borderColor: STATE_META[s].color,
+      borderWidth: 1.5,
+    }));
+    liHide('li-map-loading'); liShow('li-map-wrapper');
+    if (liCharts.map) { liCharts.map.destroy(); liCharts.map = null; }
+    const wrap = document.getElementById('li-map-wrapper');
+    if (!wrap) return;
+    if (!pts.length) {
+      wrap.innerHTML = '<div class="no-data">No creatives with a comparable metric in both windows. New entrants and zero-conversion creatives appear on the Board instead.</div>';
+      return;
+    }
+    wrap.innerHTML = '<canvas id="li-map-chart"></canvas>';
+    liCharts.map = new Chart(document.getElementById('li-map-chart'), {
+      type: 'bubble', data: { datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: {
+          x: { title: { display: true, text: 'Current window spend ($)', font: { size: 11 } }, min: 0, ticks: { callback: (v) => '$' + v.toLocaleString() } },
+          y: { title: { display: true, text: `${m.label} change vs prior (%, up = better)`, font: { size: 11 } }, ticks: { callback: (v) => v + '%' } },
+        },
+        plugins: { legend: { position: 'top', labels: { font: { size: 11 } } }, tooltip: { callbacks: { label: (ctx) => { const p = ctx.raw; return [p._name || '', stateLabel(p._state), `Spend: $${p._spend.toLocaleString()}`, `${m.label} change: ${p.y > 0 ? '+' : ''}${p.y.toFixed(1)}%`]; } } } },
+      },
+      plugins: [{ id: 'zeroLine', afterDraw(chart){ const yA = chart.scales.y, xA = chart.scales.x; const y0 = yA.getPixelForValue(0); if (y0 >= yA.top && y0 <= yA.bottom){ const ctx2 = chart.ctx; ctx2.save(); ctx2.setLineDash([5, 4]); ctx2.strokeStyle = '#727272'; ctx2.lineWidth = 1.5; ctx2.beginPath(); ctx2.moveTo(xA.left, y0); ctx2.lineTo(xA.right, y0); ctx2.stroke(); ctx2.setLineDash([]); ctx2.fillStyle = '#727272'; ctx2.font = '10px Archivo'; ctx2.fillText('no change', xA.left + 4, y0 - 4); ctx2.restore(); } } }],
+    });
+  }
+
   /* ── Ad Production (lifetime spend vs CPA/ROAS classification) ── */
 
   /* Pure SQL builders for the Ad Production tab (scatter + monthly rollup). */
@@ -703,6 +811,178 @@ ${list.join(',\n')}
     } catch (err) { console.error('LinkedIn production error:', err); }
   }
 
+  /* ── Ad Power Law ──
+   * Spend concentration over the last 90 days: every creative ranked by its share of
+   * total spend, with a rolling cumulative line. Mirrors loadPowerLaw() in
+   * f10-monthly.js against the RESOLVED LinkedIn source, so it works unchanged in
+   * Mode 1, Mode 1b and shared-account mode. Two divergences from the Meta shape,
+   * both forced by the normalised LinkedIn contract:
+   *   • there is no `max_date` column, so "last spend" is MAX(date_start);
+   *   • the structural split column is `adgroup_name` (the campaign objective in
+   *     shared-account mode), not Meta's `adset_name`.
+   * SAFE_DIVIDE guards the share maths so an all-zero-spend 90-day window renders an
+   * empty chart rather than erroring on a divide by zero. */
+  function liPowerLawSQL() {
+    const mCol = liLifetimeMetricCol();
+    return `
+      WITH ad_spend AS (
+        SELECT ad_id, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(adgroup_name) AS adgroup_name, ANY_VALUE(ad_name) AS ad_name,
+          MIN(min_date) AS launch_date, MAX(date_start) AS last_spend_date, ANY_VALUE(creative_link) AS preview_link,
+          ROUND(SUM(spend), 2) AS period_spend,
+          ROUND(${liLifetimeMetricSQL('SUM(spend)', `SUM(${liConv()})`)}, 2) AS ${mCol}
+        FROM ${liTable()}
+        WHERE date_start >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
+        GROUP BY 1
+        /* A creative can have rows inside the window with no spend on any of them
+           (LinkedIn marts carry a row per creative per day whether or not it served),
+           which on the live Skip mart put two null-spend creatives into the ranking at
+           #16 and #17 with a blank spend and a blank share. They contribute nothing to
+           a spend-concentration read, so they are dropped rather than ranked. */
+        HAVING period_spend > 0 ),
+      total AS ( SELECT SUM(period_spend) AS grand_total FROM ad_spend )
+      SELECT ROW_NUMBER() OVER (ORDER BY a.period_spend DESC) AS rank_num,
+        a.ad_id, a.campaign_name, a.adgroup_name, a.ad_name, a.launch_date, a.last_spend_date, a.preview_link,
+        a.period_spend AS spend,
+        ROUND(SAFE_DIVIDE(a.period_spend, t.grand_total) * 100, 2) AS spend_pct,
+        ROUND(SUM(SAFE_DIVIDE(a.period_spend, t.grand_total) * 100) OVER (ORDER BY a.period_spend DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), 2) AS rolling_pct,
+        a.${mCol}
+      FROM ad_spend a, total t ORDER BY a.period_spend DESC`;
+  }
+
+  async function liLoadPowerLaw() {
+    const mCol = liLifetimeMetricCol();
+    try {
+      const data = await runQuery(liPowerLawSQL());
+      const labels = data.map((r) => `#${r.rank_num}`);
+      const pcts = data.map((r) => Number(r.spend_pct) || 0);
+      const rolling = data.map((r) => Number(r.rolling_pct) || 0);
+      liHide('li-powerlaw-chart-loading'); liShow('li-powerlaw-chart-wrapper');
+      if (liCharts.powerlaw) liCharts.powerlaw.destroy();
+      liCharts.powerlaw = new Chart(document.getElementById('li-powerlaw-chart'), {
+        type: 'bar', data: { labels, datasets: [
+          { type: 'bar', label: '% of Spend', data: pcts, backgroundColor: getCSS('--young-blood') + '99', borderColor: getCSS('--young-blood'), borderWidth: 1, yAxisID: 'y' },
+          { type: 'line', label: '% Rolling Cumulative', data: rolling, borderColor: CHART_PRIMARY, backgroundColor: 'transparent', borderWidth: 2.5, pointRadius: 3, yAxisID: 'y2', tension: 0.2 } ] },
+        options: { responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { font: { size: 10 } } }, y: { title: { display: true, text: '% of Spend', font: { size: 10 } }, ticks: { callback: (v) => v + '%' } }, y2: { position: 'right', min: 0, max: 100, title: { display: true, text: 'Cumulative %', font: { size: 10 } }, ticks: { callback: (v) => v + '%', font: { size: 10 } }, grid: { drawOnChartArea: false } } }, plugins: { legend: { position: 'top', labels: { font: { size: 11 } } } } },
+      });
+      renderPagedTable('li-powerlaw-table-body', data.map((r) =>
+        `<tr><td class="rank-num">${r.rank_num}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name || ''}">${r.campaign_name || '–'}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adgroup_name || ''}">${r.adgroup_name || '–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name || ''}">${r.ad_name || '–'}</td><td>${fmtDate(r.launch_date)}</td><td>${fmtDate(r.last_spend_date)}</td><td>${r.preview_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="linkedin" href="${r.preview_link}" target="_blank">Preview</a>` : '–'}</td><td>${fmt$(r.spend)}</td><td>${fmtPct(r.spend_pct, 2)}</td><td>${fmtPct(r.rolling_pct, 2)}</td><td>${Number(r[mCol]) > 0 ? fmtMetricCell(r[mCol]) : '–'}</td></tr>`));
+      liHide('li-powerlaw-table-loading'); liShow('li-powerlaw-table');
+    } catch (err) { console.error('LinkedIn power law error:', err); const el = document.getElementById('li-powerlaw-table-loading'); if (el) el.innerHTML = 'Error loading data: ' + err.message; }
+  }
+
+  /* ── Ad Decay ──
+   * Launch-month cohorts: how a month's creatives keep (or stop) carrying spend.
+   * Mirrors loadDecay() in f10-monthly.js. The cohort summary is computed per
+   * creative FIRST (a `per_ad` CTE) and only then rolled up by launch month, because
+   * the LinkedIn contract has no `max_date` column — the per-creative last active day
+   * is MAX(date_start), which only exists once rows are collapsed to one per creative.
+   * That also makes "avg days running" a true per-creative average rather than one
+   * weighted by how many daily rows each creative happens to have. */
+  function liDecaySQL() {
+    const isRoas = liIsRoas();
+    const revSel = isRoas ? `, SUM(${liRevExpr()}) AS revenue` : '';
+    /* Cohort efficiency: CPA (SUM(spend)/SUM(conv), 0 dp) or, in ROAS mode, cohort
+       ROAS (SUM(revenue)/SUM(spend), 2 dp). The alias stays `cpa` so the render and
+       grand-total plumbing matches the Meta tab. */
+    const cohortMetricSQL = isRoas
+      ? `ROUND(SAFE_DIVIDE(SUM(revenue), NULLIF(SUM(ad_spend), 0)), 2)`
+      : `ROUND(SAFE_DIVIDE(SUM(ad_spend), NULLIF(SUM(ad_conversions), 0)), 0)`;
+    const summarySQL = `
+      WITH per_ad AS (
+        SELECT ad_id, MIN(min_date) AS launch_date, MAX(date_start) AS last_active_date,
+          SUM(spend) AS ad_spend, SUM(${liConv()}) AS ad_conversions${revSel}
+        FROM ${liTable()} GROUP BY 1 )
+      SELECT FORMAT_DATE('%b %Y', launch_date) AS launch_month, DATE_TRUNC(launch_date, MONTH) AS launch_month_sort,
+        COUNT(DISTINCT ad_id) AS ads_launched,
+        ROUND(AVG(DATE_DIFF(COALESCE(last_active_date, CURRENT_DATE()), launch_date, DAY)), 0) AS avg_days_running,
+        ROUND(SUM(ad_spend), 0) AS total_spend,
+        ${cohortMetricSQL} AS cpa
+      FROM per_ad GROUP BY 1, 2 ORDER BY 2 DESC`;
+    const dailySQL = `
+      SELECT FORMAT_DATE('%b %Y', min_date) AS launch_month, DATE_TRUNC(min_date, MONTH) AS launch_month_sort,
+        date_start, ROUND(SUM(spend), 2) AS daily_spend
+      FROM ${liTable()} GROUP BY 1, 2, 3 ORDER BY 3, 2`;
+    return { summarySQL, dailySQL };
+  }
+
+  async function liLoadDecay() {
+    const { summarySQL, dailySQL } = liDecaySQL();
+    try {
+      const [summary, daily] = await Promise.all([runQuery(summarySQL), runQuery(dailySQL)]);
+      let totalAds = 0, totalSpend = 0;
+      const rows = summary.map((r) => {
+        totalAds += Number(r.ads_launched) || 0; totalSpend += Number(r.total_spend) || 0;
+        return `<tr><td>${r.launch_month}</td><td>${fmtNum(r.ads_launched)}</td><td>${r.avg_days_running != null ? r.avg_days_running + 'd' : '–'}</td><td>${fmt$(r.total_spend)}</td><td>${r.cpa && Number(r.cpa) > 0 ? fmtMetricCell(r.cpa) : '–'}</td></tr>`;
+      });
+      renderPagedTable('li-decay-summary-body', rows, 20, `<tr style="font-weight:600; background:var(--paper);"><td>Grand Total</td><td>${fmtNum(totalAds)}</td><td>–</td><td>${fmt$(totalSpend)}</td><td>–</td></tr>`);
+      liHide('li-decay-summary-loading'); liShow('li-decay-summary-table');
+      const cohorts = [...new Set(daily.map((r) => r.launch_month))];
+      const dates = [...new Set(daily.map((r) => bqStr(r.date_start)))].sort();
+      const spendMap = {}; daily.forEach((r) => { spendMap[r.launch_month + '|' + bqStr(r.date_start)] = Number(r.daily_spend) || 0; });
+      const datasets = cohorts.map((c, i) => ({ label: c, data: dates.map((d) => spendMap[c + '|' + d] || 0), backgroundColor: COHORT_COLORS[i % COHORT_COLORS.length] + '99', borderColor: COHORT_COLORS[i % COHORT_COLORS.length], borderWidth: 2, fill: true, tension: 0.3, pointRadius: 3 }));
+      liHide('li-decay-chart-loading'); liShow('li-decay-chart-wrapper');
+      if (liCharts.decay) liCharts.decay.destroy();
+      liCharts.decay = new Chart(document.getElementById('li-decay-chart'), {
+        type: 'line', data: { labels: dates.map((d) => fmtDate(d)), datasets },
+        options: { responsive: true, maintainAspectRatio: true, scales: { x: { stacked: true, ticks: { font: { size: 10 }, maxRotation: 45 } }, y: { stacked: true, ticks: { callback: (v) => '$' + v.toLocaleString() } } }, plugins: { legend: { position: 'top', labels: { font: { size: 11 } } } } },
+      });
+      const dayTotals = dates.map((d) => cohorts.reduce((s, c) => s + (spendMap[c + '|' + d] || 0), 0));
+      const pctDatasets = cohorts.map((c, i) => ({ label: c, data: dates.map((d, j) => dayTotals[j] > 0 ? (spendMap[c + '|' + d] || 0) / dayTotals[j] * 100 : 0), backgroundColor: COHORT_COLORS[i % COHORT_COLORS.length] + 'cc', borderColor: COHORT_COLORS[i % COHORT_COLORS.length], borderWidth: 1, fill: true }));
+      liHide('li-decay-pct-loading'); liShow('li-decay-pct-wrapper');
+      if (liCharts.decayPct) liCharts.decayPct.destroy();
+      liCharts.decayPct = new Chart(document.getElementById('li-decay-pct-chart'), {
+        type: 'bar', data: { labels: dates.map((d) => fmtDate(d)), datasets: pctDatasets },
+        options: { responsive: true, maintainAspectRatio: true, scales: { x: { stacked: true, ticks: { font: { size: 10 }, maxRotation: 45 } }, y: { stacked: true, max: 100, ticks: { callback: (v) => v + '%' } } }, plugins: { legend: { position: 'top', labels: { font: { size: 11 } } } } },
+      });
+    } catch (err) { console.error('LinkedIn decay error:', err); const el = document.getElementById('li-decay-summary-loading'); if (el) el.innerHTML = 'Error loading data: ' + err.message; }
+  }
+
+  /* ── Ad Age ──
+   * Daily spend mix by creative age (0–14 / 15–90 / 90+ days since launch) plus the
+   * per-creative library. Mirrors loadAge() in f10-monthly.js, except the age bucket
+   * is DERIVED from date_start − min_date rather than read from a precomputed
+   * `creative_age` column — see liAgeBucketSQL() above for why that column cannot be
+   * trusted on LinkedIn, and for the LINKEDIN.AGE_BUCKET_EXPR escape hatch. */
+  function liAgeSQL() {
+    const mCol = liLifetimeMetricCol();
+    const ageSQL = `
+      SELECT date_start, ${liAgeBucketSQL()} AS age_bucket, ROUND(SUM(spend), 2) AS daily_spend
+      FROM ${liTable()} GROUP BY 1, 2 ORDER BY 1, 2`;
+    const tableSQL = `
+      SELECT ad_id, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(adgroup_name) AS adgroup_name, ANY_VALUE(ad_name) AS ad_name,
+        MIN(min_date) AS launch_date, MAX(date_start) AS last_spend, ANY_VALUE(creative_link) AS preview_link,
+        ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend,
+        ROUND(${liLifetimeMetricSQL('ANY_VALUE(lifetime_spend)', `SUM(${liConv()})`)}, 2) AS ${mCol},
+        ROUND(SUM(${liConv()}), 0) AS total_conversions
+      FROM ${liTable()} GROUP BY 1 ORDER BY lifetime_spend DESC`;
+    return { ageSQL, tableSQL };
+  }
+
+  async function liLoadAge() {
+    const { ageSQL, tableSQL } = liAgeSQL();
+    const mCol = liLifetimeMetricCol();
+    try {
+      const [ageData, tableData] = await Promise.all([runQuery(ageSQL), runQuery(tableSQL)]);
+      const dates = [...new Set(ageData.map((r) => bqStr(r.date_start)))].sort();
+      const spendMap = {}; ageData.forEach((r) => { spendMap[bqStr(r.date_start) + '|' + r.age_bucket] = Number(r.daily_spend) || 0; });
+      const dayTotals = dates.map((d) => LI_AGE_BUCKETS.reduce((s, bk) => s + (spendMap[d + '|' + bk] || 0), 0));
+      const ageDatasets = LI_AGE_BUCKETS.map((b) => ({
+        label: b,
+        data: dates.map((d, i) => dayTotals[i] > 0 ? +((spendMap[d + '|' + b] || 0) / dayTotals[i] * 100).toFixed(1) : 0),
+        backgroundColor: AGE_COLORS[b] + 'dd', borderColor: AGE_COLORS[b], borderWidth: 1,
+      }));
+      liHide('li-age-chart-loading'); liShow('li-age-chart-wrapper');
+      if (liCharts.age) liCharts.age.destroy();
+      liCharts.age = new Chart(document.getElementById('li-age-chart'), {
+        type: 'bar', data: { labels: dates.map((d) => fmtDate(d)), datasets: ageDatasets },
+        options: { responsive: true, maintainAspectRatio: true, scales: { x: { stacked: true, ticks: { font: { size: 10 }, maxRotation: 45 } }, y: { stacked: true, max: 100, ticks: { callback: (v) => v + '%' } } }, plugins: { legend: { position: 'top', labels: { font: { size: 11 } } }, tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${ctx.raw}%` } } } },
+      });
+      renderPagedTable('li-age-table-body', tableData.map((r) =>
+        `<tr><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name || ''}">${r.campaign_name || '–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.adgroup_name || ''}">${r.adgroup_name || '–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name || ''}">${r.ad_name || '–'}</td><td>${fmtDate(r.launch_date)}</td><td>${fmtDate(r.last_spend)}</td><td>${r.preview_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="linkedin" href="${r.preview_link}" target="_blank">Preview</a>` : '–'}</td><td>${fmt$(r.lifetime_spend)}</td><td>${Number(r[mCol]) > 0 ? fmtMetricCell(r[mCol]) : '–'}</td><td>${fmtNum(r.total_conversions)}</td></tr>`));
+      liHide('li-age-table-loading'); liShow('li-age-table');
+    } catch (err) { console.error('LinkedIn age error:', err); const el = document.getElementById('li-age-table-loading'); if (el) el.innerHTML = 'Error loading data: ' + err.message; }
+  }
+
   /* ── Creative Effectiveness (view / hold / completion / retention) ── */
 
   /* Pure SQL builder for the Creative Effectiveness tab. */
@@ -762,9 +1042,13 @@ ${list.join(',\n')}
 
   function liLoadTab(tab) {
     liLoaded[tab] = true;
+    if (tab === 'li-powerlaw') liLoadPowerLaw();
     if (tab === 'li-production') liLoadProduction();
+    if (tab === 'li-decay') liLoadDecay();
+    if (tab === 'li-age') liLoadAge();
     if (tab === 'li-creative') liLoadCreative();
-    /* li-summary / li-board load together via liLoadWindows on boot + control changes */
+    /* li-summary / li-board / li-map load together via liLoadWindows on boot +
+     * control changes — one window fetch feeds all three weekly tabs. */
   }
 
   /* ── Tab system (coordinates with the Meta engine's tabs and the TikTok section) ── */
@@ -824,7 +1108,7 @@ ${list.join(',\n')}
       const ed = document.getElementById('li-ctrl-enddate');
       if (ed && LI_MAXDATE) { ed.value = LI_MAXDATE; ed.max = LI_MAXDATE; }
       await liLoadWindows(); /* pre-load weekly so first click is instant */
-      liLoaded['li-summary'] = true; liLoaded['li-board'] = true;
+      liLoaded['li-summary'] = true; liLoaded['li-board'] = true; liLoaded['li-map'] = true;
     } catch (err) { console.error('LinkedIn boot error:', err); }
   }
 
@@ -844,9 +1128,15 @@ ${list.join(',\n')}
     maxDateSQL: liMaxDateSQL,
     windowsSQL: liWindowsSQL,
     productionSQL: liProductionSQL,
+    powerLawSQL: liPowerLawSQL,
+    decaySQL: liDecaySQL,
+    ageSQL: liAgeSQL,
+    ageBucketSQL: liAgeBucketSQL,
+    ageBuckets: LI_AGE_BUCKETS,
     creativeSQL: liCreativeSQL,
     thresholds: LI_TH,
     tabs: LI_TABS,
     titles: liTitles,
+    isWeekly: liIsWeekly,
   };
 })();

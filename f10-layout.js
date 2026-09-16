@@ -176,6 +176,34 @@ function ttPanelsMarkup(ttTh){
       </div>
     </div>
 
+    <!-- TIKTOK: MOVEMENT MAP -->
+    <div class="tab-panel tt-tab-panel" id="panel-tt-map">
+      <div class="insight-box"><strong>TikTok Movement Map:</strong> each qualifying ad plotted by current spend (x, how much it carries) against how its efficiency changed versus the prior window (y, up = better). Bubble size = current spend. Heroes sit top-right, drags bottom-right. Same window and floor as the Movement Board &mdash; one fetch feeds both.</div>
+      <div class="window-note" id="tt-map-window-note"></div>
+      <div class="chart-card"><h3>Spend vs Efficiency Change</h3>
+        <div id="tt-map-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+        <div class="chart-wrapper" id="tt-map-wrapper" style="display:none; height:440px;"><canvas id="tt-map-chart"></canvas></div>
+      </div>
+    </div>
+
+    <!-- TIKTOK: AD POWER LAW -->
+    <div class="tab-panel tt-tab-panel" id="panel-tt-powerlaw">
+      <div class="insight-box"><strong>TikTok Ad Power Law:</strong> a small number of ads drive the majority of spend. This view ranks every ad by its share of total TikTok spend in the last 90 days, with a rolling cumulative line to visualise concentration. A steep drop-off early in the chart confirms the power law effect &mdash; your top ads are pulling most of the weight.</div>
+      <div class="chart-card"><h3>Spend Concentration &mdash; % of Total &amp; Cumulative</h3>
+        <div id="tt-powerlaw-chart-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+        <div class="chart-wrapper" id="tt-powerlaw-chart-wrapper" style="display:none; min-height:320px;"><canvas id="tt-powerlaw-chart"></canvas></div>
+      </div>
+      <div class="table-card"><h3>Ad Spend Ranking &mdash; Last 90 Days</h3>
+        <div class="table-scroll">
+          <div id="tt-powerlaw-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+          <table id="tt-powerlaw-table" style="display:none;">
+            <thead><tr><th>#</th><th>Campaign</th><th>Ad Group</th><th>Ad</th><th>Launch Date</th><th>Last Spend</th><th>Preview</th><th>Spend</th><th>Spend %</th><th>Rolling %</th><th>${targetMetricDef().label}</th></tr></thead>
+            <tbody id="tt-powerlaw-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- TIKTOK: AD PRODUCTION -->
     <div class="tab-panel tt-tab-panel" id="panel-tt-production">
       <div class="insight-box"><strong>TikTok Ad Production:</strong> how many ads were launched and the share that become hits (lifetime spend &ge; the Home Run threshold ${targetMetric() === 'roas' ? 'at a strong ROAS' : 'at an efficient CPA'}). Aim for a 10&ndash;15% hit rate.<br/><br/><strong>Thresholds:</strong>
@@ -209,6 +237,48 @@ function ttPanelsMarkup(ttTh){
           <table id="tt-scatter-table" style="display:none;">
             <thead><tr><th>Ad</th><th>Campaign</th><th>Ad Group</th><th>Launch Date</th><th>Lifetime Spend</th><th>Lifetime ${targetMetricDef().label}</th><th>Conversions</th><th class="num">Hook %</th><th class="num">Hold %</th><th class="num">Compl. %</th><th>Preview</th><th>Classification</th><th>Creative Score</th></tr></thead>
             <tbody id="tt-scatter-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TIKTOK: AD DECAY -->
+    <div class="tab-panel tt-tab-panel" id="panel-tt-decay">
+      <div class="insight-box"><strong>Why it's important:</strong> This chart tracks how long it takes for ads launched in a specific month (cohorts) to churn. It helps in projecting future ad needs by understanding the churn rate of existing creatives.<br/><br/><strong>How to interpret it:</strong> Look at each month's cohort to see the decline in spend over time. This helps in forecasting the volume of new ads required to maintain or scale the total spend level.</div>
+      <div class="table-card" style="margin-bottom:20px;"><h3>Cohort Summary</h3>
+        <div class="table-scroll">
+          <div id="tt-decay-summary-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+          <table id="tt-decay-summary-table" style="display:none;">
+            <thead><tr><th>Launch Month</th><th>Ads Launched</th><th>Avg Days Running</th><th>Spend</th><th>${targetMetricDef().label}</th></tr></thead>
+            <tbody id="tt-decay-summary-body"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="chart-card"><h3>Ad Spend by Cohort &mdash; Absolute ($)</h3>
+        <div id="tt-decay-chart-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+        <div class="chart-wrapper" id="tt-decay-chart-wrapper" style="display:none;"><canvas id="tt-decay-chart"></canvas></div>
+      </div>
+      <div class="chart-card"><h3>Ad Spend by Cohort &mdash; % Share</h3>
+        <div id="tt-decay-pct-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+        <div class="chart-wrapper" id="tt-decay-pct-wrapper" style="display:none;"><canvas id="tt-decay-pct-chart"></canvas></div>
+      </div>
+    </div>
+
+    <!-- TIKTOK: AD AGE -->
+    <div class="tab-panel tt-tab-panel" id="panel-tt-age">
+      <div class="insight-box"><strong>Why it's important:</strong> This chart shows the age distribution of creatives contributing to daily TikTok spend. It highlights how much of the performance is driven by new ads versus long-standing winners.<br/><br/><strong>How to interpret it:</strong> A high reliance on older ads (&gt;90 days) indicates a need for more frequent and effective testing &mdash; especially on TikTok, where creative fatigue is fast. Conversely, a healthy mix shows the testing process is successfully identifying new winners.<br/><br/><strong>Healthy Mix:</strong>
+        <div class="benchmark"><span class="bm-item"><strong>0&ndash;14 Days:</strong> 10&ndash;20%</span><span class="bm-item"><strong>15&ndash;90 Days:</strong> 20&ndash;40%</span><span class="bm-item"><strong>90+ Days:</strong> 40&ndash;50%</span></div>
+      </div>
+      <div class="chart-card"><h3>Daily Spend by Creative Age (%)</h3>
+        <div id="tt-age-chart-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+        <div class="chart-wrapper" id="tt-age-chart-wrapper" style="display:none;"><canvas id="tt-age-chart"></canvas></div>
+      </div>
+      <div class="table-card"><h3>Ad Library &mdash; Sorted by Spend</h3>
+        <div class="table-scroll">
+          <div id="tt-age-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+          <table id="tt-age-table" style="display:none;">
+            <thead><tr><th>Campaign</th><th>Ad Group</th><th>Ad</th><th>Launch Date</th><th>Last Spend</th><th>Preview</th><th>Spend &darr;</th><th>${targetMetricDef().label}</th><th>Conversions</th></tr></thead>
+            <tbody id="tt-age-table-body"></tbody>
           </table>
         </div>
       </div>
@@ -305,6 +375,34 @@ function liPanelsMarkup(liTh){
       </div>
     </div>
 
+    <!-- LINKEDIN: MOVEMENT MAP -->
+    <div class="tab-panel li-tab-panel" id="panel-li-map">
+      <div class="insight-box"><strong>LinkedIn Movement Map:</strong> each qualifying creative plotted by current spend (x, how much it carries) against how its efficiency changed versus the prior window (y, up = better). Bubble size = current spend. Heroes sit top-right, drags bottom-right. Same window and floor as the Movement Board &mdash; one fetch feeds both.</div>
+      <div class="window-note" id="li-map-window-note"></div>
+      <div class="chart-card"><h3>Spend vs Efficiency Change</h3>
+        <div id="li-map-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+        <div class="chart-wrapper" id="li-map-wrapper" style="display:none; height:440px;"><canvas id="li-map-chart"></canvas></div>
+      </div>
+    </div>
+
+    <!-- LINKEDIN: AD POWER LAW -->
+    <div class="tab-panel li-tab-panel" id="panel-li-powerlaw">
+      <div class="insight-box"><strong>LinkedIn Ad Power Law:</strong> a small number of creatives drive the majority of spend. This view ranks every creative by its share of total LinkedIn spend in the last 90 days, with a rolling cumulative line to visualise concentration. LinkedIn accounts usually run a handful of creatives, so expect steeper concentration than Meta &mdash; the read is whether the top one or two are the ones you would choose to back.</div>
+      <div class="chart-card"><h3>Spend Concentration &mdash; % of Total &amp; Cumulative</h3>
+        <div id="li-powerlaw-chart-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+        <div class="chart-wrapper" id="li-powerlaw-chart-wrapper" style="display:none; min-height:320px;"><canvas id="li-powerlaw-chart"></canvas></div>
+      </div>
+      <div class="table-card"><h3>Creative Spend Ranking &mdash; Last 90 Days</h3>
+        <div class="table-scroll">
+          <div id="li-powerlaw-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+          <table id="li-powerlaw-table" style="display:none;">
+            <thead><tr><th>#</th><th>Campaign</th><th>Objective</th><th>Ad</th><th>Launch Date</th><th>Last Spend</th><th>Preview</th><th>Spend</th><th>Spend %</th><th>Rolling %</th><th>${targetMetricDef().label}</th></tr></thead>
+            <tbody id="li-powerlaw-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- LINKEDIN: AD PRODUCTION -->
     <div class="tab-panel li-tab-panel" id="panel-li-production">
       <div class="insight-box"><strong>LinkedIn Ad Production:</strong> how many creatives were launched and the share that become hits (lifetime spend &ge; the Home Run threshold ${targetMetric() === 'roas' ? 'at a strong ROAS' : 'at an efficient CPA'}). LinkedIn runs at a much smaller per-creative spend scale than Meta, so these bands default lower &mdash; tune them per client.<br/><br/><strong>Thresholds:</strong>
@@ -338,6 +436,48 @@ function liPanelsMarkup(liTh){
           <table id="li-scatter-table" style="display:none;">
             <thead><tr><th>Ad</th><th>Campaign</th><th>Objective</th><th>Launch Date</th><th>Lifetime Spend</th><th>Lifetime ${targetMetricDef().label}</th><th>Conversions</th><th class="num">View %</th><th class="num">Hold %</th><th class="num">Compl. %</th><th>Preview</th><th>Classification</th><th>Creative Score</th></tr></thead>
             <tbody id="li-scatter-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- LINKEDIN: AD DECAY -->
+    <div class="tab-panel li-tab-panel" id="panel-li-decay">
+      <div class="insight-box"><strong>Why it's important:</strong> This chart tracks how long it takes for creatives launched in a specific month (cohorts) to churn. It helps in projecting future creative needs by understanding the churn rate of what is already live.<br/><br/><strong>How to interpret it:</strong> Look at each month's cohort to see the decline in spend over time. LinkedIn creatives typically run far longer than Meta's, so a flat cohort line is normal here &mdash; the signal to watch is a cohort that never hands over to a newer one.</div>
+      <div class="table-card" style="margin-bottom:20px;"><h3>Cohort Summary</h3>
+        <div class="table-scroll">
+          <div id="li-decay-summary-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+          <table id="li-decay-summary-table" style="display:none;">
+            <thead><tr><th>Launch Month</th><th>Ads Launched</th><th>Avg Days Running</th><th>Spend</th><th>${targetMetricDef().label}</th></tr></thead>
+            <tbody id="li-decay-summary-body"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="chart-card"><h3>Spend by Cohort &mdash; Absolute ($)</h3>
+        <div id="li-decay-chart-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+        <div class="chart-wrapper" id="li-decay-chart-wrapper" style="display:none;"><canvas id="li-decay-chart"></canvas></div>
+      </div>
+      <div class="chart-card"><h3>Spend by Cohort &mdash; % Share</h3>
+        <div id="li-decay-pct-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+        <div class="chart-wrapper" id="li-decay-pct-wrapper" style="display:none;"><canvas id="li-decay-pct-chart"></canvas></div>
+      </div>
+    </div>
+
+    <!-- LINKEDIN: AD AGE -->
+    <div class="tab-panel li-tab-panel" id="panel-li-age">
+      <div class="insight-box"><strong>Why it's important:</strong> This chart shows the age distribution of creatives contributing to daily LinkedIn spend. It highlights how much of the performance is driven by new creatives versus long-standing ones.<br/><br/><strong>How to interpret it:</strong> A high reliance on 90+ day creatives means the account is coasting on one or two units &mdash; fine while they work, fragile when they fatigue. Age is computed from each creative's first spend date, not from a precomputed age column, so it stays honest even on a mart whose own age field is wrong.<br/><br/><strong>Healthy Mix:</strong>
+        <div class="benchmark"><span class="bm-item"><strong>0&ndash;14 Days:</strong> 10&ndash;20%</span><span class="bm-item"><strong>15&ndash;90 Days:</strong> 20&ndash;40%</span><span class="bm-item"><strong>90+ Days:</strong> 40&ndash;50%</span></div>
+      </div>
+      <div class="chart-card"><h3>Daily Spend by Creative Age (%)</h3>
+        <div id="li-age-chart-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+        <div class="chart-wrapper" id="li-age-chart-wrapper" style="display:none;"><canvas id="li-age-chart"></canvas></div>
+      </div>
+      <div class="table-card"><h3>Creative Library &mdash; Sorted by Spend</h3>
+        <div class="table-scroll">
+          <div id="li-age-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+          <table id="li-age-table" style="display:none;">
+            <thead><tr><th>Campaign</th><th>Objective</th><th>Ad</th><th>Launch Date</th><th>Last Spend</th><th>Preview</th><th>Spend &darr;</th><th>${targetMetricDef().label}</th><th>Conversions</th></tr></thead>
+            <tbody id="li-age-table-body"></tbody>
           </table>
         </div>
       </div>
@@ -611,10 +751,19 @@ function renderLayout(){
 
   const hasTikTok = (typeof TIKTOK !== 'undefined' && TIKTOK && TIKTOK.TABLE);
   const ttTh = Object.assign({ HR_SPEND:5000, HR_CPA:70, OB_SPEND:1000, OB_CPA:100, SO_SPEND:500, SO_CPA:140, HR_ROAS:4, OB_ROAS:2, SO_ROAS:1 }, (hasTikTok && TIKTOK.THRESHOLDS) || {});
+  /* Full eight-tab parity with the Meta nav, split by the same two nav-section
+   * dividers Meta uses (Weekly / Monthly) and in Meta's exact tab order, so a reader
+   * moving between channels finds the same tabs in the same places. The first divider
+   * keeps the bare channel name so an existing TikTok sidebar's header is unchanged. */
   const ttNav = hasTikTok ? `<div class="nav-section">TikTok</div>
       <a href="#" class="tt-nav-link" data-tt-tab="tt-summary">Weekly Summary</a>
       <a href="#" class="tt-nav-link" data-tt-tab="tt-board">Movement Board</a>
+      <a href="#" class="tt-nav-link" data-tt-tab="tt-map">Movement Map</a>
+      <div class="nav-section">TikTok &middot; Monthly</div>
+      <a href="#" class="tt-nav-link" data-tt-tab="tt-powerlaw">Ad Power Law</a>
       <a href="#" class="tt-nav-link" data-tt-tab="tt-production">Ad Production</a>
+      <a href="#" class="tt-nav-link" data-tt-tab="tt-decay">Ad Decay</a>
+      <a href="#" class="tt-nav-link" data-tt-tab="tt-age">Ad Age</a>
       <a href="#" class="tt-nav-link" data-tt-tab="tt-creative">Creative Effectiveness</a>` : '';
   const ttControls = hasTikTok ? ttControlsMarkup() : '';
   const ttPanels = hasTikTok ? ttPanelsMarkup(ttTh) : '';
@@ -630,7 +779,12 @@ function renderLayout(){
   const liNav = hasLinkedIn ? `<div class="nav-section">LinkedIn</div>
       <a href="#" class="li-nav-link" data-li-tab="li-summary">Weekly Summary</a>
       <a href="#" class="li-nav-link" data-li-tab="li-board">Movement Board</a>
+      <a href="#" class="li-nav-link" data-li-tab="li-map">Movement Map</a>
+      <div class="nav-section">LinkedIn &middot; Monthly</div>
+      <a href="#" class="li-nav-link" data-li-tab="li-powerlaw">Ad Power Law</a>
       <a href="#" class="li-nav-link" data-li-tab="li-production">Ad Production</a>
+      <a href="#" class="li-nav-link" data-li-tab="li-decay">Ad Decay</a>
+      <a href="#" class="li-nav-link" data-li-tab="li-age">Ad Age</a>
       <a href="#" class="li-nav-link" data-li-tab="li-creative">Creative Effectiveness</a>` : '';
   const liControls = hasLinkedIn ? liControlsMarkup() : '';
   const liPanels = hasLinkedIn ? liPanelsMarkup(liTh) : '';
