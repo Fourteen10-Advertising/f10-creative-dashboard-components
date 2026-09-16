@@ -540,7 +540,7 @@ ${ttControls}
         <div class="table-scroll">
           <div id="board-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="board-table" style="display:none;">
-            <thead><tr><th>Ad</th><th>State</th><th class="num">Spend</th><th class="num">&Delta; Spend</th><th class="num" id="board-m-head">Metric</th><th class="num">&Delta; Metric</th><th class="num">Conv.</th><th class="num">Impr.</th><th class="num">Hold %</th><th class="num">Compl. %</th><th>Preview</th></tr></thead>
+            <thead><tr><th>Ad</th><th>State</th><th class="num">Days Running</th><th class="num">Spend</th><th class="num">&Delta; Spend</th><th class="num" id="board-m-head">Metric</th><th class="num">&Delta; Metric</th><th class="num">Conv.</th><th class="num">Impr.</th><th class="num">Hold %</th><th class="num">Compl. %</th><th>Preview</th></tr></thead>
             <tbody id="board-body"></tbody>
           </table>
         </div>

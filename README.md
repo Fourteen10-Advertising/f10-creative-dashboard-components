@@ -10,7 +10,7 @@ A dashboard is now just a config block plus script tags: the markup, styling, an
 |---|---|
 | `f10-shared.css` | All shared styles: layout, sidebar, controls bar, scorecards, badges, tables, charts |
 | `f10-utils.js` | Formatters, constants (METRICS, STATE_META, thresholds), `classify()`, aggregation helpers, group/status filter helpers (`scopeWhere()`), ad-name search (`adNameAttr`, `filterRowsBySearch`, `refilterAllTables`), `scatterMaxSpend()` |
-| `f10-weekly.js` | Weekly engine: fetchWindows, renderSummary/Board/Map, tab system, group filters, wireControls, initWeekly |
+| `f10-weekly.js` | Weekly engine: fetchWindows, renderSummary/Board/Map, tab system, group filters, wireControls, initWeekly. The Movement Board includes a **Days Running** column (whole days since the creative first went live, derived from the mart's `min_date`) |
 | `f10-monthly.js` | Monthly engine: loadPowerLaw/Production/Decay/Age/CreativeEffectiveness (video-only: static images excluded) + the `loadMonthlyTab()` dispatcher. All SQL is shared and config-driven |
 | `f10-layout.js` | `renderLayout()` — builds the sidebar, controls bar, and all seven tab panels into `<div id="app"></div>`. Production benchmark copy is derived from the threshold constants |
 | `f10-preview.js` | Inline creative hover previews for `.preview-link` targets; renders a swipeable carousel when an ad has multiple cards. Exposes `f10MediaMarkup({type,url}, opts)` — the shared `<img>`/`<video>` builder reused by the competitor tab — plus `f10PreviewCards(media)` and `f10CarouselHtml(cards, idx)` |

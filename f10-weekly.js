@@ -66,6 +66,7 @@ async function fetchWindows(c){
       ANY_VALUE(campaign_name) AS campaign_name,
       ANY_VALUE(adset_name)    AS adset_name,
       ANY_VALUE(creative_link) AS creative_link,
+      ANY_VALUE(min_date)      AS first_seen,
       SUM(IF(date_start BETWEEN '${curStart}' AND '${curEnd}', spend, 0))         AS cur_spend,
       SUM(IF(date_start BETWEEN '${curStart}' AND '${curEnd}', impressions, 0))   AS cur_impressions,
       SUM(IF(date_start BETWEEN '${curStart}' AND '${curEnd}', clicks, 0))        AS cur_clicks,
@@ -92,6 +93,7 @@ async function fetchWindows(c){
     ads[r.ad_id] = {
       ad_id: r.ad_id, ad_name: r.ad_name, campaign_name: r.campaign_name,
       adset_name: r.adset_name, creative_link: r.creative_link,
+      first_seen: (r.first_seen && r.first_seen.value) || r.first_seen || null,
       cur: { spend:cs, impressions:Number(r.cur_impressions)||0, clicks:Number(r.cur_clicks)||0, conv:Number(r.cur_conv)||0, conv_cost_num:cs, video_15s:Number(r.cur_v15s)||0, video_p25:Number(r.cur_p25)||0, video_p50:Number(r.cur_p50)||0, video_p75:Number(r.cur_p75)||0, video_p100:Number(r.cur_p100)||0, video_plays:Number(r.cur_plays)||0, outbound_clicks:Number(r.cur_outbound)||0, revenue:Number(r.cur_revenue)||0 },
       pri: { spend:ps, impressions:Number(r.pri_impressions)||0, clicks:Number(r.pri_clicks)||0, conv:Number(r.pri_conv)||0, conv_cost_num:ps, revenue:Number(r.pri_revenue)||0 },
     };
@@ -325,7 +327,7 @@ function renderBoard(movers, c){
   const rows = movers.slice().sort((a,b) => b.sCur - a.sCur);
   const body = document.getElementById('board-body');
   if(!rows.length){
-    body.innerHTML = `<tr><td colspan="11" class="no-data">No ads cleared the noise floor in this window. Lower the floor or widen the window.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="12" class="no-data">No ads cleared the noise floor in this window. Lower the floor or widen the window.</td></tr>`;
   } else {
     renderPagedTable('board-body', rows.map(a => {
       const sm=STATE_META[a.state], sd=a.spendDelta;
@@ -333,9 +335,13 @@ function renderBoard(movers, c){
       let mdHtml='–';
       if(a.metricDelta!=null){ const worse=m.dir==='lower'?a.metricDelta>0:a.metricDelta<0; const cls=Math.abs(a.metricDelta)<1e-6?'delta-flat':(worse?'delta-bad':'delta-good'); mdHtml=`<span class="${cls}">${a.metricDelta>0?'+':''}${fmtMetric(a.metricDelta,m)}</span>`; }
       const cr = creativeRates(a.cur); registerAdMetrics(a.ad_id, a.cur);
+      const daysRunning = a.first_seen
+        ? Math.max(0, Math.round((Date.now() - Date.parse(a.first_seen + 'T00:00:00Z')) / 864e5))
+        : null;
       return `<tr ${adNameAttr(a.ad_name)}>
         <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;" title="${a.ad_name||''}">${a.ad_name||'–'}<br><span style="color:var(--grey);font-size:10px;">${a.campaign_name||''}</span></td>
         <td><span class="badge ${sm.cls}">${a.state}</span></td>
+        <td class="num"${a.first_seen?` title="Live since ${fmtDate(a.first_seen)}"`:''}>${daysRunning!=null?fmtNum(daysRunning):'–'}</td>
         <td class="num">${fmt$(a.sCur)}</td>
         <td class="num delta-cell ${sdCls}">${sd>0?'+':''}${fmt$(sd)}</td>
         <td class="num">${fmtMetric(a.mCur,m)}</td>
