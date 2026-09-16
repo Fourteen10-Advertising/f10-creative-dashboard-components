@@ -689,6 +689,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     var beCompiled = null;        // last /compile response (resolved variants + cost)
     var beDesignSpec = null;      // Phase 2: the drafted/edited design layout_spec (edit loop)
     var beCompiledEdits = null;   // operator overrides: { 'p:vi:pi': text, 'c:vi:ci': text }
+    var beReferenceBlueprint = null; // US-009: the seeded reference blueprint (edit baseline + success signal)
+    var beBlueprintStatus = null;    // US-012: 'ready' | 'unavailable' | null (holistic / not from-inspiration)
+    var beBlueprintFaithful = null;  // US-009: operator's one-click faithful (true) / not (false) rating
     var beVariantMatrix = null;   // optional variant config passed through compile + submit
     var beRemainingCap = null;    // optional remaining spend cap (omitted -> backend default)
     var beJobId = null;           // the running generation job id (submit -> status polling)
@@ -923,6 +926,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '#panel-brief-editor .be-thumb.selected .be-tick{display:block;}'
         + '#panel-brief-editor .be-thumb .be-cap{position:absolute;left:0;right:0;bottom:0;font-size:10px;line-height:1.2;padding:3px 4px;'
         + 'background:rgba(0,0,0,0.55);color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}'
+        // US-011 structural badge + US-009 blueprint editor
+        + '#panel-brief-editor .be-struct-badge{position:absolute;top:5px;left:6px;font-size:9px;line-height:1.3;padding:1px 6px;'
+        + 'border-radius:8px;background:rgba(20,110,60,0.88);color:#fff;font-weight:600;}'
+        + '#panel-brief-editor .be-struct-badge.be-struct-pending{background:rgba(120,90,20,0.85);}'
+        + '#panel-brief-editor .be-blueprint{margin:0 0 14px;padding:12px 14px;border:1px solid rgba(0,0,0,0.14);border-radius:8px;background:rgba(0,0,0,0.02);}'
+        + '#panel-brief-editor .be-bp-box{display:inline-flex;gap:5px;}'
+        + '#panel-brief-editor .be-bp-num{width:60px;font:inherit;font-size:12px;padding:4px 6px;}'
+        + '#panel-brief-editor .be-bp-slots,#panel-brief-editor .be-bp-tbs,#panel-brief-editor .be-bp-ds-wrap{margin:8px 0;}'
+        + '#panel-brief-editor .be-bp-rating{display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap;}'
+        + '#panel-brief-editor .be-bp-rating .be-rated{border-color:var(--brand,#7a1f2b);color:var(--brand,#7a1f2b);font-weight:600;}'
+        + '#panel-brief-editor .be-bp-note{margin:10px 0;line-height:1.5;}'
         // competitor groups
         + '#panel-brief-editor .be-comp-group{margin:0 0 18px;}'
         + '#panel-brief-editor .be-comp-head{display:flex;align-items:baseline;gap:8px;margin:0 0 8px;}'
@@ -1265,6 +1279,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         thumb_url: ref.thumb_url || '',
         source: ref.source || '',
         label: ref.label || '',
+        has_structure: !!ref.has_structure,
       });
       renderInspChips();
       markThumbs();
@@ -1306,8 +1321,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var sel = inspHas(r.gcs_uri) ? ' selected' : '';
       var img = r.thumb_url ? '<img src="' + esc(r.thumb_url) + '" alt="" loading="lazy" />' : '';
       var cap = r.label ? '<span class="be-cap">' + esc(r.label) + '</span>' : '';
-      return '<div class="be-thumb' + sel + '" data-uri="' + esc(r.gcs_uri) + '">'
-        + img + '<span class="be-tick">&#10003;</span>' + cap + '</div>';
+      // US-011: mark whether the static already carries a structural (blueprint) row.
+      // In the from-inspiration path a structural static seeds a blueprint instantly;
+      // one without is still pickable and analysed on demand (US-012).
+      var struct = r.has_structure ? ' has-structure' : ' no-structure';
+      var badge = (beMode === 'inspiration')
+        ? (r.has_structure
+            ? '<span class="be-struct-badge" title="Ready: reconstructs this layout">structure</span>'
+            : '<span class="be-struct-badge be-struct-pending" title="No structure yet: analysed on demand">on-demand</span>')
+        : '';
+      return '<div class="be-thumb' + sel + struct + '" data-uri="' + esc(r.gcs_uri) + '"'
+        + ' data-has-structure="' + (r.has_structure ? '1' : '0') + '">'
+        + img + '<span class="be-tick">&#10003;</span>' + badge + cap + '</div>';
     }
 
     /* Re-apply the selected outline across EVERY rendered thumb (client grid +
@@ -1726,6 +1751,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         variantMatrix: beVariantMatrix || {},
         brief: insp ? readInspirationBrief() : readForm(),
       };
+      // US-011: the picker tab is the reference's provenance (upload | client |
+      // competitor). The backend seeds the blueprint from it and, for a competitor
+      // source, enforces the fail-closed guardrail (no competitor bytes to the model).
+      if (insp) req.referenceSource = beInspTab;
       if (beRemainingCap != null) req.remainingCapUsd = beRemainingCap;
       // A design format resolves a typeset archetype server-side (comparison /
       // native_ui); image omits archetypeId so the backend auto-picks the layout.
@@ -1814,6 +1843,110 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + prompts + copy + inspWrap + '</div>';
     }
 
+    /* US-009: one box editor (x, y, w, h in 0..1) for a slot or text block. */
+    function boxRowHtml(idPrefix, box) {
+      box = box || {};
+      function f(axis) {
+        var v = (box[axis] != null) ? box[axis] : '';
+        return '<input type="number" step="0.01" min="0" max="1" class="be-bp-num" '
+          + 'id="' + idPrefix + '-' + axis + '" data-axis="' + axis + '" '
+          + 'value="' + esc(String(v)) + '" aria-label="' + axis + '" />';
+      }
+      return '<span class="be-bp-box">' + f('x') + f('y') + f('w') + f('h') + '</span>';
+    }
+
+    /* US-009: the editable, brand-safe reference blueprint for a from-inspiration
+     * compile. The operator adjusts the reference's reconstructed STRUCTURE (layout
+     * family, slot + text boxes) and STRATEGY (closed-vocabulary declared buckets)
+     * before generating, mirroring the design layout-spec edit loop. The default
+     * (unedited) blueprint is already a faithful, branded starting point. With no
+     * blueprint but an 'unavailable' status a clear not-yet note shows (US-012); with
+     * no blueprint at all the from-inspiration path is holistic and nothing renders. */
+    function blueprintEditorHtml(bp, status) {
+      if (!bp) {
+        if (status === 'unavailable') {
+          return '<div class="be-bp-note be-muted">This reference has no layout structure '
+            + 'yet, so it will be analysed on demand. If that is not available it generates '
+            + 'on the holistic path instead.</div>';
+        }
+        return '';
+      }
+      var slots = bp.slots || {};
+      var slotRows = Object.keys(slots).map(function (role) {
+        return '<label class="be-field"><span class="be-label">' + esc(role) + '</span>'
+          + boxRowHtml('be-bp-slot-' + role, slots[role]) + '</label>';
+      }).join('');
+      var tbs = (bp.text_blocks || []).map(function (b, i) {
+        return '<label class="be-field"><span class="be-label">Text ' + (i + 1) + '</span>'
+          + boxRowHtml('be-bp-tb-' + i, b) + '</label>';
+      }).join('');
+      var ds = bp.declared_strategy || {};
+      var dsRows = Object.keys(ds).map(function (k) {
+        return '<label class="be-field"><span class="be-label">' + esc(k) + '</span>'
+          + '<input type="text" class="be-bp-ds" id="be-bp-ds-' + esc(k) + '" data-key="' + esc(k) + '" '
+          + 'value="' + esc(String(ds[k] == null ? '' : ds[k])) + '" /></label>';
+      }).join('');
+      return '<div class="be-blueprint" id="be-blueprint-edit">'
+        + '<div class="be-compile-head"><strong>Reference blueprint</strong> '
+        + '<span class="be-muted">Adjust the reconstructed structure and strategy for brand '
+        + 'fit before generating. The default is already faithful and on brand.</span></div>'
+        + '<label class="be-field"><span class="be-label">Layout family</span>'
+        + '<input type="text" id="be-bp-layout-family" value="' + esc(String(bp.layout_family || '')) + '" /></label>'
+        + '<div class="be-bp-slots"><span class="be-label">Slots (x, y, w, h in 0..1)</span>' + slotRows + '</div>'
+        + (tbs ? '<div class="be-bp-tbs"><span class="be-label">Text blocks</span>' + tbs + '</div>' : '')
+        + (dsRows ? '<div class="be-bp-ds-wrap"><span class="be-label">Strategy</span>' + dsRows + '</div>' : '')
+        + '<div class="be-bp-rating"><span class="be-label">Faithful to the reference?</span>'
+        + '<button type="button" class="be-btn be-btn-secondary" data-be-bp-faithful="yes" id="be-bp-faithful-yes">Faithful</button>'
+        + '<button type="button" class="be-btn be-btn-secondary" data-be-bp-faithful="no" id="be-bp-faithful-no">Not faithful</button>'
+        + '</div></div>';
+    }
+
+    /* Read the on-screen blueprint edits back into a deep clone of the seeded
+     * blueprint: layout family, each slot box, each text-block box, and each declared
+     * strategy value. The clone is what generation runs, mirroring readEditedDesignSpec. */
+    function readEditedBlueprint() {
+      if (!beReferenceBlueprint) return null;
+      var bp = JSON.parse(JSON.stringify(beReferenceBlueprint));
+      function num(id, fallback) {
+        var el = document.getElementById(id);
+        if (!el || el.value == null || el.value === '') return fallback;
+        var nn = parseFloat(el.value);
+        return isNaN(nn) ? fallback : nn;
+      }
+      var lf = document.getElementById('be-bp-layout-family');
+      if (lf && typeof lf.value === 'string' && lf.value !== '') bp.layout_family = lf.value;
+      var slots = bp.slots || {};
+      Object.keys(slots).forEach(function (role) {
+        var b = slots[role] || {};
+        ['x', 'y', 'w', 'h'].forEach(function (axis) {
+          b[axis] = num('be-bp-slot-' + role + '-' + axis, b[axis]);
+        });
+        slots[role] = b;
+      });
+      (bp.text_blocks || []).forEach(function (b, i) {
+        ['x', 'y', 'w', 'h'].forEach(function (axis) {
+          b[axis] = num('be-bp-tb-' + i + '-' + axis, b[axis]);
+        });
+      });
+      var ds = bp.declared_strategy || {};
+      Object.keys(ds).forEach(function (k) {
+        var el = document.getElementById('be-bp-ds-' + k);
+        if (el && typeof el.value === 'string') ds[k] = el.value;
+      });
+      return bp;
+    }
+
+    /* US-009: set the one-click faithful / not-faithful rating (or clear it), reflect
+     * it on the buttons, and emit the analytics event. */
+    function setBlueprintFaithful(v) {
+      beBlueprintFaithful = (v === true) ? true : (v === false ? false : null);
+      var yes = document.getElementById('be-bp-faithful-yes');
+      var no = document.getElementById('be-bp-faithful-no');
+      if (yes && yes.classList) { if (beBlueprintFaithful === true) yes.classList.add('be-rated'); else yes.classList.remove('be-rated'); }
+      if (no && no.classList) { if (beBlueprintFaithful === false) no.classList.add('be-rated'); else no.classList.remove('be-rated'); }
+      if (window.F10A) F10A.track('blueprint_faithful', { rating: beBlueprintFaithful });
+    }
+
     /* The full inline compiled-brief view: header, any top-level warnings, the size set
      * and cost estimate, then one editable card per variant. */
     function compiledHtml(resp) {
@@ -1833,7 +1966,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var head = '<div class="be-compile-head"><strong>Compiled brief</strong> '
         + '<span class="be-muted">' + variants.length + ' variant' + (variants.length === 1 ? '' : 's')
         + ', no spend yet. Edit any prompt or copy below; your edits are what generate.</span></div>';
-      return head + warn + meta + '<div class="be-variants">' + variants.map(variantCardHtml).join('') + '</div>';
+      var blueprint = blueprintEditorHtml(resp.reference_blueprint, resp.blueprint_status);
+      return head + warn + meta + blueprint
+        + '<div class="be-variants">' + variants.map(variantCardHtml).join('') + '</div>';
     }
 
     function overCapMessage(ce) {
@@ -1889,6 +2024,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (!resp || resp.ok === false) throw new Error((resp && resp.error) || 'compile failed');
         beCompiled = resp;
         beCompiledEdits = {};
+        // US-009/US-012: carry the seeded blueprint (edit baseline) + its status,
+        // and reset the faithful rating for this compile.
+        beReferenceBlueprint = resp.reference_blueprint || null;
+        beBlueprintStatus = resp.blueprint_status || null;
+        beBlueprintFaithful = null;
         renderCompiled(resp);
       } catch (err) {
         beCompiled = null;
@@ -1994,6 +2134,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       try {
         var req = buildCompileRequest();
         req.compiledBrief = compiledBrief;
+        // US-009: on the blueprint path generation runs from the operator-EDITED
+        // blueprint; the seeded baseline + an optional faithful rating ride along so
+        // the backend logs the success signal (edit distance + faithfulness).
+        if (beMode === 'inspiration' && beReferenceBlueprint) {
+          req.referenceBlueprintBaseline = beReferenceBlueprint;
+          req.referenceBlueprint = readEditedBlueprint();
+          if (beBlueprintFaithful !== null) req.blueprintFaithful = beBlueprintFaithful;
+        }
         var resp = await store().submit(req);
         if (!resp || resp.ok === false) throw new Error((resp && resp.error) || 'submit failed');
         beJobId = resp.job_id || null;
@@ -2367,6 +2515,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           applyCompiledEdit(kind, parseInt(t.getAttribute('data-vi'), 10) || 0,
             parseInt(t.getAttribute('data-idx'), 10) || 0, t.value);
         });
+        compiledEl.addEventListener('click', function (e) {
+          var t = e && e.target;
+          if (!t || !t.getAttribute) return;
+          var rating = t.getAttribute('data-be-bp-faithful');
+          if (rating == null) return;
+          setBlueprintFaithful(rating === 'yes');
+        });
       }
       var others = document.querySelectorAll ? document.querySelectorAll('#sidebar nav a') : [];
       Array.prototype.forEach.call(others, function (a) {
@@ -2483,6 +2638,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       publishDesign: publishDesign,
       renderDesignEditor: renderDesignEditor,
       readEditedDesignSpec: readEditedDesignSpec,
+      blueprintEditorHtml: blueprintEditorHtml,
+      readEditedBlueprint: readEditedBlueprint,
+      setBlueprintFaithful: setBlueprintFaithful,
+      getReferenceBlueprint: function () { return beReferenceBlueprint; },
+      thumbHtml: thumbHtml,
       designRoleLabel: designRoleLabel,
       designPreviewEndpoint: designPreviewEndpoint,
       getDesignSpec: function () { return beDesignSpec; },
@@ -2502,6 +2662,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         stopPolling();
         beCompiled = null; beDesignSpec = null; beCompiledEdits = null; beVariantMatrix = null;
         beRemainingCap = null; beJobId = null;
+        beReferenceBlueprint = null; beBlueprintStatus = null; beBlueprintFaithful = null;
       },
     };
   })();
