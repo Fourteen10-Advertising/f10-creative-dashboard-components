@@ -693,6 +693,81 @@ async function runBrowser() {
     const req = ctx.window.f10BriefEditor.buildCompileRequest();
     assert.ok(!('archetypeId' in req), 'a failed picker read never crashes or pins a layout');
   });
+
+  // ── BUG FIX: in From-inspiration mode the layout picker must NOT force its layout onto
+  //    the ad. The inspiration ad carries its own structure, so buildCompileRequest() must
+  //    omit the layout-derived archetypeId — even after a layout was picked while in
+  //    From-scratch mode (or a stale value lingers on the select). Only scratch+image pins. ──
+  await check('inspiration mode omits the layout-derived archetypeId, even after a scratch pick (bug fix)', async () => {
+    const ctx = makeBrowserCtx();
+    ctx.window.f10BriefEditor.setStore({
+      async probe() { return true; }, async load() { return null; }, async save() {},
+      async archetypes() { return { archetypes: [], families: [], explore_prefix: 'family:' }; },
+    });
+    await ctx.window.initBriefEditor();
+    // From-scratch + image: a picked layout still pins the compile request (unchanged).
+    ctx.window.f10BriefEditor.setFormat('image');
+    ctx.window.f10BriefEditor.setMode('scratch');
+    ctx.window.f10BriefEditor.setLayout('moshy-split-screen');
+    let req = ctx.window.f10BriefEditor.buildCompileRequest();
+    assert.strictEqual(req.archetypeId, 'moshy-split-screen', 'scratch+image still pins the picked layout');
+    assert.strictEqual(req.mode, 'scratch', 'the request is flagged scratch');
+    // Switch to From-inspiration: the layout must no longer ride the request.
+    ctx.window.f10BriefEditor.setMode('inspiration');
+    req = ctx.window.f10BriefEditor.buildCompileRequest();
+    assert.ok(!('archetypeId' in req), 'inspiration mode omits archetypeId (backend defers to the inspiration ad)');
+    assert.strictEqual(req.mode, 'inspiration', 'the request is flagged inspiration');
+    // Even a stale/tampered layout value on the select is not transmitted in inspiration mode.
+    ctx.window.f10BriefEditor.setLayout('moshy-split-screen');
+    req = ctx.window.f10BriefEditor.buildCompileRequest();
+    assert.ok(!('archetypeId' in req), 'a lingering layout value is never sent in inspiration mode (the !insp guard)');
+  });
+
+  // ── BUG FIX: setMode('inspiration') hides the layout picker row and resets the layout to
+  //    Auto; From-scratch restores the row, but only for an image ad. ──
+  await check('setMode(inspiration) hides the layout row and resets the layout to Auto (bug fix)', async () => {
+    const ctx = makeBrowserCtx();
+    ctx.window.f10BriefEditor.setStore({
+      async probe() { return true; }, async load() { return null; }, async save() {},
+      async archetypes() { return { archetypes: [], families: [], explore_prefix: 'family:' }; },
+    });
+    await ctx.window.initBriefEditor();
+    ctx.window.f10BriefEditor.setFormat('image');
+    ctx.window.f10BriefEditor.setMode('scratch');
+    ctx.window.f10BriefEditor.setLayout('moshy-split-screen');
+    // Scratch + image: the row is visible.
+    assert.notStrictEqual(ctx._slots['be-layout-row'].style.display, 'none', 'the layout row is visible in scratch+image');
+    // Inspiration: the row is hidden and the layout choice is reset to Auto.
+    ctx.window.f10BriefEditor.setMode('inspiration');
+    assert.strictEqual(ctx._slots['be-layout-row'].style.display, 'none', 'the layout row is hidden in inspiration mode');
+    assert.strictEqual(ctx.window.f10BriefEditor.getLayout(), '', 'the layout choice is reset to Auto');
+    assert.strictEqual(ctx._slots['be-layout'].value, '', 'the layout <select> value is reset to Auto');
+    // Back to scratch restores the row for an image ad.
+    ctx.window.f10BriefEditor.setMode('scratch');
+    assert.notStrictEqual(ctx._slots['be-layout-row'].style.display, 'none', 'scratch restores the image-ad layout row');
+  });
+
+  // ── REGRESSION: the fix preserves scratch+image layout routing and design-format routing;
+  //    a design format keeps its own archetypeId and hides the (image-only) layout row. ──
+  await check('scratch+image still routes by layout and design formats still route by format (bug-fix regression)', async () => {
+    const ctx = makeBrowserCtx();
+    ctx.window.f10BriefEditor.setStore({
+      async probe() { return true; }, async load() { return null; }, async save() {},
+      async archetypes() { return { archetypes: [], families: [], explore_prefix: 'family:' }; },
+    });
+    await ctx.window.initBriefEditor();
+    // scratch + image + picked layout -> archetypeId is the layout (unchanged behaviour).
+    ctx.window.f10BriefEditor.setFormat('image');
+    ctx.window.f10BriefEditor.setMode('scratch');
+    ctx.window.f10BriefEditor.setLayout('family:before-after-comparison');
+    let req = ctx.window.f10BriefEditor.buildCompileRequest();
+    assert.strictEqual(req.archetypeId, 'family:before-after-comparison', 'scratch+image still routes by the picked layout');
+    // A design format routes by format regardless of the (now hidden) layout picker.
+    ctx.window.f10BriefEditor.setFormat('comparison');
+    assert.strictEqual(ctx._slots['be-layout-row'].style.display, 'none', 'the layout row is hidden for a design format');
+    req = ctx.window.f10BriefEditor.buildCompileRequest();
+    assert.strictEqual(req.archetypeId, 'comparison', 'a design format still routes by format');
+  });
 }
 
 (async () => {

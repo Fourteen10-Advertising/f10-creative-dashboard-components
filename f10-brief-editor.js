@@ -1179,6 +1179,22 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (axes && axes.style) axes.style.display = insp ? 'none' : '';
       var copy = document.getElementById('be-section-copy');
       if (copy && copy.style) copy.style.display = insp ? 'none' : '';
+      // The image-ad Layout picker forces a specific layout onto the ad. That only makes
+      // sense From-scratch: an inspiration ad already carries its own structure, so pinning
+      // a picked layout would override it. In From-inspiration mode hide the layout row and
+      // reset the choice to Auto (so buildCompileRequest() never pins a layout the operator
+      // cannot see); From-scratch restores it — but only for an image ad, since the row is
+      // image-only (setFormat hides it for design formats). Net rule: the layout row is
+      // visible only when format === image AND mode === scratch.
+      var layoutRow = document.getElementById('be-layout-row');
+      if (layoutRow && layoutRow.style) {
+        layoutRow.style.display = (!insp && beFormat === 'image') ? '' : 'none';
+      }
+      if (insp) {
+        beLayout = '';
+        var layoutSel = document.getElementById('be-layout');
+        if (layoutSel) layoutSel.value = '';
+      }
       var title = document.getElementById('be-direction-title');
       if (title) title.textContent = insp ? BE_DIRECTION_INSP_TITLE : BE_DIRECTION_SCRATCH_TITLE;
       var sub = document.getElementById('be-direction-sub');
@@ -1829,12 +1845,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (insp) req.referenceSource = beInspTab;
       if (beRemainingCap != null) req.remainingCapUsd = beRemainingCap;
       // A design format resolves a typeset archetype server-side (comparison /
-      // native_ui). For an image ad: a pinned mined layout or a 'family:<name>' explore
-      // choice sets archetypeId; an empty (Auto) choice omits it so the backend auto-picks
-      // the client's top mined winner (the unchanged default).
+      // native_ui). For an image ad in From-scratch mode: a pinned mined layout or a
+      // 'family:<name>' explore choice sets archetypeId; an empty (Auto) choice omits it so
+      // the backend auto-picks the client's top mined winner (the unchanged default). In
+      // From-inspiration mode the layout is NOT sent — the picker is hidden and reset, and
+      // the backend defers to the inspiration ad's own structure.
       if (beFormat && beFormat !== 'image') {
         req.archetypeId = beFormat;
-      } else if (beFormat === 'image' && beLayout) {
+      } else if (beFormat === 'image' && beLayout && !insp) {
         req.archetypeId = beLayout;
       }
       // A design photo variant: the operator opted into a generated background
