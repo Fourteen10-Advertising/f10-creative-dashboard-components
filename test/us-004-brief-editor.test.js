@@ -631,6 +631,68 @@ async function runBrowser() {
     assert.deepStrictEqual(Array.from(saved[0].inspiration_image_uris), [seedUri], 'the reference carries through the save');
     assert.strictEqual(saved[0].creative_direction, 'higher BMI subjects', 'creative direction carries too');
   });
+
+  // ── Layout optionality: the image-ad layout picker lists the client's mined winners
+  //    plus an EXPLORE group of the remaining families, and pins the compile request. ──
+  await check('the layout picker lists mined winners + explore families and pins the compile request', async () => {
+    const ctx = makeBrowserCtx();
+    ctx.window.f10BriefEditor.setStore({
+      async probe() { return true; }, async load() { return null; }, async save() {},
+      async archetypes() {
+        return {
+          archetypes: [{ archetype_id: 'moshy-split-screen', name: 'Split Screen',
+            layout_family: 'split-screen', source_ad_count: 23, slot_roles: ['background', 'hero'] }],
+          families: ['split-screen', 'testimonial-quote-card', 'before-after-comparison'],
+          explore_prefix: 'family:',
+        };
+      },
+    });
+    await ctx.window.initBriefEditor();
+    await ctx.window.f10BriefEditor.populateLayouts();
+    const html = ctx._slots['be-layout'].innerHTML;
+    assert.ok(/Auto \(top performer\)/.test(html), 'the Auto default is present');
+    assert.ok(/value="moshy-split-screen"/.test(html), 'the mined winner is listed');
+    assert.ok(/winning layouts/.test(html), 'the winning-layouts group is labelled');
+    assert.ok(/value="family:testimonial-quote-card"/.test(html), 'a non-mined family is offered under explore');
+    assert.ok(!/value="family:split-screen"/.test(html), 'a mined family is NOT double-listed under explore');
+
+    ctx.window.f10BriefEditor.setLayout('moshy-split-screen');
+    let req = ctx.window.f10BriefEditor.buildCompileRequest();
+    assert.strictEqual(req.archetypeId, 'moshy-split-screen', 'a pinned mined layout rides the compile request');
+
+    ctx.window.f10BriefEditor.setLayout('family:before-after-comparison');
+    req = ctx.window.f10BriefEditor.buildCompileRequest();
+    assert.strictEqual(req.archetypeId, 'family:before-after-comparison', 'an explore family rides the compile request');
+
+    ctx.window.f10BriefEditor.setLayout('');
+    req = ctx.window.f10BriefEditor.buildCompileRequest();
+    assert.ok(!('archetypeId' in req), 'Auto omits archetypeId (the unchanged default)');
+  });
+
+  await check('a design format keeps its own archetypeId regardless of the layout picker', async () => {
+    const ctx = makeBrowserCtx();
+    ctx.window.f10BriefEditor.setStore({
+      async probe() { return true; }, async load() { return null; }, async save() {},
+      async archetypes() { return { archetypes: [], families: [], explore_prefix: 'family:' }; },
+    });
+    await ctx.window.initBriefEditor();
+    ctx.window.f10BriefEditor.setLayout('moshy-split-screen'); // must be ignored for a design format
+    ctx.window.f10BriefEditor.setFormat('comparison');
+    const req = ctx.window.f10BriefEditor.buildCompileRequest();
+    assert.strictEqual(req.archetypeId, 'comparison', 'the design format archetypeId wins over the layout picker');
+  });
+
+  await check('the layout picker degrades to Auto-only when the read fails', async () => {
+    const ctx = makeBrowserCtx();
+    ctx.window.f10BriefEditor.setStore({
+      async probe() { return true; }, async load() { return null; }, async save() {},
+      async archetypes() { throw new Error('backend down'); },
+    });
+    await ctx.window.initBriefEditor();
+    await ctx.window.f10BriefEditor.populateLayouts();
+    const req = ctx.window.f10BriefEditor.buildCompileRequest();
+    assert.ok(!('archetypeId' in req), 'a failed picker read never crashes or pins a layout');
+  });
 }
 
 (async () => {

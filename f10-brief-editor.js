@@ -639,6 +639,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     var beStore = null;       // injectable brief store (tests override via setStore)
     var beMode = 'scratch';   // brief mode: 'scratch' (build everything) | 'inspiration' (pick an ad + write commentary; copy/style auto-generated). Not persisted; defaults to scratch on load.
     var beFormat = 'image';   // ad format: 'image' (a generated scene) or one of the typeset DESIGN formats below (the strategist drafts them from substance). Not persisted; defaults to image. A design format sends archetypeId and generates directly (no compile/spend).
+    var beLayout = '';        // IMAGE-format layout choice: '' = auto (backend picks the top mined winner); a mined archetype_id pins that winning layout; 'family:<name>' explores an untested family. Not persisted; only meaningful for the image format.
     // The typeset DESIGN formats. Each `key` is the archetype the backend resolves
     // (is_design_archetype); `label` is the picker button; `noun` is used in the
     // design-mode hint. IMAGE is the only non-design format. They cluster into three
@@ -768,6 +769,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         },
         async upload(payload) {
           return callAt(uploadEndpoint(), Object.assign({ action: 'upload', client: beClient }, payload || {}));
+        },
+        async archetypes() {
+          // The layout picker's menu: this client's mined archetypes + the 15-family
+          // explore list. Lives on /bq like the reference list.
+          return callAt(bqEndpoint(), { action: 'list-archetypes', client: beClient });
         },
         // Compile / submit / status (US-009). Compile + submit POST the full brief
         // context to their own routes (no `action` field; the routes are dedicated);
@@ -1015,6 +1021,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '</div>'
         + '<div class="be-mode-hint" id="be-format-hint">An image ad: a generated scene with the copy laid over it.</div>'
         + '</div>'
+        // Layout picker (image ads only): pick which layout the scene is built on. Auto
+        // (default) lets the backend pick the client's top-performing mined layout; the
+        // client's other winning layouts are pin-able; the Explore group offers any of the
+        // 15 families as a deliberate, untested test. Populated from list-archetypes; hidden
+        // for a design format (which carries its own fixed layout).
+        + '<div class="be-mode" id="be-layout-row">'
+        + '<span class="be-mode-label">Layout</span>'
+        + '<select id="be-layout" class="be-select">'
+        + '<option value="">Auto (top performer)</option>'
+        + '</select>'
+        + '<div class="be-mode-hint" id="be-layout-hint">Auto builds on this client’s top-performing layout. Pick a specific winning layout, or explore an untested one.</div>'
+        + '</div>'
         // Mode toggle (top of the flow): build the whole brief yourself, or start from an
         // ad and let the copy + style be auto-generated. Defaults to From scratch.
         + '<div class="be-mode" id="be-mode">'
@@ -1204,6 +1222,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       show('be-load', !design);
       show('be-form', !design);
       show('be-design', design);
+      show('be-layout-row', !design);  // layout picker is image-only (design carries its own)
       if (design) {
         show('be-compiled', false);
         show('be-submit-bar', false);
@@ -1234,6 +1253,59 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         });
       }
       if (window.F10A) F10A.track('brief_format_changed', { format: beFormat });
+    }
+
+    function beTitleize(slug) {
+      return String(slug || '').split(/[-_\s]+/).filter(Boolean)
+        .map(function (w) { return w.charAt(0).toUpperCase() + w.slice(1); }).join(' ');
+    }
+
+    /* Fill the image-ad layout picker from list-archetypes: an Auto default, this client's
+     * mined WINNING layouts, and an EXPLORE group of the remaining (untested) families
+     * (archetypeId 'family:<name>'). Best-effort: on any failure the picker keeps its
+     * Auto-only default, so generation degrades to exactly the prior behaviour. */
+    async function bePopulateLayouts() {
+      var sel = document.getElementById('be-layout');
+      if (!sel) return;
+      var data;
+      try {
+        data = await store().archetypes();
+      } catch (e) {
+        return; // keep Auto-only; never block the editor on the picker read
+      }
+      if (!data) return;
+      var archs = data.archetypes || [];
+      var fams = data.families || [];
+      var prefix = data.explore_prefix || 'family:';
+      var html = '<option value="">Auto (top performer)</option>';
+      var have = {};
+      if (archs.length) {
+        html += '<optgroup label="This client’s winning layouts">';
+        for (var i = 0; i < archs.length; i++) {
+          var a = archs[i] || {};
+          if (a.layout_family) have[a.layout_family] = true;
+          var n = a.source_ad_count ? (' (' + a.source_ad_count + ' ads)') : '';
+          html += '<option value="' + esc(String(a.archetype_id || '')) + '">'
+            + esc(String(a.name || a.layout_family || a.archetype_id || '')) + n + '</option>';
+        }
+        html += '</optgroup>';
+      }
+      // Explore: every family NOT already covered by a mined winner, labelled untested, so
+      // the two groups together span the full open vocabulary without double-listing one.
+      var explore = fams.filter(function (f) { return !have[f]; });
+      if (explore.length) {
+        html += '<optgroup label="Explore — untested">';
+        for (var k = 0; k < explore.length; k++) {
+          html += '<option value="' + esc(prefix + explore[k]) + '">'
+            + esc(beTitleize(explore[k])) + ' (untested)</option>';
+        }
+        html += '</optgroup>';
+      }
+      sel.innerHTML = html;
+      // Keep the current choice if it still exists (a re-populate on client change); else
+      // fall back to Auto so a stale pin never silently rides along.
+      sel.value = beLayout || '';
+      if (sel.value !== (beLayout || '')) { beLayout = ''; sel.value = ''; }
     }
 
     /* ---- copy fields ---- */
@@ -1757,8 +1829,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (insp) req.referenceSource = beInspTab;
       if (beRemainingCap != null) req.remainingCapUsd = beRemainingCap;
       // A design format resolves a typeset archetype server-side (comparison /
-      // native_ui); image omits archetypeId so the backend auto-picks the layout.
-      if (beFormat && beFormat !== 'image') req.archetypeId = beFormat;
+      // native_ui). For an image ad: a pinned mined layout or a 'family:<name>' explore
+      // choice sets archetypeId; an empty (Auto) choice omits it so the backend auto-picks
+      // the client's top mined winner (the unchanged default).
+      if (beFormat && beFormat !== 'image') {
+        req.archetypeId = beFormat;
+      } else if (beFormat === 'image' && beLayout) {
+        req.archetypeId = beLayout;
+      }
       // A design photo variant: the operator opted into a generated background
       // image. Only meaningful for a design format; an image ad always generates.
       var photoEl = document.getElementById('be-design-photo');
@@ -2475,6 +2553,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         });
       }
       setFormat(beFormat); // reflect the default (image) format on the freshly injected panel
+      // Layout picker (image ads): a delegated change sets the pinned/explore layout.
+      var layoutSel = document.getElementById('be-layout');
+      if (layoutSel && layoutSel.addEventListener) {
+        layoutSel.addEventListener('change', function () {
+          beLayout = layoutSel.value || '';
+          if (window.F10A) F10A.track('brief_layout_changed', { layout: beLayout || 'auto' });
+        });
+      }
+      bePopulateLayouts(); // fire-and-forget; fills the picker when list-archetypes returns
 
       wireInspiration();
       // Show the copy section's default headline + body fields on boot so the operator
@@ -2604,6 +2691,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       setStore: function (s) { beStore = s; },
       setClient: function (c) { beClient = c; },
       getClient: function () { return beClient; },
+      populateLayouts: bePopulateLayouts,
+      buildCompileRequest: buildCompileRequest,
+      setFormat: setFormat,
+      getLayout: function () { return beLayout; },
+      setLayout: function (v) { beLayout = v || ''; },
       getLoaded: function () { return beLoadedRevision; },
       isBooted: function () { return beBooted; },
       // inspiration picker surface (US-Phase-1 part 2)
