@@ -278,6 +278,98 @@ async function runUnit() {
     assert.ok(/Preview not available/.test(html), 'missing composite falls back to a labelled placeholder');
   });
 
+  /* ======================================================================== *
+   * PHASE 3 (US-022): provenance, region overlay, inspiration side-by-side,
+   * and open-in-Figma.
+   * ======================================================================== */
+
+  // A LayoutStructure in the fixed contract shape.
+  function structure(over) {
+    return Object.assign({
+      layout_family: 'split-screen', aspect_ratios: '4:5',
+      regions: [
+        { id: 'headline', role: 'headline', box: { x: 0.08, y: 0.06, w: 0.84, h: 0.1 }, copy_need: true },
+        { id: 'hero', role: 'product-shot', box: { x: 0.1, y: 0.2, w: 0.8, h: 0.55 }, image_need: true },
+        { id: 'cta', role: 'cta', box: { x: 0.3, y: 0.85, w: 0.4, h: 0.08 }, copy_need: true },
+      ],
+      repeats: [],
+    }, over || {});
+  }
+
+  // ── Review shows what each ad was built from + a toggleable region overlay. ──
+  await check('a generated ad shows its source / render / layout family and a toggleable region overlay', async () => {
+    const ctx = makeUnitCtx(async () => jsonResponse({}));
+    const previewUrl = 'https://signed.example/new-composite.png';
+    const bundle = sampleBundle({
+      source: { kind: 'winner', ref: 'moshy-split-screen' }, render: 'scene',
+      layout_family: 'split-screen', structure: structure(),
+    });
+    ctx.window.f10Review.setStore({
+      async listBundles() { return { bundles: [bundle] }; },
+      async preview() { return { url: previewUrl }; },
+      async coherence() { return scorecard('pass', 0.9); },
+    });
+    ctx.window.f10Review.setClient('moshy');
+    await ctx.window.f10Review.load();
+    const html = (ctx._slots['rev-body'] && ctx._slots['rev-body'].innerHTML) || '';
+    assert.ok(/Source: winner \(moshy-split-screen\)/.test(html), 'the source is shown');
+    assert.ok(/Render: scene/.test(html), 'the render is shown');
+    assert.ok(/Layout: split-screen/.test(html), 'the layout family is shown');
+    // A toggleable region overlay (the shared wireframe) over the preview.
+    assert.ok(/data-rev-overlay-toggle/.test(html), 'the overlay toggle is present');
+    assert.ok(/f10-wireframe-overlay/.test(html), 'the region overlay reuses the shared wireframe');
+    assert.ok(/data-region-id="headline"/.test(html) && /data-region-id="cta"/.test(html), 'the overlay draws the ad regions');
+    // Open-in-Figma affordance.
+    assert.ok(/data-rev-figma/.test(html), 'the open-in-Figma affordance is present');
+  });
+
+  // ── e2e 2: an inspiration-sourced ad shows the inspiration's detected structure beside
+  //     the generated ad's overlay, and no inspiration copy is shown. ──
+  await check('an inspiration-sourced ad shows the detected inspiration structure beside the overlay and no inspiration copy', async () => {
+    const R = makeUnitCtx(async () => jsonResponse({})).window.f10Review;
+    R.setClient('moshy');
+    const inspStructure = structure({ layout_family: 'testimonial-quote-card' });
+    const bundle = {
+      bundle_id: 'insp_ad', platform: 'meta', date: '2026-08-20',
+      source: { kind: 'inspiration', ref: 'gs://insp/a.png' }, render: 'scene',
+      layout_family: 'testimonial-quote-card', structure: structure(),
+      inspiration_structure: inspStructure,
+      new_ad: { headline: 'SENSITIVE INSPIRATION COPY' },
+    };
+    const html = R.newAdHtml(bundle, 'https://signed/x.png', '');
+    assert.ok(/data-rev-insp-structure/.test(html), 'the inspiration structure column is shown');
+    assert.ok(/Inspiration structure/.test(html), 'it is labelled');
+    // Both the generated ad overlay AND the inspiration structure are drawn (two wireframes).
+    assert.ok((html.match(/data-region-count/g) || []).length >= 2, 'both structures are drawn side by side');
+    assert.ok(html.indexOf('SENSITIVE INSPIRATION COPY') === -1, 'no inspiration copy is shown for an inspiration-sourced ad');
+  });
+
+  // ── Open in Figma hands the bundle to the existing plugin path (no new backend). ──
+  await check('open-in-Figma hands the bundle (structure + region copy + provenance) to the plugin path', async () => {
+    const ctx = makeUnitCtx(async () => jsonResponse({}));
+    const R = ctx.window.f10Review;
+    R.setClient('moshy');
+    const bundle = {
+      bundle_id: 'fig_ad', platform: 'meta',
+      source: { kind: 'winner', ref: 'w1' }, render: 'typeset', layout_family: 'before-after-comparison',
+      structure: structure({ layout_family: 'before-after-comparison' }),
+      region_copy: { headline: 'A', cta: 'B' },
+    };
+    // The existing plugin path: a hook the review app / plugin registers.
+    let handed = null;
+    ctx.window.f10FigmaPlugin = { open(payload) { handed = payload; } };
+    const payload = R.openInFigma(bundle);
+    assert.strictEqual(payload.schema, 'f10_figma_handoff', 'the handoff is a figma handoff payload');
+    assert.ok(payload.structure && payload.region_copy, 'the handoff carries the structure + region copy');
+    assert.strictEqual(payload.render, 'typeset', 'the handoff carries the render');
+    assert.ok(payload.source && payload.source.kind === 'winner', 'the handoff carries the source');
+    assert.ok(handed && handed.bundle_id === 'fig_ad', 'the existing plugin hook received the bundle');
+    // With no plugin hook, it stages the payload for the plugin to pick up (no new backend).
+    delete ctx.window.f10FigmaPlugin;
+    R.openInFigma(bundle);
+    assert.ok(ctx.window.F10_FIGMA_HANDOFF && ctx.window.F10_FIGMA_HANDOFF.bundle_id === 'fig_ad', 'the payload is staged for the plugin when no hook is present');
+  });
+
   // ── Generation-date filter: distinct dates newest-first, default most recent, re-filter. ──
   await check('the generation-date filter lists distinct dates newest-first, defaults to the most recent, and re-filters on change', async () => {
     const bundles = [
