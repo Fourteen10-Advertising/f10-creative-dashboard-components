@@ -1337,3 +1337,189 @@ function creativeScoreHover(sqlScore, vals, opts){
   };
 }
 if (typeof window !== 'undefined') window.creativeScoreHover = creativeScoreHover;
+
+/* ======================================================================== *
+ * SHARED STRUCTURE WIREFRAME (Phase 3, US-022)
+ *
+ * One reusable renderer for a LayoutStructure doc, built once here and used
+ * everywhere: the brief editor draws it under the source picker (the layout is
+ * visible before compile) and the Review tab overlays it on a generated ad. It
+ * is a pure string builder — no image fetch, no network, no DOM read — so it is
+ * safe to call in both the browser and the offline node test sandboxes.
+ *
+ * The LayoutStructure contract (US-017 / the Phase 3 backend):
+ *   { regions:[{id, role, box:{x,y,w,h}, ordinal, parent_id, container,
+ *               copy_need, image_need}],
+ *     repeats:[{group, item_role, min, max, observed}],
+ *     layout_family, aspect_ratios, ... }   (boxes normalised 0..1)
+ * The renderer is tolerant: it also accepts the nested authoring shape (a
+ * region with `children` and/or an inline `repeat` block) so a preset or a
+ * detected structure renders without a reshape.
+ * ======================================================================== */
+
+/* Escape for attribute/text interpolation. Local (utils has no shared esc). */
+function f10WfEsc(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/* "4:5" / "4x5" / ["4:5", ...] -> a CSS aspect-ratio "4 / 5"; default "1 / 1". */
+function f10WfAspect(structure) {
+  var a = structure && (structure.aspect_ratios != null ? structure.aspect_ratios : structure.aspect);
+  if (Array.isArray(a)) a = a[0];
+  var s = String(a == null ? '' : a).trim();
+  var m = s.match(/^(\d+(?:\.\d+)?)\s*[:xX/]\s*(\d+(?:\.\d+)?)$/);
+  if (m) return m[1] + ' / ' + m[2];
+  return '1 / 1';
+}
+
+/* A normalised, flat region list [{id, role, box, repeat}]. Flattens `children`
+ * (nested authoring shape) and attaches a repeat block whether it arrived on the
+ * top-level `repeats` array (keyed by group id) or inline on the region. */
+function f10WfRegions(structure) {
+  structure = structure || {};
+  var repByGroup = {};
+  var reps = Array.isArray(structure.repeats) ? structure.repeats : [];
+  reps.forEach(function (r) { if (r && r.group != null) repByGroup[String(r.group)] = r; });
+  var out = [];
+  function pct(v) { var n = Number(v); return (isFinite(n) ? n : 0); }
+  function push(reg) {
+    if (!reg || typeof reg !== 'object') return;
+    var box = reg.box || {};
+    var id = (reg.id != null) ? String(reg.id) : String(reg.role || '');
+    var repeat = reg.repeat || repByGroup[id] || null;
+    out.push({
+      id: id,
+      role: String(reg.role || id || ''),
+      box: { x: pct(box.x), y: pct(box.y), w: pct(box.w), h: pct(box.h) },
+      container: !!reg.container,
+      image: !!(reg.image_need || (reg.image && reg.image.source) || /background|product-shot|person|logo/.test(String(reg.role || ''))),
+      repeat: repeat,
+    });
+    if (Array.isArray(reg.children)) reg.children.forEach(push);
+  }
+  (Array.isArray(structure.regions) ? structure.regions : []).forEach(push);
+  return out;
+}
+
+/* The label for a region box: the role, plus the repeat range where present
+ * ("message-bubble x2-6"). Uses a plain hyphen for the range. */
+function f10WfRegionLabel(reg) {
+  var role = reg.role || reg.id || 'region';
+  if (reg.repeat) {
+    var item = reg.repeat.item_role || 'item';
+    var min = (reg.repeat.min != null) ? reg.repeat.min : '';
+    var max = (reg.repeat.max != null) ? reg.repeat.max : '';
+    var range = (min !== '' || max !== '') ? (' x' + min + '-' + max) : '';
+    return item + range;
+  }
+  return role;
+}
+
+/* Render a LayoutStructure as labelled, proportionally positioned boxes.
+ * opts:
+ *   overlay  - true to fill and sit over an ad image (transparent, tinted
+ *              outlines); false (default) for a standalone light card.
+ *   title    - optional caption shown above the frame (standalone only).
+ *   compact  - smaller labels for tight overlays.
+ * Returns an HTML string. One element with data-region-id per region, so a
+ * caller (or a test) can count "one box per region". */
+function f10RenderWireframe(structure, opts) {
+  opts = opts || {};
+  var overlay = !!opts.overlay;
+  var regions = f10WfRegions(structure);
+  var ar = f10WfAspect(structure);
+  var fam = (structure && structure.layout_family) ? String(structure.layout_family) : '';
+
+  var boxes = regions.map(function (reg) {
+    var b = reg.box;
+    var left = (b.x * 100), top = (b.y * 100), w = (b.w * 100), h = (b.h * 100);
+    var label = f10WfRegionLabel(reg);
+    var cls = 'f10-wf-region'
+      + (reg.repeat ? ' f10-wf-repeat' : '')
+      + (reg.container ? ' f10-wf-container' : '')
+      + (reg.image ? ' f10-wf-image' : '');
+    // Observed rows for a repeat group, stacked inside the group box. These are
+    // decorative (no data-region-id), so a "box per region" count stays exact.
+    var items = '';
+    if (reg.repeat) {
+      var n = Math.max(0, Math.min(6, Number(reg.repeat.observed) || Number(reg.repeat.min) || 2));
+      var rows = [];
+      for (var i = 0; i < n; i++) {
+        var rt = (i * (100 / n));
+        rows.push('<span class="f10-wf-item" style="position:absolute;left:6%;right:6%;top:'
+          + rt.toFixed(1) + '%;height:' + (100 / n - 4).toFixed(1) + '%;"></span>');
+      }
+      items = rows.join('');
+    }
+    return '<div class="' + cls + '" data-region-id="' + f10WfEsc(reg.id) + '"'
+      + ' data-role="' + f10WfEsc(reg.role) + '"'
+      + (reg.repeat ? (' data-repeat="' + f10WfEsc(reg.repeat.item_role || '') + '"') : '')
+      + ' style="position:absolute;left:' + left.toFixed(2) + '%;top:' + top.toFixed(2) + '%;'
+      + 'width:' + w.toFixed(2) + '%;height:' + h.toFixed(2) + '%;">'
+      + items
+      + '<span class="f10-wf-label">' + f10WfEsc(label) + '</span>'
+      + '</div>';
+  }).join('');
+
+  var frameStyle = 'position:relative;width:100%;aspect-ratio:' + ar + ';'
+    + (overlay
+        ? 'background:transparent;'
+        : 'background:repeating-linear-gradient(45deg,rgba(0,0,0,0.02),rgba(0,0,0,0.02) 8px,rgba(0,0,0,0.04) 8px,rgba(0,0,0,0.04) 16px);'
+          + 'border:1px solid rgba(0,0,0,0.15);border-radius:8px;overflow:hidden;');
+
+  var caption = (!overlay && opts.title)
+    ? '<div class="f10-wf-title" style="font-size:12px;font-weight:600;margin:0 0 6px;color:#555;">'
+        + f10WfEsc(opts.title) + (fam ? ' <span style="font-weight:400;color:#888;">(' + f10WfEsc(fam) + ')</span>' : '')
+        + '</div>'
+    : '';
+  var empty = regions.length ? '' :
+    '<div class="f10-wf-empty" style="position:absolute;inset:0;display:flex;align-items:center;'
+    + 'justify-content:center;color:#999;font-size:12px;">No structure to preview</div>';
+
+  return '<div class="f10-wireframe' + (overlay ? ' f10-wireframe-overlay' : '') + '"'
+    + ' data-layout-family="' + f10WfEsc(fam) + '" data-region-count="' + regions.length + '">'
+    + caption
+    + '<div class="f10-wf-frame" style="' + frameStyle + '">' + boxes + empty + '</div>'
+    + '</div>';
+}
+
+/* The scoped CSS for the wireframe primitives. Injected once by a consumer
+ * (brief editor / review) via ensureWireframeStyles(); kept here so the single
+ * renderer owns its own look and both consumers stay identical. */
+var F10_WIREFRAME_CSS =
+  '.f10-wireframe .f10-wf-region{box-sizing:border-box;border:1.5px solid var(--brand,#7a1f2b);'
+  + 'border-radius:4px;background:rgba(122,31,43,0.06);display:flex;align-items:flex-start;'
+  + 'justify-content:flex-start;overflow:hidden;}'
+  + '.f10-wireframe .f10-wf-region.f10-wf-container{border-style:dashed;background:rgba(0,0,0,0.02);}'
+  + '.f10-wireframe .f10-wf-region.f10-wf-image{background:rgba(0,90,150,0.08);border-color:#0a6bb0;}'
+  + '.f10-wireframe .f10-wf-label{font-size:10px;line-height:1.25;padding:1px 4px;color:#333;'
+  + 'background:rgba(255,255,255,0.78);border-radius:0 0 3px 0;max-width:100%;overflow:hidden;'
+  + 'text-overflow:ellipsis;white-space:nowrap;pointer-events:none;}'
+  + '.f10-wireframe .f10-wf-item{box-sizing:border-box;border:1px dashed rgba(122,31,43,0.5);border-radius:3px;background:rgba(122,31,43,0.04);}'
+  + '.f10-wireframe-overlay{position:absolute;inset:0;}'
+  + '.f10-wireframe-overlay .f10-wf-frame{background:transparent!important;border:0!important;}'
+  + '.f10-wireframe-overlay .f10-wf-region{border-color:#c8ff00;background:rgba(200,255,0,0.10);}'
+  + '.f10-wireframe-overlay .f10-wf-region.f10-wf-image{border-color:#4ad;background:rgba(70,170,221,0.12);}'
+  + '.f10-wireframe-overlay .f10-wf-label{background:rgba(0,0,0,0.62);color:#fff;}';
+
+/* Inject the wireframe CSS once into <head> (idempotent by id). A no-op when
+ * there is no document (node tests call the renderer directly). */
+function f10EnsureWireframeStyles() {
+  if (typeof document === 'undefined' || !document.getElementById) return;
+  if (document.getElementById('f10-wireframe-styles')) return;
+  var head = document.head || (document.getElementsByTagName && document.getElementsByTagName('head')[0]);
+  if (!head || !head.appendChild || !document.createElement) return;
+  var st = document.createElement('style');
+  st.id = 'f10-wireframe-styles';
+  st.textContent = F10_WIREFRAME_CSS;
+  head.appendChild(st);
+}
+
+if (typeof window !== 'undefined') {
+  window.f10RenderWireframe = f10RenderWireframe;
+  window.f10EnsureWireframeStyles = f10EnsureWireframeStyles;
+  window.F10_WIREFRAME_CSS = F10_WIREFRAME_CSS;
+}

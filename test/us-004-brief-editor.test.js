@@ -36,6 +36,11 @@ const assert = require('assert');
 const ROOT = path.join(__dirname, '..');
 const EDITOR_PATH = path.join(ROOT, 'f10-brief-editor.js');
 const EDITOR_SRC = fs.readFileSync(EDITOR_PATH, 'utf8');
+// f10-utils.js carries the SHARED structure wireframe (built once, used by the brief
+// editor AND the Review overlay). The browser panel calls window.f10RenderWireframe, so
+// the harness loads utils into the sandbox first, exactly as the review test composes
+// UTILS + REVIEW.
+const UTILS_SRC = fs.readFileSync(path.join(ROOT, 'f10-utils.js'), 'utf8');
 const BE = require('../f10-brief-editor.js'); // Node half (module.exports)
 
 let passed = 0;
@@ -323,6 +328,7 @@ function makeBrowserCtx(config, opts) {
   };
   if (config !== undefined) sandbox.BRIEF_EDITOR = config;
   vm.createContext(sandbox);
+  vm.runInContext(UTILS_SRC, sandbox, { filename: 'f10-utils.js' });
   vm.runInContext(EDITOR_SRC, sandbox, { filename: 'f10-brief-editor.js' });
   return sandbox;
 }
@@ -632,66 +638,283 @@ async function runBrowser() {
     assert.strictEqual(saved[0].creative_direction, 'higher BMI subjects', 'creative direction carries too');
   });
 
-  // ── Layout optionality: the image-ad layout picker lists the client's mined winners
-  //    plus an EXPLORE group of the remaining families, and pins the compile request. ──
-  await check('the layout picker lists mined winners + explore families and pins the compile request', async () => {
+  /* ======================================================================== *
+   * PHASE 3 (US-022): source + render picker, structure wireframe, per-region
+   * editor, and inspiration confirmation. These replace the retired beMode /
+   * beFormat / beLayout pickers and the design / blueprint edit loops.
+   * ======================================================================== */
+
+  // A LayoutStructure doc in the FIXED contract shape (flat regions + a separate
+  // repeats array, normalised 0..1 boxes).
+  function sampleStructure(over) {
+    return Object.assign({
+      layout_family: 'app-phone-mockup', aspect_ratios: '4:5',
+      regions: [
+        { id: 'headline', role: 'headline', box: { x: 0.08, y: 0.06, w: 0.84, h: 0.1 }, ordinal: 0, copy_need: true },
+        { id: 'thread', role: 'group.thread', box: { x: 0.1, y: 0.2, w: 0.8, h: 0.55 }, ordinal: 1, container: true },
+        { id: 'hero', role: 'product-shot', box: { x: 0.1, y: 0.2, w: 0.8, h: 0.55 }, ordinal: 2, image_need: true },
+        { id: 'cta', role: 'cta', box: { x: 0.3, y: 0.85, w: 0.4, h: 0.08 }, ordinal: 3, copy_need: true },
+      ],
+      repeats: [{ group: 'thread', item_role: 'message-bubble', min: 2, max: 6, observed: 3 }],
+    }, over || {});
+  }
+
+  // A list-sources response in the FIXED contract shape.
+  function sourcesResponse() {
+    return {
+      client: 'moshy',
+      sources: {
+        winners: [
+          { archetype_id: 'moshy-split-screen', name: 'Split Screen', layout_family: 'split-screen',
+            source_ad_count: 23, default_render: 'scene', structure: sampleStructure({ layout_family: 'split-screen' }) },
+        ],
+        explore: [
+          { family: 'before-after-comparison', preset_id: 'comparison-table', default_render: 'typeset',
+            structure: sampleStructure({ layout_family: 'before-after-comparison' }) },
+        ],
+        inspiration: { available: true },
+      },
+      renders: ['scene', 'typeset'], explore_prefix: 'family:',
+    };
+  }
+
+  // A /compile response whose single variant carries a structure + region_copy.
+  function structuredCompileResponse(over) {
+    return Object.assign({
+      ok: true, client: 'moshy', variant_count: 1,
+      variants: [{
+        brief_id: 'brief_a', source: { kind: 'winner', ref: 'moshy-split-screen' }, render: 'scene',
+        layout_family: 'app-phone-mockup', structure: sampleStructure(),
+        region_copy: { headline: 'Sleep better', thread: ['Hey!', 'Does it work?', 'Yes, love it'], cta: 'Shop now' },
+      }],
+      sizes: [[1080, 1350]], warnings: [],
+      cost_estimate: { files_produced: 1, unique_image_generations: 1, estimated_usd: 0.02, remaining_cap_usd: 25, exceeds_cap: false },
+    }, over || {});
+  }
+
+  // ── AC1: list-sources populates the picker with winners + explore + inspiration,
+  //     and buildCompileRequest emits source + render (never archetypeId/format/beLayout). ──
+  await check('list-sources populates the source picker (winners + explore + inspiration); buildCompileRequest emits source + render', async () => {
     const ctx = makeBrowserCtx();
-    ctx.window.f10BriefEditor.setStore({
+    const be = ctx.window.f10BriefEditor;
+    be.setStore({ async probe() { return true; }, async load() { return null; }, async save() {}, async sources() { return sourcesResponse(); } });
+    await ctx.window.initBriefEditor();
+    await be.populateSources();
+    const html = ctx._slots['be-source'].innerHTML;
+    assert.ok(/Auto \(top performer\)/.test(html), 'the Auto default is present');
+    assert.ok(/value="winner:moshy-split-screen"/.test(html), 'a mined winner is listed');
+    assert.ok(/winning layouts/i.test(html), 'the winning-layouts group is labelled');
+    assert.ok(/value="explore:comparison-table"/.test(html), 'an explore preset is offered');
+    assert.ok(/value="inspiration"/.test(html), 'the inspiration option is offered');
+    // The old format + layout pickers are gone.
+    assert.ok(!/id="be-format-tabs"/.test(ctx._slots['content'].innerHTML), 'no format picker');
+    assert.ok(!/id="be-layout"/.test(ctx._slots['content'].innerHTML), 'no layout picker');
+    assert.ok(!/id="be-mode-tabs"/.test(ctx._slots['content'].innerHTML), 'no mode toggle');
+
+    be.setSource('winner:moshy-split-screen');
+    let req = be.buildCompileRequest();
+    assert.strictEqual(JSON.stringify(req.source), JSON.stringify({ kind: 'winner', ref: 'moshy-split-screen' }), 'a winner rides source{kind,ref}');
+    assert.strictEqual(req.render, 'scene', 'render rides the request');
+    assert.ok(!('archetypeId' in req), 'no legacy archetypeId');
+    assert.ok(!('format' in req), 'no legacy format');
+    assert.ok(!('beLayout' in req) && !('mode' in req), 'no legacy beLayout / mode');
+
+    be.setSource('explore:comparison-table');
+    req = be.buildCompileRequest();
+    assert.strictEqual(req.source.kind, 'explore', 'an explore preset rides source.kind');
+    assert.strictEqual(req.source.ref, 'comparison-table', 'the preset id rides source.ref');
+
+    be.setSource(''); // Auto
+    req = be.buildCompileRequest();
+    assert.strictEqual(JSON.stringify(req.source), JSON.stringify({ kind: 'winner', ref: '' }), 'Auto is winner with an empty ref');
+  });
+
+  // ── AC1: the render toggle defaults from the source's default_render and overrides. ──
+  await check('setRender / setSource: render defaults from the source default_render and is overridable', async () => {
+    const ctx = makeBrowserCtx();
+    const be = ctx.window.f10BriefEditor;
+    be.setStore({ async probe() { return true; }, async load() { return null; }, async save() {}, async sources() { return sourcesResponse(); } });
+    await ctx.window.initBriefEditor();
+    await be.populateSources();
+    be.setSource('winner:moshy-split-screen');
+    assert.strictEqual(be.getRender(), 'scene', 'a scene-default winner defaults the render to scene');
+    be.setSource('explore:comparison-table');
+    assert.strictEqual(be.getRender(), 'typeset', 'a typeset-default explore preset defaults the render to typeset');
+    be.setRender('scene');
+    assert.strictEqual(be.getRender(), 'scene', 'the operator can override the render');
+    assert.strictEqual(be.buildCompileRequest().render, 'scene', 'the override rides the request');
+  });
+
+  // ── AC2: the shared wireframe draws one labelled box per region, incl. the repeat range. ──
+  await check('renderWireframe draws one box per region of a fixture structure incl. the repeat range', async () => {
+    const ctx = makeBrowserCtx();
+    const be = ctx.window.f10BriefEditor;
+    const st = sampleStructure();
+    const html = be.renderWireframe(st, { title: 'Layout structure' });
+    const boxes = (html.match(/data-region-id=/g) || []).length;
+    assert.strictEqual(boxes, st.regions.length, 'one box per region');
+    assert.ok(/data-region-id="headline"/.test(html) && /data-region-id="cta"/.test(html), 'regions are labelled by id');
+    assert.ok(/message-bubble x2-6/.test(html), 'the repeat range is shown on the group box');
+    assert.ok(/f10-wf-image/.test(html), 'an image region is marked');
+    // The picker also draws the chosen source structure under it before compile.
+    be.setStore({ async probe() { return true; }, async load() { return null; }, async save() {}, async sources() { return sourcesResponse(); } });
+    await ctx.window.initBriefEditor();
+    await be.populateSources();
+    be.setSource('winner:moshy-split-screen');
+    assert.ok(/data-region-id=/.test(ctx._slots['be-wireframe'].innerHTML), 'the source structure is drawn under the picker before compile');
+  });
+
+  // ── AC2 / e2e 1: the per-region editor renders a compile response; an edit to a region's
+  //     text and a repeat add + remove round-trip into the /submit payload. ──
+  await check('the per-region editor renders a compile response and edits + a repeat add/remove round-trip into /submit', async () => {
+    const ctx = makeBrowserCtx();
+    const be = ctx.window.f10BriefEditor;
+    let submitted = null;
+    be.setStore({
       async probe() { return true; }, async load() { return null; }, async save() {},
-      async archetypes() {
+      async sources() { return sourcesResponse(); },
+      async compile() { return structuredCompileResponse(); },
+      async submit(p) { submitted = p; return { ok: true, job_id: 'j1', status: 'running' }; },
+      async status() { return { ok: true, job: { status: 'completed', asset_uris: [] } }; },
+    });
+    await ctx.window.initBriefEditor();
+    await be.compileBrief();
+    const html = ctx._slots['be-compiled'].innerHTML;
+    assert.ok(/be-region/.test(html), 'the per-region editor rendered');
+    assert.ok(/data-region-id=/.test(html), 'the structure wireframe rendered in the card');
+    assert.ok(/be-rc-0-3/.test(html), 'the cta copy region is an editable field');
+    assert.ok(/be-ri-0-1-0/.test(html) && /be-ri-0-1-2/.test(html), 'the repeat group renders its 3 observed items');
+    assert.ok(/be-repeat-add/.test(html), 'the repeat group has an add control');
+    // Edit the CTA copy and a thread bubble.
+    ctx.document.getElementById('be-rc-0-3').value = 'Book now';
+    ctx.document.getElementById('be-ri-0-1-0').value = 'Hello there';
+    // Add then remove a thread item (round-trips within [min,max]).
+    assert.strictEqual(be.addRepeatItem(0, 'thread'), true, 'add succeeds within max');
+    assert.strictEqual(be.getVariantRegionCopy(0).thread.length, 4, 'the thread grew to 4');
+    assert.strictEqual(be.removeRepeatItem(0, 'thread', 3), true, 'remove succeeds above min');
+    assert.strictEqual(be.getVariantRegionCopy(0).thread.length, 3, 'the thread is back to 3');
+    // Nudge the CTA box.
+    ctx.document.getElementById('be-rb-0-3-x').value = '0.25';
+    await be.submitCompiled();
+    be.stopPolling();
+    assert.ok(submitted && submitted.compiledBrief, 'submit carries the compiled brief');
+    const v = submitted.compiledBrief.variants[0];
+    assert.ok(v.structure && v.region_copy, 'submit carries the edited structure + region_copy');
+    assert.strictEqual(v.region_copy.cta, 'Book now', 'the edited CTA copy round-tripped');
+    assert.strictEqual(v.region_copy.thread[0], 'Hello there', 'the edited bubble round-tripped');
+    assert.strictEqual(v.region_copy.thread.length, 3, 'the repeat add + remove round-tripped');
+    assert.strictEqual(v.structure.regions[3].box.x, 0.25, 'the nudged box round-tripped');
+    assert.strictEqual(JSON.stringify(submitted.source), JSON.stringify({ kind: 'winner', ref: '' }), 'submit carries the source');
+    assert.strictEqual(submitted.render, 'scene', 'submit carries the render');
+  });
+
+  // ── e2e 1 (repeat bounds): add stops at max, remove stops at min. ──
+  await check('repeat add/remove respects [min,max]', async () => {
+    const ctx = makeBrowserCtx();
+    const be = ctx.window.f10BriefEditor;
+    be.setStore({
+      async probe() { return true; }, async load() { return null; }, async save() {},
+      async sources() { return sourcesResponse(); },
+      async compile() {
+        return structuredCompileResponse({
+          variants: [{
+            brief_id: 'b', source: { kind: 'winner', ref: '' }, render: 'scene', layout_family: 'x',
+            structure: sampleStructure(), region_copy: { headline: 'h', thread: ['a', 'b'], cta: 'c' },
+          }],
+        });
+      },
+    });
+    await ctx.window.initBriefEditor();
+    await be.compileBrief();
+    // At min (2): remove is refused.
+    assert.strictEqual(be.removeRepeatItem(0, 'thread', 0), false, 'cannot remove below min');
+    assert.strictEqual(be.getVariantRegionCopy(0).thread.length, 2, 'still at min');
+    // Grow to max (6): the 5th add is refused.
+    assert.strictEqual(be.addRepeatItem(0, 'thread'), true);
+    assert.strictEqual(be.addRepeatItem(0, 'thread'), true);
+    assert.strictEqual(be.addRepeatItem(0, 'thread'), true);
+    assert.strictEqual(be.addRepeatItem(0, 'thread'), true);
+    assert.strictEqual(be.getVariantRegionCopy(0).thread.length, 6, 'reached max');
+    assert.strictEqual(be.addRepeatItem(0, 'thread'), false, 'cannot add above max');
+  });
+
+  // ── AC3 / inspiration e2e: an inspiration source shows the detected-structure
+  //     confirmation with confidence and applies NO picker-derived layout. ──
+  await check('inspiration mode shows the detected-structure confirmation and applies no picker layout', async () => {
+    const ctx = makeBrowserCtx();
+    const be = ctx.window.f10BriefEditor;
+    const detected = sampleStructure({ layout_family: 'testimonial-quote-card', structure_confidence: 0.58 });
+    be.setStore({
+      async probe() { return true; }, async load() { return null; }, async save() {},
+      async sources() { return sourcesResponse(); },
+      async compile() {
+        return structuredCompileResponse({
+          detected_structure: detected, structure_confidence: 0.58,
+          preset_fallback: { preset_id: 'quote-card', structure: sampleStructure({ layout_family: 'testimonial-quote-card' }), region_copy: {} },
+          variants: [{ brief_id: 'i1', source: { kind: 'inspiration', ref: 'gs://insp/a.png' }, render: 'scene',
+            layout_family: 'testimonial-quote-card', structure: detected, region_copy: { headline: 'x', thread: ['a', 'b'], cta: 'y' } }],
+        });
+      },
+    });
+    await ctx.window.initBriefEditor();
+    await be.populateSources();
+    be.setSource('inspiration');
+    be.selectRef({ gcs_uri: 'gs://insp/a.png', thumb_url: 't' });
+    // No picker-derived layout: the request is source.kind inspiration with the chosen ad ref.
+    const req = be.buildCompileRequest();
+    assert.strictEqual(req.source.kind, 'inspiration', 'inspiration source.kind');
+    assert.strictEqual(req.source.ref, 'gs://insp/a.png', 'the ref is the chosen inspiration ad, not a winner/explore layout');
+    assert.ok(!('archetypeId' in req), 'no picker-derived archetypeId in inspiration mode');
+    await be.compileBrief();
+    const html = ctx._slots['be-compiled'].innerHTML;
+    assert.ok(/be-insp-confirm/.test(html), 'the confirmation gate is shown');
+    assert.ok(/data-region-id=/.test(html), 'the detected structure is drawn as a wireframe');
+    assert.ok(/58%/.test(html), 'the detection confidence is shown');
+    assert.ok(/be-insp-usepreset/.test(html), 'a preset fallback is offered below threshold');
+    assert.strictEqual(ctx._slots['be-submit-bar'].style.display, 'none', 'the submit bar is hidden until confirmed');
+    assert.strictEqual(JSON.stringify(be.getInspirationStructure()), JSON.stringify(detected), 'the detected structure is captured');
+    // Confirming reveals the per-region editor + submit bar.
+    be.confirmInspiration();
+    assert.ok(/be-region/.test(ctx._slots['be-compiled'].innerHTML), 'confirming reveals the per-region editor');
+    assert.strictEqual(ctx._slots['be-submit-bar'].style.display, '', 'the submit bar is revealed after confirm');
+  });
+
+  // ── Degradation: a failed list-sources read never crashes; the picker stays Auto-only. ──
+  await check('the source picker degrades to Auto-only when list-sources fails', async () => {
+    const ctx = makeBrowserCtx();
+    const be = ctx.window.f10BriefEditor;
+    be.setStore({
+      async probe() { return true; }, async load() { return null; }, async save() {},
+      async sources() { throw new Error('backend down'); },
+    });
+    await ctx.window.initBriefEditor();
+    await be.populateSources();
+    const req = be.buildCompileRequest();
+    assert.strictEqual(JSON.stringify(req.source), JSON.stringify({ kind: 'winner', ref: '' }), 'a failed read leaves Auto (winner, empty ref)');
+    assert.strictEqual(req.render, 'scene', 'and a scene render');
+  });
+
+  // ── Legacy fall-through: a compile response with no structure still renders the flat
+  //     prompt/copy editor (backward compatibility). ──
+  await check('a legacy compile response with no structure falls through to the flat prompt/copy editor', async () => {
+    const ctx = makeBrowserCtx();
+    const be = ctx.window.f10BriefEditor;
+    be.setStore({
+      async probe() { return true; }, async load() { return null; }, async save() {},
+      async sources() { return sourcesResponse(); },
+      async compile() {
         return {
-          archetypes: [{ archetype_id: 'moshy-split-screen', name: 'Split Screen',
-            layout_family: 'split-screen', source_ad_count: 23, slot_roles: ['background', 'hero'] }],
-          families: ['split-screen', 'testimonial-quote-card', 'before-after-comparison'],
-          explore_prefix: 'family:',
+          ok: true, client: 'moshy', variants: [{ brief_id: 'b', prompts: [{ component_role: 'background', prompt: 'A scene' }],
+            copy: [{ role: 'headline', text: 'Hi' }] }],
+          sizes: [[1080, 1080]], cost_estimate: { files_produced: 1, unique_image_generations: 1, estimated_usd: 0.02, remaining_cap_usd: 25, exceeds_cap: false },
         };
       },
     });
     await ctx.window.initBriefEditor();
-    await ctx.window.f10BriefEditor.populateLayouts();
-    const html = ctx._slots['be-layout'].innerHTML;
-    assert.ok(/Auto \(top performer\)/.test(html), 'the Auto default is present');
-    assert.ok(/value="moshy-split-screen"/.test(html), 'the mined winner is listed');
-    assert.ok(/winning layouts/.test(html), 'the winning-layouts group is labelled');
-    assert.ok(/value="family:testimonial-quote-card"/.test(html), 'a non-mined family is offered under explore');
-    assert.ok(!/value="family:split-screen"/.test(html), 'a mined family is NOT double-listed under explore');
-
-    ctx.window.f10BriefEditor.setLayout('moshy-split-screen');
-    let req = ctx.window.f10BriefEditor.buildCompileRequest();
-    assert.strictEqual(req.archetypeId, 'moshy-split-screen', 'a pinned mined layout rides the compile request');
-
-    ctx.window.f10BriefEditor.setLayout('family:before-after-comparison');
-    req = ctx.window.f10BriefEditor.buildCompileRequest();
-    assert.strictEqual(req.archetypeId, 'family:before-after-comparison', 'an explore family rides the compile request');
-
-    ctx.window.f10BriefEditor.setLayout('');
-    req = ctx.window.f10BriefEditor.buildCompileRequest();
-    assert.ok(!('archetypeId' in req), 'Auto omits archetypeId (the unchanged default)');
-  });
-
-  await check('a design format keeps its own archetypeId regardless of the layout picker', async () => {
-    const ctx = makeBrowserCtx();
-    ctx.window.f10BriefEditor.setStore({
-      async probe() { return true; }, async load() { return null; }, async save() {},
-      async archetypes() { return { archetypes: [], families: [], explore_prefix: 'family:' }; },
-    });
-    await ctx.window.initBriefEditor();
-    ctx.window.f10BriefEditor.setLayout('moshy-split-screen'); // must be ignored for a design format
-    ctx.window.f10BriefEditor.setFormat('comparison');
-    const req = ctx.window.f10BriefEditor.buildCompileRequest();
-    assert.strictEqual(req.archetypeId, 'comparison', 'the design format archetypeId wins over the layout picker');
-  });
-
-  await check('the layout picker degrades to Auto-only when the read fails', async () => {
-    const ctx = makeBrowserCtx();
-    ctx.window.f10BriefEditor.setStore({
-      async probe() { return true; }, async load() { return null; }, async save() {},
-      async archetypes() { throw new Error('backend down'); },
-    });
-    await ctx.window.initBriefEditor();
-    await ctx.window.f10BriefEditor.populateLayouts();
-    const req = ctx.window.f10BriefEditor.buildCompileRequest();
-    assert.ok(!('archetypeId' in req), 'a failed picker read never crashes or pins a layout');
+    await be.compileBrief();
+    const html = ctx._slots['be-compiled'].innerHTML;
+    assert.ok(/data-be-edit="prompt"/.test(html) && /data-be-edit="copy"/.test(html), 'the legacy flat editor renders when no structure is present');
+    assert.ok(!/be-region\b/.test(html), 'no per-region editor for a legacy response');
   });
 }
 

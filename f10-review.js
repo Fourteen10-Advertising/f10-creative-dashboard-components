@@ -397,14 +397,47 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return true;
     }
 
-    /* The NEW generated ad card: its own preview image (US-005), the bundle's component
-     * values, any copy, and the coherence flags / held dimensions in context. A missing
-     * or unresolvable composite falls back to a labelled placeholder, never a broken img. */
+    /* Is a bundle inspiration-sourced? Reads the bundle's source provenance. */
+    function isInspirationBundle(bundle) {
+      var src = bundle && bundle.source;
+      return !!(src && src.kind === 'inspiration');
+    }
+
+    /* The provenance chips for a generated ad: what it was BUILT FROM — the source
+     * (kind + ref), the render, and the layout family. Phase 3 (US-022). */
+    function provenanceHtml(bundle) {
+      var bits = [];
+      var src = (bundle && bundle.source) || null;
+      if (src && src.kind) {
+        bits.push('<span class="rev-prov" data-prov="source">Source: ' + esc(String(src.kind))
+          + (src.ref ? (' (' + esc(String(src.ref)) + ')') : '') + '</span>');
+      }
+      if (bundle && bundle.render) bits.push('<span class="rev-prov" data-prov="render">Render: ' + esc(String(bundle.render)) + '</span>');
+      if (bundle && bundle.layout_family) bits.push('<span class="rev-prov" data-prov="layout">Layout: ' + esc(String(bundle.layout_family)) + '</span>');
+      return bits.length ? '<div class="rev-provenance">' + bits.join('') + '</div>' : '';
+    }
+
+    /* The region overlay for a generated ad: the shared wireframe (built once in
+     * f10-utils.js) drawn over the preview. Hidden until toggled. */
+    function overlayHtml(structure) {
+      var wf = (typeof window !== 'undefined' && window.f10RenderWireframe) || null;
+      if (!wf || !structure) return '';
+      return '<div class="rev-overlay">' + wf(structure, { overlay: true }) + '</div>';
+    }
+
+    /* The NEW generated ad card: its own preview image (US-005), what it was built from
+     * (source / render / layout family), a toggleable region overlay over the preview, the
+     * bundle's component values, any copy, and — for an inspiration-sourced ad — the
+     * inspiration's DETECTED structure beside the generated ad's overlay (no inspiration
+     * copy is shown). A missing composite falls back to a labelled placeholder. */
     function newAdHtml(bundle, previewUrl, previewReason) {
-      var img = previewUrl
+      var structure = bundle && bundle.structure;
+      var hasOverlay = !!(structure && (typeof window === 'undefined' || window.f10RenderWireframe));
+      var imgInner = previewUrl
         ? '<img class="rev-img" src="' + esc(previewUrl) + '" alt="New generated ad preview" loading="lazy" />'
         : '<div class="rev-img rev-img-empty">Preview not available'
           + (previewReason ? ' <span class="rev-muted">(' + esc(previewReason) + ')</span>' : '') + '</div>';
+      var frame = '<div class="rev-ad-frame" data-rev-frame="1">' + imgInner + overlayHtml(structure) + '</div>';
 
       var comps = (bundle && bundle.components && typeof bundle.components === 'object') ? bundle.components : {};
       var rows = Object.keys(comps).map(function (k) {
@@ -414,9 +447,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           + '<span class="rev-v">' + esc(v) + '</span></div>';
       }).join('');
 
+      // Inspiration-sourced ads never show the inspiration's copy (allow-list posture),
+      // only its detected structure beside the generated ad's overlay.
+      var inspBundle = isInspirationBundle(bundle);
       var copy = '';
       var na = (bundle && bundle.new_ad && typeof bundle.new_ad === 'object') ? bundle.new_ad : null;
-      if (na) {
+      if (na && !inspBundle) {
         copy = Object.keys(na).map(function (k) {
           var v = na[k];
           if (v == null || v === '' || typeof v === 'object') return '';
@@ -424,12 +460,77 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }).join('');
       }
 
+      var tools = '';
+      if (hasOverlay) {
+        tools += '<button type="button" class="rev-tool-btn" data-rev-overlay-toggle="1" aria-pressed="false">Show region overlay</button>';
+      }
+      // Open in Figma: hand the bundle to the existing plugin path (no new backend).
+      tools += '<button type="button" class="rev-tool-btn" data-rev-figma="1" data-bundle-id="'
+        + esc(bundleId(bundle)) + '">Open in Figma</button>';
+      var toolsRow = '<div class="rev-ad-tools">' + tools + '</div>';
+
+      // For an inspiration-sourced ad, show the detected inspiration structure beside the
+      // generated ad's overlay (e2e 2). Both are the shared wireframe.
+      var inspStructure = bundle && (bundle.inspiration_structure || bundle.detected_structure);
+      var wf = (typeof window !== 'undefined' && window.f10RenderWireframe) || null;
+      var inspCol = (inspBundle && wf && inspStructure)
+        ? '<div class="rev-structure-col rev-insp-structure" data-rev-insp-structure="1">'
+          + '<div class="rev-col-head">Inspiration structure</div>' + wf(inspStructure, { title: 'Detected' }) + '</div>'
+        : '';
+      var genCol = '<div class="rev-structure-col">'
+        + '<div class="rev-col-head">New generated ad</div>' + frame + toolsRow + '</div>';
+      var cols = inspCol
+        ? '<div class="rev-structure-cols">' + genCol + inspCol + '</div>'
+        : genCol;
+
       return '<div class="rev-new">'
-        + '<div class="rev-col-head">New generated ad</div>'
-        + img
+        + provenanceHtml(bundle)
+        + cols
         + (rows ? '<div class="rev-kvs">' + rows + '</div>' : '')
         + (copy ? '<div class="rev-copy">' + copy + '</div>' : '')
         + '</div>';
+    }
+
+    /* Build the Figma handoff payload for a bundle: everything the existing plugin path
+     * needs to realise the ad as native, editable nodes — the structure + region copy,
+     * plus provenance. No copy or bytes beyond what the bundle already carries. */
+    function figmaHandoff(bundle) {
+      bundle = bundle || {};
+      return {
+        schema: 'f10_figma_handoff',
+        bundle_id: bundleId(bundle),
+        client: rvClient,
+        platform: bundlePlatform(bundle),
+        source: bundle.source || null,
+        render: bundle.render || null,
+        layout_family: bundle.layout_family || null,
+        structure: bundle.structure || null,
+        region_copy: bundle.region_copy || null,
+        inspiration_structure: bundle.inspiration_structure || bundle.detected_structure || null,
+      };
+    }
+
+    /* Hand a bundle to the existing F10 Figma plugin path (no new backend). Prefer a
+     * plugin hook the review app / plugin registers (window.f10FigmaPlugin.open); else
+     * stage the payload on window.F10_FIGMA_HANDOFF and copy it to the clipboard so the
+     * operator can paste it into the plugin. Always emits an analytics event. Returns the
+     * handoff payload (also used by tests). */
+    function openInFigma(bundle) {
+      var payload = figmaHandoff(bundle);
+      var handed = false;
+      try {
+        if (typeof window !== 'undefined' && window.f10FigmaPlugin && typeof window.f10FigmaPlugin.open === 'function') {
+          window.f10FigmaPlugin.open(payload);
+          handed = true;
+        } else if (typeof window !== 'undefined') {
+          window.F10_FIGMA_HANDOFF = payload;
+          if (window.navigator && window.navigator.clipboard && window.navigator.clipboard.writeText) {
+            try { window.navigator.clipboard.writeText(JSON.stringify(payload)); } catch (e) { /* clipboard optional */ }
+          }
+        }
+      } catch (e) { /* never break the review tab on a handoff failure */ }
+      if (window.F10A) F10A.track('open_in_figma', { bundle_id: payload.bundle_id, handed: handed });
+      return payload;
     }
 
     /* The per-bundle approve/decline gate (US-009). A coarse concept-level decision: approve
@@ -600,6 +701,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '<span class="rev-card-title" title="' + esc(label) + '">' + esc(label) + '</span>'
         + '<span class="rev-card-id">' + esc(id) + '</span>'
         + '</div>'
+        + provenanceHtml(bundle)
         + '<div class="rev-card-thumb-wrap">' + thumb + '</div>'
         + scorecardHtml(r.coherence)
         + decisionHtml(bundle)
@@ -883,6 +985,42 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
     }
 
+    /* Delegated handling for the Phase 3 (US-022) per-ad tools: the region-overlay toggle
+     * and Open in Figma. Bound once on rev-body alongside onDecisionClick. */
+    function onReviewToolClick(e) {
+      var el = e && (e.target || e.srcElement);
+      var kind = null, node = null;
+      while (el && el !== document) {
+        if (el.getAttribute) {
+          if (el.getAttribute('data-rev-overlay-toggle') != null) { kind = 'overlay'; node = el; break; }
+          if (el.getAttribute('data-rev-figma') != null) { kind = 'figma'; node = el; break; }
+        }
+        el = el.parentNode;
+      }
+      if (!kind) return;
+      if (e && e.preventDefault) e.preventDefault();
+      if (kind === 'overlay') {
+        // Toggle the nearest ad frame's overlay-on class.
+        var frame = node.parentNode;
+        while (frame && frame !== document) {
+          if (frame.getAttribute && frame.getAttribute('data-rev-frame') != null) break;
+          // the toggle button lives in .rev-structure-col next to the frame; search within
+          if (frame.querySelector) { var f = frame.querySelector('[data-rev-frame]'); if (f) { frame = f; break; } }
+          frame = frame.parentNode;
+        }
+        if (frame && frame.classList) {
+          var on = frame.classList.contains('rev-overlay-on');
+          if (on) frame.classList.remove('rev-overlay-on'); else frame.classList.add('rev-overlay-on');
+          if (node.setAttribute) node.setAttribute('aria-pressed', on ? 'false' : 'true');
+          if (node.textContent !== undefined) node.textContent = on ? 'Show region overlay' : 'Hide region overlay';
+        }
+      } else if (kind === 'figma') {
+        var id = node.getAttribute('data-bundle-id');
+        var bundle = findBundleById(id);
+        if (bundle) openInFigma(bundle);
+      }
+    }
+
     /* ---- generation-date filter ---- */
 
     /* Populate the generation dropdown with the distinct discovered dates (newest first)
@@ -1058,6 +1196,22 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '#panel-review .rev-controls .ctrl{display:flex;flex-direction:column;gap:4px;}'
         + '#panel-review .rev-controls label{font-size:11px;text-transform:uppercase;letter-spacing:0.04em;color:#777;font-weight:700;}'
         + '#panel-review .rev-controls select{font:inherit;font-size:13px;padding:6px 10px;border:1px solid rgba(0,0,0,0.15);border-radius:6px;background:#fff;}'
+        // ---- provenance + region overlay + open-in-Figma (Phase 3, US-022) ----
+        + '#panel-review .rev-provenance{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px;font-size:11px;}'
+        + '#panel-review .rev-prov{background:#eef1f4;color:#333;border-radius:10px;padding:2px 9px;font-weight:600;}'
+        + '#panel-review .rev-ad-frame{position:relative;display:inline-block;max-width:260px;width:100%;}'
+        + '#panel-review .rev-ad-frame .rev-img{max-width:100%;}'
+        + '#panel-review .rev-overlay{display:none;}'
+        + '#panel-review .rev-ad-frame.rev-overlay-on .rev-overlay{display:block;}'
+        + '#panel-review .rev-ad-tools{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 0;}'
+        + '#panel-review .rev-tool-btn{font:inherit;font-size:12px;font-weight:600;padding:5px 12px;border:1px solid rgba(0,0,0,0.18);'
+        + 'background:#fff;border-radius:6px;cursor:pointer;color:#444;}'
+        + '#panel-review .rev-tool-btn[aria-pressed="true"]{background:var(--brand,#7a1f2b);color:#fff;border-color:transparent;}'
+        + '#panel-review .rev-insp-structure{margin-top:10px;}'
+        + '#panel-review .rev-insp-structure .rev-col-head{margin-bottom:6px;}'
+        + '#panel-review .rev-structure-cols{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start;}'
+        + '#panel-review .rev-structure-col{flex:1;min-width:180px;max-width:260px;}'
+        + '#panel-review .rev-figma-note{font-size:11px;color:#777;margin-top:6px;}'
         + '</style>'
         + '<div class="rev-insight"><strong>Creative Review:</strong> the generated ads for this client are '
         + 'auto-discovered and triaged as a ranked grid of scorecards, best-first - each card carries its coherence '
@@ -1086,6 +1240,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       nav.insertAdjacentHTML('beforeend', '<div class="nav-section">Creative Review</div>');
       nav.insertAdjacentHTML('beforeend', navLinkHtml());
       content.insertAdjacentHTML('beforeend', panelMarkup());
+      // Phase 3 (US-022): inject the shared wireframe CSS once so the region overlay looks
+      // identical to the brief editor's structure preview.
+      if (typeof window !== 'undefined' && window.f10EnsureWireframeStyles) window.f10EnsureWireframeStyles();
       rvNavLink = document.querySelector('.review-nav-link');
       if (rvNavLink && rvNavLink.addEventListener) {
         rvNavLink.addEventListener('click', function (e) { if (e && e.preventDefault) e.preventDefault(); activate(); });
@@ -1095,6 +1252,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var body = document.getElementById('rev-body');
       if (body && body.addEventListener) {
         body.addEventListener('click', onDecisionClick);
+        // Phase 3 (US-022): the region-overlay toggle + open-in-Figma, delegated on the
+        // same stable container so re-renders never lose the handlers.
+        body.addEventListener('click', onReviewToolClick);
         // A composite preview is a short-lived SIGNED url (it expires), so an <img>
         // can fail to load and show a broken-image icon. The card copy promises
         // "never a broken img", so swap a failed preview for the same "Preview not
@@ -1186,6 +1346,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       renderError: renderError,
       bundleHtml: bundleHtml,
       newAdHtml: newAdHtml,
+      // Phase 3 (US-022): provenance, region overlay + open-in-Figma
+      provenanceHtml: provenanceHtml,
+      overlayHtml: overlayHtml,
+      isInspirationBundle: isInspirationBundle,
+      figmaHandoff: figmaHandoff,
+      openInFigma: openInFigma,
+      onReviewToolClick: onReviewToolClick,
       swapFailedPreviewImg: swapFailedPreviewImg,
       panelMarkup: panelMarkup,
       navLinkHtml: navLinkHtml,

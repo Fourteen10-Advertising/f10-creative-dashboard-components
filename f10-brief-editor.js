@@ -637,38 +637,33 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     var beBooted = false;     // guard against double boot
     var beLoadedRevision = null; // the currently loaded revision record (provenance carrier)
     var beStore = null;       // injectable brief store (tests override via setStore)
-    var beMode = 'scratch';   // brief mode: 'scratch' (build everything) | 'inspiration' (pick an ad + write commentary; copy/style auto-generated). Not persisted; defaults to scratch on load.
-    var beFormat = 'image';   // ad format: 'image' (a generated scene) or one of the typeset DESIGN formats below (the strategist drafts them from substance). Not persisted; defaults to image. A design format sends archetypeId and generates directly (no compile/spend).
-    var beLayout = '';        // IMAGE-format layout choice: '' = auto (backend picks the top mined winner); a mined archetype_id pins that winning layout; 'family:<name>' explores an untested family. Not persisted; only meaningful for the image format.
-    // The typeset DESIGN formats. Each `key` is the archetype the backend resolves
-    // (is_design_archetype); `label` is the picker button; `noun` is used in the
-    // design-mode hint. IMAGE is the only non-design format. They cluster into three
-    // shared chassis (table, card, list); adding a format here + registering it
-    // backend-side is all it takes to expose a new button.
-    var BE_DESIGN_FORMATS = [
-      { key: 'comparison', label: 'Comparison chart', noun: 'comparison chart' },
-      { key: 'feature_table', label: 'Feature table', noun: 'feature table' },
-      { key: 'stat_card', label: 'Stat card', noun: 'stat card' },
-      { key: 'testimonial_card', label: 'Testimonial', noun: 'testimonial card' },
-      { key: 'offer_card', label: 'Offer card', noun: 'offer card' },
-      { key: 'checklist', label: 'Checklist', noun: 'checklist' },
-      { key: 'faq_card', label: 'FAQ card', noun: 'FAQ card' },
-      { key: 'native_ui', label: 'Native UI note', noun: 'native UI note' },
-      { key: 'native_ui_search', label: 'Search result', noun: 'search result' },
-      { key: 'native_ui_review', label: 'Review card', noun: 'review card' }
-    ];
-    function beIsDesignFormat(fmt) {
-      for (var i = 0; i < BE_DESIGN_FORMATS.length; i++) {
-        if (BE_DESIGN_FORMATS[i].key === fmt) return true;
-      }
-      return false;
-    }
-    function beDesignNoun(fmt) {
-      for (var i = 0; i < BE_DESIGN_FORMATS.length; i++) {
-        if (BE_DESIGN_FORMATS[i].key === fmt) return BE_DESIGN_FORMATS[i].noun;
-      }
-      return 'design ad';
-    }
+    // Phase 3 (US-022): the three legacy pickers (beMode / beFormat / beLayout) are
+    // collapsed into TWO — a SOURCE and a RENDER. The source is where the layout
+    // structure comes from; the render is how it is drawn.
+    //   beSource.kind: 'winner'   — a mined winning layout (ref '' = Auto, the top
+    //                               performer; ref <archetype_id> = a specific winner)
+    //                 'explore'   — an untested family / hand-authored preset (ref is
+    //                               the family or preset id)
+    //                 'inspiration' — replicate a reference ad's DETECTED structure
+    //                               (ref resolved from the chosen inspiration image)
+    // Not persisted; defaults to Auto (top winner). buildCompileRequest emits
+    // source:{kind,ref} + render, never archetypeId/format/beLayout.
+    var beSource = { kind: 'winner', ref: '', label: 'Auto (top performer)', default_render: 'scene', structure: null };
+    var beRender = 'scene';    // 'scene' (a generated background + copy regions) | 'typeset' (all non-image regions). Defaults from the chosen source's default_render.
+    var beSourcesData = null;  // the last list-sources response (winners/explore/inspiration, renders, explore_prefix)
+    var beSourceIndex = {};    // <select> option value -> resolved source descriptor {kind, ref, label, default_render, structure}
+    var beSourceStructure = null; // the chosen source's LayoutStructure, shown as a wireframe before compile
+    var beInspStructure = null;   // the detected structure from an inspiration compile (confirmation gate)
+    var beInspConfidence = null;  // its structure_confidence, when the backend returns one
+    var beInspPreset = null;      // a preset fallback the backend offers below the confidence threshold
+    var beInspConfirmed = false;  // operator confirmed the detected structure (or chose the preset)
+    var beInspUsePreset = false;  // operator chose the preset fallback over the detected structure
+    // Per-variant working copies of the compiled structure + region copy. Every edit
+    // (region text, a repeat add/remove, a box nudge) mutates these, and they are
+    // exactly what /submit sends back. Parallel arrays, indexed by variant.
+    var beVariantStructures = [];   // [structure clone, ...]
+    var beVariantRegionCopy = [];   // [region_copy clone, ...]
+    function beIsInspiration() { return beSource && beSource.kind === 'inspiration'; }
     var beInspiration = [];   // selected inspiration refs: [{gcs_uri, thumb_url, source, label}]
     var beInspTab = 'upload'; // active inspiration picker tab: upload | client | competitor
     var beRefIndex = {};      // gcs_uri -> ref object, populated as thumbs render (toggle lookup)
@@ -688,11 +683,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      * message (the server also rejects an over-cap submit 402, so this is defence in
      * depth, not the only guard). */
     var beCompiled = null;        // last /compile response (resolved variants + cost)
-    var beDesignSpec = null;      // Phase 2: the drafted/edited design layout_spec (edit loop)
-    var beCompiledEdits = null;   // operator overrides: { 'p:vi:pi': text, 'c:vi:ci': text }
-    var beReferenceBlueprint = null; // US-009: the seeded reference blueprint (edit baseline + success signal)
-    var beBlueprintStatus = null;    // US-012: 'ready' | 'unavailable' | null (holistic / not from-inspiration)
-    var beBlueprintFaithful = null;  // US-009: operator's one-click faithful (true) / not (false) rating
+    var beCompiledEdits = null;   // legacy operator overrides for a no-structure response: { 'p:vi:pi': text, 'c:vi:ci': text }
     var beVariantMatrix = null;   // optional variant config passed through compile + submit
     var beRemainingCap = null;    // optional remaining spend cap (omitted -> backend default)
     var beJobId = null;           // the running generation job id (submit -> status polling)
@@ -770,10 +761,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         async upload(payload) {
           return callAt(uploadEndpoint(), Object.assign({ action: 'upload', client: beClient }, payload || {}));
         },
-        async archetypes() {
-          // The layout picker's menu: this client's mined archetypes + the 15-family
-          // explore list. Lives on /bq like the reference list.
-          return callAt(bqEndpoint(), { action: 'list-archetypes', client: beClient });
+        async sources() {
+          // Phase 3 (US-022): the source picker's menu. list-sources returns this
+          // client's mined WINNERS (each with its structure + default_render), the
+          // EXPLORE families/presets (each with a structure + default_render), and
+          // whether INSPIRATION is available, plus the render vocabulary. Lives on
+          // /bq like the reference list. Replaces the retired list-archetypes.
+          return callAt(bqEndpoint(), { action: 'list-sources', client: beClient });
         },
         // Compile / submit / status (US-009). Compile + submit POST the full brief
         // context to their own routes (no `action` field; the routes are dedicated);
@@ -788,25 +782,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         async status(payload) {
           var p = payload || {};
           return callAt(statusEndpoint(), { client: beClient, jobId: p.jobId || p.job_id || '' });
-        },
-        // Phase 2: preview an edited design spec. A 422 (the compliance gate) carries
-        // { error, issues } and is RETURNED, not thrown, so the editor can show the
-        // issues inline; other non-2xx still throw. Reads the body once as text so a
-        // 422 body can be parsed without a double-read.
-        async designPreview(payload) {
-          var res = await fetch(designPreviewEndpoint(), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(Object.assign({ client: beClient }, payload || {})),
-          });
-          var text = await res.text();
-          var body = null;
-          try { body = text ? JSON.parse(text) : null; } catch (e) { body = null; }
-          if (!res.ok) {
-            if (res.status === 422 && body) return body;
-            throw new Error((body && body.error) || text || 'preview failed');
-          }
-          return body;
         },
       };
     }
@@ -837,26 +812,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (typeof window.STATUS_FUNCTION !== 'undefined' && window.STATUS_FUNCTION) return String(window.STATUS_FUNCTION);
       return endpoint().replace(/\/brief(\/)?$/, '/status');
     }
-    /* Phase 2: the no-spend deterministic re-render of an operator-edited design
-     * layout_spec. Same BACKEND as /brief, swapping the trailing /brief. */
-    function designPreviewEndpoint() {
-      if (typeof window.DESIGN_PREVIEW_FUNCTION !== 'undefined' && window.DESIGN_PREVIEW_FUNCTION) return String(window.DESIGN_PREVIEW_FUNCTION);
-      return endpoint().replace(/\/brief(\/)?$/, '/design-preview');
-    }
-
     function store() {
       var s = beStore || defaultStore();
       // The picker + compile/submit calls are optional on an injected store; back any
       // that are missing with the default network store so a test store that only stubs
       // probe/load/save still works. A test that exercises compile/submit stubs those.
-      if (!s.references || !s.upload || !s.compile || !s.submit || !s.status || !s.designPreview) {
+      if (!s.references || !s.upload || !s.compile || !s.submit || !s.status || !s.sources) {
         var net = defaultStore();
         if (!s.references) s.references = net.references;
         if (!s.upload) s.upload = net.upload;
         if (!s.compile) s.compile = net.compile;
         if (!s.submit) s.submit = net.submit;
         if (!s.status) s.status = net.status;
-        if (!s.designPreview) s.designPreview = net.designPreview;
+        if (!s.sources) s.sources = net.sources;
       }
       return s;
     }
@@ -936,13 +904,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '#panel-brief-editor .be-struct-badge{position:absolute;top:5px;left:6px;font-size:9px;line-height:1.3;padding:1px 6px;'
         + 'border-radius:8px;background:rgba(20,110,60,0.88);color:#fff;font-weight:600;}'
         + '#panel-brief-editor .be-struct-badge.be-struct-pending{background:rgba(120,90,20,0.85);}'
-        + '#panel-brief-editor .be-blueprint{margin:0 0 14px;padding:12px 14px;border:1px solid rgba(0,0,0,0.14);border-radius:8px;background:rgba(0,0,0,0.02);}'
-        + '#panel-brief-editor .be-bp-box{display:inline-flex;gap:5px;}'
-        + '#panel-brief-editor .be-bp-num{width:60px;font:inherit;font-size:12px;padding:4px 6px;}'
-        + '#panel-brief-editor .be-bp-slots,#panel-brief-editor .be-bp-tbs,#panel-brief-editor .be-bp-ds-wrap{margin:8px 0;}'
-        + '#panel-brief-editor .be-bp-rating{display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap;}'
-        + '#panel-brief-editor .be-bp-rating .be-rated{border-color:var(--brand,#7a1f2b);color:var(--brand,#7a1f2b);font-weight:600;}'
-        + '#panel-brief-editor .be-bp-note{margin:10px 0;line-height:1.5;}'
         // competitor groups
         + '#panel-brief-editor .be-comp-group{margin:0 0 18px;}'
         + '#panel-brief-editor .be-comp-head{display:flex;align-items:baseline;gap:8px;margin:0 0 8px;}'
@@ -1000,48 +961,62 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + 'background:#fff;border-radius:20px;cursor:pointer;color:#444;}'
         + '#panel-brief-editor .be-mode-tabs button.active{background:var(--brand,#7a1f2b);color:#fff;border-color:transparent;}'
         + '#panel-brief-editor .be-mode-hint{color:#666;font-size:12px;line-height:1.45;}'
+        // source picker + wireframe preview (Phase 3, US-022)
+        + '#panel-brief-editor #be-source{max-width:420px;}'
+        + '#panel-brief-editor .be-wireframe-wrap{margin:12px 0 0;max-width:300px;}'
+        + '#panel-brief-editor .be-wireframe-wrap:empty{display:none;}'
+        // inspiration confirmation gate
+        + '#panel-brief-editor .be-insp-confirm{margin:0 0 16px;padding:14px;border:1px solid rgba(0,0,0,0.14);'
+        + 'border-radius:8px;background:rgba(0,0,0,0.02);}'
+        + '#panel-brief-editor .be-insp-confirm .be-wireframe-wrap{max-width:280px;margin:10px 0;}'
+        + '#panel-brief-editor .be-conf{font-size:12px;color:#555;margin:4px 0 10px;}'
+        + '#panel-brief-editor .be-conf-low{color:#a3243c;font-weight:600;}'
+        // per-region structure editor (Phase 3, US-022)
+        + '#panel-brief-editor .be-region{border:1px solid rgba(0,0,0,0.12);border-radius:6px;padding:10px 12px;margin:0 0 10px;background:#fff;}'
+        + '#panel-brief-editor .be-region-head{display:flex;align-items:baseline;gap:8px;margin:0 0 6px;}'
+        + '#panel-brief-editor .be-region-role{font-weight:600;font-size:13px;}'
+        + '#panel-brief-editor .be-region-id{font-family:monospace;font-size:11px;color:#888;}'
+        + '#panel-brief-editor .be-region-box{margin-left:auto;display:inline-flex;gap:4px;}'
+        + '#panel-brief-editor .be-region-box input{width:56px;font:inherit;font-size:11px;padding:3px 5px;}'
+        + '#panel-brief-editor .be-repeat-item{display:flex;gap:6px;align-items:center;margin:0 0 6px;}'
+        + '#panel-brief-editor .be-repeat-item textarea{flex:1;min-height:36px;}'
+        + '#panel-brief-editor .be-repeat-rm{flex:0 0 auto;width:26px;height:26px;border:1px solid rgba(0,0,0,0.2);'
+        + 'background:#fff;border-radius:5px;cursor:pointer;color:#a3243c;}'
+        + '#panel-brief-editor .be-repeat-add{font:inherit;font-size:12px;padding:5px 10px;border:1px dashed rgba(0,0,0,0.3);'
+        + 'background:#fff;border-radius:6px;cursor:pointer;color:#444;}'
+        + '#panel-brief-editor .be-repeat-add[disabled]{opacity:0.5;cursor:default;}'
+        + '#panel-brief-editor .be-repeat-note{font-size:11px;color:#888;margin-left:6px;}'
         + '</style>'
-        + '<div class="be-insight"><strong>Brief editor:</strong> build the brief top to bottom — pick the four '
-        + 'creative axes, add optional copy and creative direction, choose inspiration images, then compile to '
-        + 'resolve the exact prompts, copy and cost with no spend. The axis dropdowns are locked to the canonical '
-        + 'vocabulary, so nothing off-vocabulary is ever saved. Generation does not run from here until you submit '
-        + 'a compiled brief.</div>'
-        // Format picker (top of the flow): an image ad (a generated scene), or a
-        // typeset design ad (comparison chart / native-UI note) the strategist drafts
-        // from the client's substance and live scoreboard. A design format hides the
-        // image build flow and generates directly (no compile, no spend).
-        + '<div class="be-mode" id="be-format">'
-        + '<span class="be-mode-label">What are you making?</span>'
-        + '<div class="be-mode-tabs" id="be-format-tabs">'
-        + '<button type="button" data-be-format="image" class="active">Image ad</button>'
-        + BE_DESIGN_FORMATS.map(function (f) {
-            return '<button type="button" data-be-format="' + esc(f.key) + '">'
-              + esc(f.label) + '</button>';
-          }).join('')
-        + '</div>'
-        + '<div class="be-mode-hint" id="be-format-hint">An image ad: a generated scene with the copy laid over it.</div>'
-        + '</div>'
-        // Layout picker (image ads only): pick which layout the scene is built on. Auto
-        // (default) lets the backend pick the client's top-performing mined layout; the
-        // client's other winning layouts are pin-able; the Explore group offers any of the
-        // 15 families as a deliberate, untested test. Populated from list-archetypes; hidden
-        // for a design format (which carries its own fixed layout).
-        + '<div class="be-mode" id="be-layout-row">'
-        + '<span class="be-mode-label">Layout</span>'
-        + '<select id="be-layout" class="be-select">'
+        + '<div class="be-insight"><strong>Brief editor:</strong> build the brief top to bottom — pick a '
+        + 'source (a winning layout, an explore preset, or an inspiration ad) and a render, see the layout '
+        + 'structure as a wireframe, set the creative axes and any copy, then compile to resolve each region’s '
+        + 'copy and the cost with no spend. After compile you edit the copy, counts and boxes per region. The '
+        + 'axis dropdowns are locked to the canonical vocabulary, so nothing off-vocabulary is ever saved. '
+        + 'Generation does not run from here until you submit a compiled brief.</div>'
+        // SOURCE picker (Phase 3, US-022): where the layout structure comes from. Auto
+        // (the client's top mined winner), a specific winning layout, an Explore family /
+        // preset, or Inspiration (replicate a reference ad's detected structure). Populated
+        // from list-sources; the chosen source's structure is drawn as a wireframe below,
+        // so the layout is visible BEFORE compile. Replaces the old format + layout pickers
+        // AND the From scratch / From inspiration mode toggle.
+        + '<div class="be-mode" id="be-source-row">'
+        + '<span class="be-mode-label">Source — the layout to build on</span>'
+        + '<select id="be-source" class="be-select">'
         + '<option value="">Auto (top performer)</option>'
         + '</select>'
-        + '<div class="be-mode-hint" id="be-layout-hint">Auto builds on this client’s top-performing layout. Pick a specific winning layout, or explore an untested one.</div>'
+        + '<div class="be-mode-hint" id="be-source-hint">Auto builds on this client’s top-performing layout. Pick a specific winning layout, explore an untested one, or replicate an inspiration ad.</div>'
+        + '<div class="be-wireframe-wrap" id="be-wireframe"></div>'
         + '</div>'
-        // Mode toggle (top of the flow): build the whole brief yourself, or start from an
-        // ad and let the copy + style be auto-generated. Defaults to From scratch.
-        + '<div class="be-mode" id="be-mode">'
-        + '<span class="be-mode-label">How do you want to start?</span>'
-        + '<div class="be-mode-tabs" id="be-mode-tabs">'
-        + '<button type="button" data-be-mode="scratch" class="active">From scratch</button>'
-        + '<button type="button" data-be-mode="inspiration">From inspiration</button>'
+        // RENDER toggle: how the structure is drawn — a generated scene (image behind copy)
+        // or a typeset design (all copy/graphic regions, no image model). Defaults from the
+        // chosen source's default_render; the operator can override it for any source.
+        + '<div class="be-mode" id="be-render-row">'
+        + '<span class="be-mode-label">Render</span>'
+        + '<div class="be-mode-tabs" id="be-render-tabs">'
+        + '<button type="button" data-be-render="scene" class="active">Scene</button>'
+        + '<button type="button" data-be-render="typeset">Typeset</button>'
         + '</div>'
-        + '<div class="be-mode-hint" id="be-mode-hint">Build the full brief yourself — pick the creative axes, write the copy, and add any inspiration.</div>'
+        + '<div class="be-mode-hint" id="be-render-hint">Scene: a generated background with the copy laid over it. Typeset: a designed layout, no image model.</div>'
         + '</div>'
         // Optional starting point: load an existing revision to edit, above the flow.
         + '<div class="be-load">'
@@ -1061,9 +1036,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + sectionHeadHtml('2', 'Copy', 'Optional — headline and body text. Leave any field blank to let generation write it.')
         + '<div class="be-copy" id="be-copy"></div>'
         + '</div>'
-        // 3 — Creative direction (free text). In From-inspiration mode this becomes the
+        // 3 — Creative direction (free text). For an inspiration source this becomes the
         //     primary "What you want" prompt, so its heading + sub-line are addressable and
-        //     get relabelled by setMode(); kept out of sectionHeadHtml to carry those ids.
+        //     get relabelled by setSource(); kept out of sectionHeadHtml to carry those ids.
         + '<div class="be-section" id="be-section-direction">'
         + '<div class="be-section-head"><span class="be-step">3</span>'
         + '<span id="be-direction-title">' + esc(BE_DIRECTION_SCRATCH_TITLE) + '</span></div>'
@@ -1106,49 +1081,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '</div>'
         + '</div>'
         + '</form>'
-        // Design format flow: the strategist drafts a typeset ad from substance, the
-        // render service rasterises it, and it publishes directly (no compile step, no
-        // spend). Hidden in image mode; shown by setFormat() for a design format.
-        + '<div class="be-design" id="be-design" style="display:none;">'
-        + '<div class="be-section-sub" id="be-design-hint"></div>'
-        // Creative direction (optional) is available in design mode too: a SOFT steer
-        // the strategist honours for angle, emphasis and tone only. It never adds a
-        // fact that is not in the client substance and never relaxes compliance.
-        + '<label class="be-field"><span class="be-label">Creative direction '
-        + '<span class="be-optional">(optional)</span></span>'
-        + '<textarea id="be-design-direction" aria-label="Creative direction" '
-        + 'placeholder="A soft steer for angle, emphasis or tone. The strategist still '
-        + 'uses only the client\'s real facts and stays within compliance."></textarea></label>'
-        // Opt-in photo variant: a generated on-brand background behind the design.
-        // Off keeps the ad free and instant; on adds a small generation cost.
-        + '<label class="be-field be-checkfield"><span class="be-label">'
-        + '<input type="checkbox" id="be-design-photo"> Add a generated background image '
-        + '<span class="be-optional">(optional)</span></span>'
-        + '<span class="be-section-sub">Generates an on-brand background photo behind the '
-        + 'design. It costs a small amount to generate and, unlike a plain design ad, cannot '
-        + 'be regenerated for free. No faces and no before/after imagery are ever generated.'
-        + '</span></label>'
-        + '<div class="be-actions-row">'
-        + '<button type="button" class="be-btn" id="be-design-draft-btn">Draft ad</button>'
-        + '</div>'
-        // Phase 2 edit loop: the drafted ad's words shown as editable fields, a live
-        // preview, and Publish. The strategist drafts ONCE (Draft ad); every edit is
-        // re-rendered deterministically, so what publishes equals what is previewed.
-        // A results/efficacy claim typed into any field is rejected before it renders.
-        + '<div class="be-design-edit" id="be-design-edit" style="display:none;">'
-        + '<div class="be-section-sub">Edit the wording below, preview it, then publish. '
-        + 'What you publish is exactly what you preview.</div>'
-        + '<div id="be-design-fields"></div>'
-        + '<div class="be-actions-row">'
-        + '<button type="button" class="be-btn be-btn-secondary" id="be-design-preview-btn">Preview</button>'
-        + '<button type="button" class="be-btn" id="be-design-publish-btn">Publish</button>'
-        + '<span class="be-submit-note" id="be-design-cost-note"></span>'
-        + '</div>'
-        + '<div class="be-design-issues" id="be-design-issues" style="display:none;"></div>'
-        + '<div class="be-design-preview" id="be-design-preview"></div>'
-        + '</div>'
-        + '</div>'
-        // 6 — The compiled result (resolved prompts, copy, inspiration, cost) renders here,
+        // 6 — The compiled result (structure + region copy, or a legacy prompt/copy view)
+        //     renders here,
         //     then the submit / generate controls and live progress below it.
         + '<div class="be-compiled" id="be-compiled"></div>'
         + '<div class="be-submit-bar" id="be-submit-bar" style="display:none;">'
@@ -1164,17 +1098,49 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return '<a href="#" class="brief-editor-nav-link" data-brief-editor-tab="brief-editor">Brief Editor</a>';
     }
 
-    /* ---- mode toggle (From scratch vs From inspiration) ---- */
+    function beTitleize(slug) {
+      return String(slug || '').split(/[-_\s]+/).filter(Boolean)
+        .map(function (w) { return w.charAt(0).toUpperCase() + w.slice(1); }).join(' ');
+    }
 
-    /* Switch the brief mode LIVE (no reload, nothing persisted). From-inspiration HIDES the
-     * Creative axes + Copy sections (the backend defaults the axes to the client's winners and
-     * auto-writes the copy) and relabels the Creative direction section to the primary
-     * "What you want" prompt; From-scratch shows every section with its original labels. Only
-     * shows/hides + relabels DOM already built by panelMarkup; buildCompileRequest() reads
-     * beMode to shape the payload. Universal — no per-client branching. */
-    function setMode(mode) {
-      beMode = (mode === 'inspiration') ? 'inspiration' : 'scratch';
-      var insp = (beMode === 'inspiration');
+    /* ---- source picker + render toggle (Phase 3, US-022) ---- */
+
+    /* Draw the chosen source's LayoutStructure as a wireframe under the picker, so the
+     * layout is visible before compile. Uses the shared f10RenderWireframe (built once in
+     * f10-utils.js, used here and in the Review overlay). Inspiration has no structure
+     * until it is compiled, so it shows a short note instead. Degrades to empty when the
+     * shared renderer is unavailable. */
+    function renderSourceWireframe() {
+      var wrap = document.getElementById('be-wireframe');
+      if (!wrap) return;
+      if (beIsInspiration()) {
+        wrap.innerHTML = '<div class="be-muted">The structure is detected from your chosen '
+          + 'inspiration ad when you compile — you confirm it before generating.</div>';
+        return;
+      }
+      var wf = (typeof window !== 'undefined' && window.f10RenderWireframe) || null;
+      if (!wf || !beSourceStructure) { wrap.innerHTML = ''; return; }
+      wrap.innerHTML = wf(beSourceStructure, { title: 'Layout structure' });
+    }
+
+    /* Switch the SOURCE live (nothing persisted). Resolves the picked option to a source
+     * descriptor {kind, ref, structure, default_render}, defaults the render to that
+     * source's default_render, shows/hides the axes + copy sections (an inspiration source
+     * auto-writes the copy, exactly as the old From-inspiration mode did) and relabels the
+     * creative-direction section, and redraws the structure wireframe. buildCompileRequest
+     * reads beSource to emit source:{kind,ref}; NO picker-derived layout is ever applied in
+     * inspiration mode. Universal — no per-client branching. */
+    function setSource(value) {
+      var v = (value == null) ? '' : String(value);
+      var desc = beSourceIndex[v] || (v ? null : { kind: 'winner', ref: '', label: 'Auto (top performer)', default_render: 'scene', structure: null });
+      if (!desc) desc = { kind: 'winner', ref: '', label: v, default_render: 'scene', structure: null };
+      beSource = { kind: desc.kind, ref: desc.ref, label: desc.label, default_render: desc.default_render || 'scene', structure: desc.structure || null };
+      beSourceStructure = desc.structure || null;
+      // Reflect the select value (for a programmatic setSource in tests / a re-populate).
+      var sel = document.getElementById('be-source');
+      if (sel) sel.value = v;
+      // An inspiration source hides the axes + copy (auto-written) and relabels direction.
+      var insp = beIsInspiration();
       var axes = document.getElementById('be-section-axes');
       if (axes && axes.style) axes.style.display = insp ? 'none' : '';
       var copy = document.getElementById('be-section-copy');
@@ -1183,129 +1149,107 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (title) title.textContent = insp ? BE_DIRECTION_INSP_TITLE : BE_DIRECTION_SCRATCH_TITLE;
       var sub = document.getElementById('be-direction-sub');
       if (sub) sub.textContent = insp ? BE_DIRECTION_INSP_SUB : BE_DIRECTION_SCRATCH_SUB;
-      var hint = document.getElementById('be-mode-hint');
+      var hint = document.getElementById('be-source-hint');
       if (hint) {
         hint.textContent = insp
-          ? 'Pick an ad and describe what you want — the copy and style are written for you, server-side.'
-          : 'Build the full brief yourself — pick the creative axes, write the copy, and add any inspiration.';
+          ? 'Pick an inspiration ad below; its detected structure is shown for you to confirm before generating.'
+          : 'Auto builds on this client’s top-performing layout. Pick a specific winning layout, explore an untested one, or replicate an inspiration ad.';
       }
-      var tabs = document.getElementById('be-mode-tabs');
-      if (tabs && tabs.querySelectorAll) {
-        var btns = tabs.querySelectorAll('button');
-        Array.prototype.forEach.call(btns, function (b) {
-          var m = b.getAttribute && b.getAttribute('data-be-mode');
-          if (!b.classList) return;
-          if (m === beMode) b.classList.add('active'); else b.classList.remove('active');
-        });
-      }
-      if (window.F10A) F10A.track('brief_mode_changed', { mode: beMode });
+      // Default the render to the source's default_render (operator can still override).
+      setRender(beSource.default_render, true);
+      renderSourceWireframe();
+      if (window.F10A) F10A.track('brief_source_changed', { kind: beSource.kind, ref: beSource.ref });
     }
 
-    /* ---- format picker (Image ad vs a typeset design ad) ---- */
-
-    /* Switch the ad format LIVE (nothing persisted). A DESIGN format (comparison /
-     * native_ui) hides the whole image build flow (mode toggle, revision loader, the
-     * brief form and the compile result) and shows a single Generate button: the
-     * strategist drafts the ad from the client's substance, the render service
-     * rasterises it, and it publishes directly — no compile step and no spend, so the
-     * operator reviews and approves it in the Review tab. IMAGE restores the full
-     * build flow. Only shows/hides DOM built by panelMarkup; buildCompileRequest()
-     * reads beFormat to add archetypeId. Universal — no per-client branching. */
-    function setFormat(fmt) {
-      beFormat = beIsDesignFormat(fmt) ? fmt : 'image';
-      var design = (beFormat !== 'image');
-      function show(id, on) {
-        var el = document.getElementById(id);
-        if (el && el.style) el.style.display = on ? '' : 'none';
-      }
-      show('be-mode', !design);
-      show('be-load', !design);
-      show('be-form', !design);
-      show('be-design', design);
-      show('be-layout-row', !design);  // layout picker is image-only (design carries its own)
-      if (design) {
-        show('be-compiled', false);
-        show('be-submit-bar', false);
-        beMode = 'scratch';
-        var label = beDesignNoun(beFormat);
-        var dh = document.getElementById('be-design-hint');
-        if (dh) {
-          dh.textContent = 'A ' + label + " is drafted from this client's substance and "
-            + 'live scoreboard by the strategist, rendered, and published straight to the '
-            + 'Review tab. It costs nothing to generate, so you can regenerate freely.';
-        }
-      } else {
-        show('be-compiled', true);
-        setMode(beMode); // restore the image build sections + their labels
-      }
-      var fhint = document.getElementById('be-format-hint');
-      if (fhint) {
-        fhint.textContent = design
-          ? "A typeset design ad — no image model. The strategist writes it from the client's real facts; you review and approve it in the Review tab."
-          : 'An image ad: a generated scene with the copy laid over it.';
-      }
-      var tabs = document.getElementById('be-format-tabs');
+    /* Switch the RENDER live. `silent` suppresses the analytics event (used when a source
+     * change defaults the render). Reflects the active tab button. */
+    function setRender(value, silent) {
+      beRender = (value === 'typeset') ? 'typeset' : 'scene';
+      var tabs = document.getElementById('be-render-tabs');
       if (tabs && tabs.querySelectorAll) {
         Array.prototype.forEach.call(tabs.querySelectorAll('button'), function (b) {
-          var f = b.getAttribute && b.getAttribute('data-be-format');
+          var r = b.getAttribute && b.getAttribute('data-be-render');
           if (!b.classList) return;
-          if (f === beFormat) b.classList.add('active'); else b.classList.remove('active');
+          if (r === beRender) b.classList.add('active'); else b.classList.remove('active');
         });
       }
-      if (window.F10A) F10A.track('brief_format_changed', { format: beFormat });
+      if (!silent && window.F10A) F10A.track('brief_render_changed', { render: beRender });
     }
 
-    function beTitleize(slug) {
-      return String(slug || '').split(/[-_\s]+/).filter(Boolean)
-        .map(function (w) { return w.charAt(0).toUpperCase() + w.slice(1); }).join(' ');
-    }
-
-    /* Fill the image-ad layout picker from list-archetypes: an Auto default, this client's
-     * mined WINNING layouts, and an EXPLORE group of the remaining (untested) families
-     * (archetypeId 'family:<name>'). Best-effort: on any failure the picker keeps its
-     * Auto-only default, so generation degrades to exactly the prior behaviour. */
-    async function bePopulateLayouts() {
-      var sel = document.getElementById('be-layout');
+    /* Fill the source picker from list-sources: an Auto default, this client's mined
+     * WINNING layouts (each with its structure + default_render), an EXPLORE group of the
+     * families/presets (each with a structure + default_render), and — when available — an
+     * Inspiration option. Best-effort: on any failure the picker keeps its Auto-only
+     * default, so the editor degrades to exactly the prior behaviour. */
+    async function bePopulateSources() {
+      var sel = document.getElementById('be-source');
       if (!sel) return;
       var data;
       try {
-        data = await store().archetypes();
+        data = await store().sources();
       } catch (e) {
         return; // keep Auto-only; never block the editor on the picker read
       }
       if (!data) return;
-      var archs = data.archetypes || [];
-      var fams = data.families || [];
+      beSourcesData = data;
+      var sources = data.sources || {};
+      var winners = sources.winners || [];
+      var explore = sources.explore || [];
+      var inspiration = sources.inspiration || null;
       var prefix = data.explore_prefix || 'family:';
+      beSourceIndex = {};
+      // Auto = the top winner. Carry its structure/default_render so the wireframe + render
+      // default reflect the actual top performer, not a guess.
+      var top = winners[0] || {};
+      beSourceIndex[''] = {
+        kind: 'winner', ref: '', label: 'Auto (top performer)',
+        default_render: top.default_render || 'scene', structure: top.structure || null,
+      };
       var html = '<option value="">Auto (top performer)</option>';
       var have = {};
-      if (archs.length) {
+      if (winners.length) {
         html += '<optgroup label="This client’s winning layouts">';
-        for (var i = 0; i < archs.length; i++) {
-          var a = archs[i] || {};
-          if (a.layout_family) have[a.layout_family] = true;
-          var n = a.source_ad_count ? (' (' + a.source_ad_count + ' ads)') : '';
-          html += '<option value="' + esc(String(a.archetype_id || '')) + '">'
-            + esc(String(a.name || a.layout_family || a.archetype_id || '')) + n + '</option>';
-        }
+        winners.forEach(function (w) {
+          if (w && w.layout_family) have[w.layout_family] = true;
+          var val = 'winner:' + String((w && w.archetype_id) || '');
+          var n = (w && w.source_ad_count) ? (' (' + w.source_ad_count + ' ads)') : '';
+          beSourceIndex[val] = {
+            kind: 'winner', ref: String((w && w.archetype_id) || ''),
+            label: String((w && (w.name || w.layout_family || w.archetype_id)) || ''),
+            default_render: (w && w.default_render) || 'scene', structure: (w && w.structure) || null,
+          };
+          html += '<option value="' + esc(val) + '">' + esc(beSourceIndex[val].label) + n + '</option>';
+        });
         html += '</optgroup>';
       }
-      // Explore: every family NOT already covered by a mined winner, labelled untested, so
-      // the two groups together span the full open vocabulary without double-listing one.
-      var explore = fams.filter(function (f) { return !have[f]; });
-      if (explore.length) {
+      // Explore: families/presets not already covered by a mined winner, labelled untested.
+      var expShown = explore.filter(function (e) { return e && !have[e.family]; });
+      if (expShown.length) {
         html += '<optgroup label="Explore — untested">';
-        for (var k = 0; k < explore.length; k++) {
-          html += '<option value="' + esc(prefix + explore[k]) + '">'
-            + esc(beTitleize(explore[k])) + ' (untested)</option>';
-        }
+        expShown.forEach(function (e) {
+          var ref = String(e.preset_id || (prefix + (e.family || '')));
+          var val = 'explore:' + ref;
+          beSourceIndex[val] = {
+            kind: 'explore', ref: ref,
+            label: beTitleize(e.family || e.preset_id || ''),
+            default_render: e.default_render || 'typeset', structure: e.structure || null,
+          };
+          html += '<option value="' + esc(val) + '">' + esc(beSourceIndex[val].label) + ' (untested)</option>';
+        });
         html += '</optgroup>';
+      }
+      if (inspiration && inspiration.available) {
+        beSourceIndex['inspiration'] = {
+          kind: 'inspiration', ref: '', label: 'Inspiration (replicate an ad)',
+          default_render: 'scene', structure: null,
+        };
+        html += '<option value="inspiration">Inspiration — replicate an ad</option>';
       }
       sel.innerHTML = html;
-      // Keep the current choice if it still exists (a re-populate on client change); else
-      // fall back to Auto so a stale pin never silently rides along.
-      sel.value = beLayout || '';
-      if (sel.value !== (beLayout || '')) { beLayout = ''; sel.value = ''; }
+      // Keep the current choice if it still exists; else fall back to Auto.
+      var cur = sel.value;
+      if (!(cur in beSourceIndex)) cur = '';
+      setSource(cur);
     }
 
     /* ---- copy fields ---- */
@@ -1397,7 +1341,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // In the from-inspiration path a structural static seeds a blueprint instantly;
       // one without is still pickable and analysed on demand (US-012).
       var struct = r.has_structure ? ' has-structure' : ' no-structure';
-      var badge = (beMode === 'inspiration')
+      var badge = beIsInspiration()
         ? (r.has_structure
             ? '<span class="be-struct-badge" title="Ready: reconstructs this layout">structure</span>'
             : '<span class="be-struct-badge be-struct-pending" title="No structure yet: analysed on demand">on-demand</span>')
@@ -1795,54 +1739,37 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return brief;
     }
 
+    /* For an inspiration source the ref is the chosen inspiration ad — the first selected
+     * reference. No picker-derived layout is applied; the backend detects the structure. */
+    function beSourceRef() {
+      if (beIsInspiration()) {
+        return (beInspiration.length && beInspiration[0].gcs_uri) ? beInspiration[0].gcs_uri : '';
+      }
+      return beSource.ref || '';
+    }
+
     function buildCompileRequest() {
       var loaded = beLoadedRevision || {};
       var dirEl = document.getElementById('be-direction');
-      var designDirEl = document.getElementById('be-design-direction');
-      var insp = (beMode === 'inspiration');
-      // A design format takes its soft creative direction from the design-mode field
-      // (the image build form is hidden); image / inspiration use the form field.
-      var creativeDirection = beIsDesignFormat(beFormat)
-        ? (designDirEl ? (designDirEl.value || '') : '')
-        : (dirEl ? (dirEl.value || '') : (loaded.creative_direction || ''));
-      // The LIVE on-screen brief is the primary driver. In From-scratch mode readForm()
-      // assembles the full current record (the axes, the copy VERBATIM, the creative direction
-      // and the inspiration references) in the exact revision-doc shape a saved revision has, so
-      // Compile and Submit resolve exactly what the operator sees, with no Save/Load step. In
-      // From-inspiration mode the inline brief OMITS the axes + copy (the backend defaults the
-      // axes to the client's winners and auto-writes the copy), while creativeDirection and
-      // baseInspirationImageUris are sent either way. `mode` is additive: scratch is byte-for-
-      // byte what it sent before plus mode:"scratch". client + creativeDirection stay for
-      // backward compatibility; a revisionId is still sent when a revision is loaded or entered,
-      // but the inline brief wins if both reach the backend.
+      var insp = beIsInspiration();
+      var creativeDirection = dirEl ? (dirEl.value || '') : (loaded.creative_direction || '');
+      // Phase 3 (US-022): the request carries a SOURCE {kind, ref} and a RENDER, not the
+      // retired archetypeId / format / beLayout. The LIVE on-screen brief is still the
+      // primary driver: for a winner / explore source readForm() sends the full record
+      // (axes + copy VERBATIM + creative direction + inspiration refs); for an inspiration
+      // source the inline brief OMITS the axes + copy (the backend detects the structure and
+      // auto-writes the copy). client + creativeDirection + baseInspirationImageUris stay,
+      // and a revisionId is still sent when a revision is loaded or entered.
       var req = {
-        mode: insp ? 'inspiration' : 'scratch',
         client: loaded.client || beClient,
+        source: { kind: beSource.kind, ref: beSourceRef() },
+        render: beRender,
         creativeDirection: creativeDirection,
         baseInspirationImageUris: beInspiration.map(function (r) { return r.gcs_uri; }),
         variantMatrix: beVariantMatrix || {},
         brief: insp ? readInspirationBrief() : readForm(),
       };
-      // US-011: the picker tab is the reference's provenance (upload | client |
-      // competitor). The backend seeds the blueprint from it and, for a competitor
-      // source, enforces the fail-closed guardrail (no competitor bytes to the model).
-      if (insp) req.referenceSource = beInspTab;
       if (beRemainingCap != null) req.remainingCapUsd = beRemainingCap;
-      // A design format resolves a typeset archetype server-side (comparison /
-      // native_ui). For an image ad: a pinned mined layout or a 'family:<name>' explore
-      // choice sets archetypeId; an empty (Auto) choice omits it so the backend auto-picks
-      // the client's top mined winner (the unchanged default).
-      if (beFormat && beFormat !== 'image') {
-        req.archetypeId = beFormat;
-      } else if (beFormat === 'image' && beLayout) {
-        req.archetypeId = beLayout;
-      }
-      // A design photo variant: the operator opted into a generated background
-      // image. Only meaningful for a design format; an image ad always generates.
-      var photoEl = document.getElementById('be-design-photo');
-      if (beIsDesignFormat(beFormat) && photoEl && photoEl.checked) {
-        req.wantImage = true;
-      }
       var loadId = document.getElementById('be-load-id');
       var rid = loaded.revision_id || (loadId ? loadId.value : '') || '';
       if (rid) req.revisionId = rid;
@@ -1859,13 +1786,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       beCompiledEdits[prefix + ':' + (variantIdx | 0) + ':' + (idx | 0)] = String(text == null ? '' : text);
     }
 
-    /* The approved compiled brief to submit: the compiled variants with every operator
-     * edit overlaid, plus the size set. brief_id is carried so the backend matches each
-     * approved variant to its re-resolved brief (US-008 _apply_approved_edits). */
+    /* The approved compiled brief to submit. Phase 3 (US-022): a variant compiled with a
+     * `structure` submits the operator-EDITED structure + region_copy (the per-region
+     * editor's working copy, synced from the DOM); a legacy variant with no structure
+     * still submits its edited prompts + copy (fall-through). brief_id is carried either
+     * way so the backend matches each approved variant to its re-resolved brief. */
     function readCompiledBrief() {
       if (!beCompiled || !Array.isArray(beCompiled.variants)) return null;
       var edits = beCompiledEdits || {};
       var variants = beCompiled.variants.map(function (v, vi) {
+        if (v && v.structure) {
+          var out = { structure: readEditedStructure(vi), region_copy: readEditedRegionCopy(vi) };
+          if (v.brief_id) out.brief_id = v.brief_id;
+          return out;
+        }
         var prompts = (v.prompts || []).map(function (p, pi) {
           var k = 'p:' + vi + ':' + pi;
           return { component_role: p.component_role, prompt: (k in edits) ? edits[k] : (p.prompt || '') };
@@ -1876,9 +1810,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (cb.slot_index !== undefined && cb.slot_index !== null) out.slot_index = cb.slot_index;
           return out;
         });
-        var out = { prompts: prompts, copy: copy };
-        if (v.brief_id) out.brief_id = v.brief_id;
-        return out;
+        var legacy = { prompts: prompts, copy: copy };
+        if (v.brief_id) legacy.brief_id = v.brief_id;
+        return legacy;
       });
       return { variants: variants, sizes: beCompiled.sizes || [] };
     }
@@ -1921,112 +1855,191 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + prompts + copy + inspWrap + '</div>';
     }
 
-    /* US-009: one box editor (x, y, w, h in 0..1) for a slot or text block. */
-    function boxRowHtml(idPrefix, box) {
+    /* ---- per-region structure editor (Phase 3, US-022) ----
+     *
+     * When /compile returns a `structure` (+ region_copy) per variant, the editor shows
+     * each variant as its structure wireframe plus one editable row per region: the copy
+     * inline, repeat groups with add/remove within [min,max], and nudgeable boxes. Every
+     * edit mutates the per-variant working copy, and readCompiledBrief() submits exactly
+     * that (the edited structure + region_copy). blueprintEditorHtml and the design
+     * be-design-fields editor merge into this one editor. */
+
+    /* group id -> repeat spec, from the structure's top-level `repeats` array (the fixed
+     * contract) and any inline region.repeat (the authoring shape). */
+    function repeatsMap(structure) {
+      var m = {};
+      var reps = (structure && Array.isArray(structure.repeats)) ? structure.repeats : [];
+      reps.forEach(function (r) { if (r && r.group != null) m[String(r.group)] = r; });
+      var regs = (structure && Array.isArray(structure.regions)) ? structure.regions : [];
+      regs.forEach(function (reg) { if (reg && reg.repeat && reg.id != null) m[String(reg.id)] = reg.repeat; });
+      return m;
+    }
+
+    function clone(o) { return o == null ? o : JSON.parse(JSON.stringify(o)); }
+
+    /* Four nudgeable box inputs (x, y, w, h in 0..1) for a region. */
+    function regionBoxHtml(vi, ri, box) {
       box = box || {};
       function f(axis) {
         var v = (box[axis] != null) ? box[axis] : '';
-        return '<input type="number" step="0.01" min="0" max="1" class="be-bp-num" '
-          + 'id="' + idPrefix + '-' + axis + '" data-axis="' + axis + '" '
-          + 'value="' + esc(String(v)) + '" aria-label="' + axis + '" />';
+        return '<input type="number" step="0.01" min="0" max="1" '
+          + 'id="be-rb-' + vi + '-' + ri + '-' + axis + '" data-be-edit="region-box" '
+          + 'data-vi="' + vi + '" data-ri="' + ri + '" data-axis="' + axis + '" '
+          + 'value="' + esc(String(v)) + '" aria-label="' + esc(axis) + '" />';
       }
-      return '<span class="be-bp-box">' + f('x') + f('y') + f('w') + f('h') + '</span>';
+      return '<span class="be-region-box" title="box x, y, w, h (0..1)">'
+        + f('x') + f('y') + f('w') + f('h') + '</span>';
     }
 
-    /* US-009: the editable, brand-safe reference blueprint for a from-inspiration
-     * compile. The operator adjusts the reference's reconstructed STRUCTURE (layout
-     * family, slot + text boxes) and STRATEGY (closed-vocabulary declared buckets)
-     * before generating, mirroring the design layout-spec edit loop. The default
-     * (unedited) blueprint is already a faithful, branded starting point. With no
-     * blueprint but an 'unavailable' status a clear not-yet note shows (US-012); with
-     * no blueprint at all the from-inspiration path is holistic and nothing renders. */
-    function blueprintEditorHtml(bp, status) {
-      if (!bp) {
-        if (status === 'unavailable') {
-          return '<div class="be-bp-note be-muted">This reference has no layout structure '
-            + 'yet, so it will be analysed on demand. If that is not available it generates '
-            + 'on the holistic path instead.</div>';
+    /* A repeat group's editable items + add/remove controls, bounded by [min,max]. */
+    function repeatItemsHtml(vi, ri, groupId, arr, rep) {
+      arr = Array.isArray(arr) ? arr : [];
+      var min = (rep && rep.min != null) ? rep.min : 0;
+      var max = (rep && rep.max != null) ? rep.max : 99;
+      var items = arr.map(function (t, idx) {
+        var rmDis = (arr.length <= min) ? ' disabled' : '';
+        return '<div class="be-repeat-item">'
+          + '<textarea id="be-ri-' + vi + '-' + ri + '-' + idx + '" data-be-edit="region-item" '
+          + 'data-vi="' + vi + '" data-ri="' + ri + '" data-idx="' + idx + '">'
+          + esc(String(t == null ? '' : t)) + '</textarea>'
+          + '<button type="button" class="be-repeat-rm" data-be-repeat-rm="1" '
+          + 'data-vi="' + vi + '" data-region-id="' + esc(groupId) + '" data-idx="' + idx + '"'
+          + rmDis + ' aria-label="Remove item">&times;</button>'
+          + '</div>';
+      }).join('');
+      var addDis = (arr.length >= max) ? ' disabled' : '';
+      var itemRole = (rep && rep.item_role) ? rep.item_role : 'item';
+      return items
+        + '<button type="button" class="be-repeat-add" data-be-repeat-add="1" '
+        + 'data-vi="' + vi + '" data-region-id="' + esc(groupId) + '"' + addDis + '>+ Add ' + esc(itemRole) + '</button>'
+        + '<span class="be-repeat-note">' + arr.length + ' of ' + min + '–' + max + '</span>';
+    }
+
+    /* Every region of a variant as an editable row: role + id + nudgeable box, then the
+     * copy (a textarea), a repeat group (items + add/remove), or a note for an image /
+     * container region. Reads from the per-variant working copies. */
+    function regionEditorHtml(vi) {
+      var st = beVariantStructures[vi];
+      var rc = beVariantRegionCopy[vi] || {};
+      if (!st) return '';
+      var regions = Array.isArray(st.regions) ? st.regions : [];
+      var repByGroup = repeatsMap(st);
+      var rows = regions.map(function (region, ri) {
+        var id = (region.id != null) ? String(region.id) : String(region.role || '');
+        var role = region.role || id;
+        var rep = repByGroup[id];
+        var body;
+        if (rep && Array.isArray(rc[id])) {
+          body = repeatItemsHtml(vi, ri, id, rc[id], rep);
+        } else if (Object.prototype.hasOwnProperty.call(rc, id)) {
+          body = '<textarea class="be-region-copy" id="be-rc-' + vi + '-' + ri + '" '
+            + 'data-be-edit="region-copy" data-vi="' + vi + '" data-ri="' + ri + '">'
+            + esc(String(rc[id] == null ? '' : rc[id])) + '</textarea>';
+        } else if (region.image_need || (region.image && region.image.source)) {
+          body = '<div class="be-muted">Image region — filled by the render.</div>';
+        } else if (region.container) {
+          body = '<div class="be-muted">Container.</div>';
+        } else {
+          body = '';
         }
-        return '';
-      }
-      var slots = bp.slots || {};
-      var slotRows = Object.keys(slots).map(function (role) {
-        return '<label class="be-field"><span class="be-label">' + esc(role) + '</span>'
-          + boxRowHtml('be-bp-slot-' + role, slots[role]) + '</label>';
+        return '<div class="be-region" data-vi="' + vi + '" data-ri="' + ri + '" data-region-id="' + esc(id) + '">'
+          + '<div class="be-region-head"><span class="be-region-role">' + esc(role) + '</span>'
+          + '<span class="be-region-id">' + esc(id) + '</span>' + regionBoxHtml(vi, ri, region.box) + '</div>'
+          + body + '</div>';
       }).join('');
-      var tbs = (bp.text_blocks || []).map(function (b, i) {
-        return '<label class="be-field"><span class="be-label">Text ' + (i + 1) + '</span>'
-          + boxRowHtml('be-bp-tb-' + i, b) + '</label>';
-      }).join('');
-      var ds = bp.declared_strategy || {};
-      var dsRows = Object.keys(ds).map(function (k) {
-        return '<label class="be-field"><span class="be-label">' + esc(k) + '</span>'
-          + '<input type="text" class="be-bp-ds" id="be-bp-ds-' + esc(k) + '" data-key="' + esc(k) + '" '
-          + 'value="' + esc(String(ds[k] == null ? '' : ds[k])) + '" /></label>';
-      }).join('');
-      return '<div class="be-blueprint" id="be-blueprint-edit">'
-        + '<div class="be-compile-head"><strong>Reference blueprint</strong> '
-        + '<span class="be-muted">Adjust the reconstructed structure and strategy for brand '
-        + 'fit before generating. The default is already faithful and on brand.</span></div>'
-        + '<label class="be-field"><span class="be-label">Layout family</span>'
-        + '<input type="text" id="be-bp-layout-family" value="' + esc(String(bp.layout_family || '')) + '" /></label>'
-        + '<div class="be-bp-slots"><span class="be-label">Slots (x, y, w, h in 0..1)</span>' + slotRows + '</div>'
-        + (tbs ? '<div class="be-bp-tbs"><span class="be-label">Text blocks</span>' + tbs + '</div>' : '')
-        + (dsRows ? '<div class="be-bp-ds-wrap"><span class="be-label">Strategy</span>' + dsRows + '</div>' : '')
-        + '<div class="be-bp-rating"><span class="be-label">Faithful to the reference?</span>'
-        + '<button type="button" class="be-btn be-btn-secondary" data-be-bp-faithful="yes" id="be-bp-faithful-yes">Faithful</button>'
-        + '<button type="button" class="be-btn be-btn-secondary" data-be-bp-faithful="no" id="be-bp-faithful-no">Not faithful</button>'
-        + '</div></div>';
+      return '<div class="be-regions" data-vi="' + vi + '">' + rows + '</div>';
     }
 
-    /* Read the on-screen blueprint edits back into a deep clone of the seeded
-     * blueprint: layout family, each slot box, each text-block box, and each declared
-     * strategy value. The clone is what generation runs, mirroring readEditedDesignSpec. */
-    function readEditedBlueprint() {
-      if (!beReferenceBlueprint) return null;
-      var bp = JSON.parse(JSON.stringify(beReferenceBlueprint));
+    /* Sync one variant's on-screen edits (region copy, repeat items, boxes) into its
+     * working copy, so an add/remove or a submit never loses an in-progress edit. */
+    function syncVariantFromDom(vi) {
+      var st = beVariantStructures[vi];
+      if (!st) return;
+      var rc = beVariantRegionCopy[vi] || (beVariantRegionCopy[vi] = {});
+      var regions = Array.isArray(st.regions) ? st.regions : [];
       function num(id, fallback) {
         var el = document.getElementById(id);
         if (!el || el.value == null || el.value === '') return fallback;
-        var nn = parseFloat(el.value);
-        return isNaN(nn) ? fallback : nn;
+        var n = parseFloat(el.value);
+        return isNaN(n) ? fallback : n;
       }
-      var lf = document.getElementById('be-bp-layout-family');
-      if (lf && typeof lf.value === 'string' && lf.value !== '') bp.layout_family = lf.value;
-      var slots = bp.slots || {};
-      Object.keys(slots).forEach(function (role) {
-        var b = slots[role] || {};
-        ['x', 'y', 'w', 'h'].forEach(function (axis) {
-          b[axis] = num('be-bp-slot-' + role + '-' + axis, b[axis]);
-        });
-        slots[role] = b;
+      regions.forEach(function (region, ri) {
+        var box = region.box || (region.box = {});
+        ['x', 'y', 'w', 'h'].forEach(function (a) { box[a] = num('be-rb-' + vi + '-' + ri + '-' + a, box[a]); });
+        var id = (region.id != null) ? String(region.id) : String(region.role || '');
+        if (Array.isArray(rc[id])) {
+          rc[id] = rc[id].map(function (cur, idx) {
+            var el = document.getElementById('be-ri-' + vi + '-' + ri + '-' + idx);
+            return (el && el.value != null) ? el.value : cur;
+          });
+        } else if (Object.prototype.hasOwnProperty.call(rc, id)) {
+          var el = document.getElementById('be-rc-' + vi + '-' + ri);
+          if (el && el.value != null) rc[id] = el.value;
+        }
       });
-      (bp.text_blocks || []).forEach(function (b, i) {
-        ['x', 'y', 'w', 'h'].forEach(function (axis) {
-          b[axis] = num('be-bp-tb-' + i + '-' + axis, b[axis]);
-        });
-      });
-      var ds = bp.declared_strategy || {};
-      Object.keys(ds).forEach(function (k) {
-        var el = document.getElementById('be-bp-ds-' + k);
-        if (el && typeof el.value === 'string') ds[k] = el.value;
-      });
-      return bp;
     }
 
-    /* US-009: set the one-click faithful / not-faithful rating (or clear it), reflect
-     * it on the buttons, and emit the analytics event. */
-    function setBlueprintFaithful(v) {
-      beBlueprintFaithful = (v === true) ? true : (v === false ? false : null);
-      var yes = document.getElementById('be-bp-faithful-yes');
-      var no = document.getElementById('be-bp-faithful-no');
-      if (yes && yes.classList) { if (beBlueprintFaithful === true) yes.classList.add('be-rated'); else yes.classList.remove('be-rated'); }
-      if (no && no.classList) { if (beBlueprintFaithful === false) no.classList.add('be-rated'); else no.classList.remove('be-rated'); }
-      if (window.F10A) F10A.track('blueprint_faithful', { rating: beBlueprintFaithful });
+    /* The edited structure / region_copy for a variant — the working copy synced from the
+     * DOM, deep-cloned so the submit payload is independent of later edits. */
+    function readEditedStructure(vi) { syncVariantFromDom(vi); return clone(beVariantStructures[vi]); }
+    function readEditedRegionCopy(vi) { syncVariantFromDom(vi); return clone(beVariantRegionCopy[vi]); }
+
+    /* Re-render one variant's region editor in place (after an add/remove). */
+    function rerenderVariant(vi) {
+      var host = document.getElementById('be-regions-' + vi);
+      if (host) host.innerHTML = regionEditorHtml(vi);
+    }
+
+    /* Add / remove a repeat item within [min,max], preserving on-screen edits. */
+    function addRepeatItem(vi, groupId) {
+      syncVariantFromDom(vi);
+      var rc = beVariantRegionCopy[vi] || {};
+      var arr = rc[groupId];
+      if (!Array.isArray(arr)) return false;
+      var rep = repeatsMap(beVariantStructures[vi])[groupId] || {};
+      var max = (rep.max != null) ? rep.max : 99;
+      if (arr.length >= max) return false;
+      arr.push('');
+      rerenderVariant(vi);
+      return true;
+    }
+    function removeRepeatItem(vi, groupId, idx) {
+      syncVariantFromDom(vi);
+      var rc = beVariantRegionCopy[vi] || {};
+      var arr = rc[groupId];
+      if (!Array.isArray(arr)) return false;
+      var rep = repeatsMap(beVariantStructures[vi])[groupId] || {};
+      var min = (rep.min != null) ? rep.min : 0;
+      if (arr.length <= min) return false;
+      arr.splice(idx, 1);
+      rerenderVariant(vi);
+      return true;
+    }
+
+    /* One variant card in the structure path: a small provenance line (source / render /
+     * layout family), the structure wireframe, and the per-region editor. */
+    function variantStructureCardHtml(v, vi) {
+      var st = beVariantStructures[vi];
+      var wf = (typeof window !== 'undefined' && window.f10RenderWireframe) || null;
+      var frame = (wf && st) ? wf(st, { title: 'Structure' }) : '';
+      var idLine = v.brief_id ? '<span class="be-variant-id">' + esc(v.brief_id) + '</span>' : '';
+      var src = v.source || {};
+      var metaBits = [];
+      if (src.kind) metaBits.push('Source: ' + esc(String(src.kind)) + (src.ref ? (' (' + esc(String(src.ref)) + ')') : ''));
+      if (v.render) metaBits.push('Render: ' + esc(String(v.render)));
+      if (v.layout_family) metaBits.push('Layout: ' + esc(String(v.layout_family)));
+      var meta = metaBits.length ? '<div class="be-muted be-variant-meta">' + metaBits.join(' &middot; ') + '</div>' : '';
+      return '<div class="be-variant be-variant-structured" data-vi="' + vi + '">'
+        + '<div class="be-variant-head"><strong>Variant ' + (vi + 1) + '</strong>' + idLine + '</div>'
+        + meta
+        + '<div class="be-variant-wireframe">' + frame + '</div>'
+        + '<div class="be-regions-host" id="be-regions-' + vi + '">' + regionEditorHtml(vi) + '</div>'
+        + '</div>';
     }
 
     /* The full inline compiled-brief view: header, any top-level warnings, the size set
-     * and cost estimate, then one editable card per variant. */
+     * and cost estimate, then one card per variant — the per-region structure editor when
+     * the variant carries a `structure`, else the legacy prompt/copy card (fall-through). */
     function compiledHtml(resp) {
       resp = resp || {};
       var ce = resp.cost_estimate || {};
@@ -2043,10 +2056,42 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '</div></div>';
       var head = '<div class="be-compile-head"><strong>Compiled brief</strong> '
         + '<span class="be-muted">' + variants.length + ' variant' + (variants.length === 1 ? '' : 's')
-        + ', no spend yet. Edit any prompt or copy below; your edits are what generate.</span></div>';
-      var blueprint = blueprintEditorHtml(resp.reference_blueprint, resp.blueprint_status);
-      return head + warn + meta + blueprint
-        + '<div class="be-variants">' + variants.map(variantCardHtml).join('') + '</div>';
+        + ', no spend yet. Edit the copy, counts and boxes per region below; your edits are what generate.</span></div>';
+      var cards = variants.map(function (v, vi) {
+        return (v && v.structure) ? variantStructureCardHtml(v, vi) : variantCardHtml(v, vi);
+      }).join('');
+      return head + warn + meta + '<div class="be-variants">' + cards + '</div>';
+    }
+
+    /* ---- inspiration confirmation (Phase 3, US-022) ----
+     *
+     * When the source is Inspiration, a compile returns the DETECTED structure (and a
+     * confidence). Before generating, the operator confirms that structure — or, below the
+     * confidence threshold, uses the preset fallback the backend offers. No picker-derived
+     * layout is ever applied in inspiration mode. */
+    function inspirationConfirmHtml() {
+      var wf = (typeof window !== 'undefined' && window.f10RenderWireframe) || null;
+      var frame = (wf && beInspStructure) ? wf(beInspStructure, { title: 'Detected structure' }) : '';
+      var conf = '';
+      if (beInspConfidence != null) {
+        var pct = Math.round(Number(beInspConfidence) * 100);
+        var low = !!beInspPreset; // a preset offered means the detection was below threshold
+        conf = '<div class="be-conf' + (low ? ' be-conf-low' : '') + '">Detection confidence: '
+          + pct + '%' + (low ? ' — below the confidence threshold; you can use a preset instead.' : '') + '</div>';
+      }
+      var presetBtn = beInspPreset
+        ? '<button type="button" class="be-btn be-btn-secondary" id="be-insp-usepreset">Use preset instead</button>'
+        : '';
+      return '<div class="be-insp-confirm" id="be-insp-confirm">'
+        + '<div class="be-compile-head"><strong>Confirm the detected structure</strong> '
+        + '<span class="be-muted">This is the layout detected from your inspiration ad. '
+        + 'Confirm it to generate, or use a preset.</span></div>'
+        + conf
+        + '<div class="be-wireframe-wrap">' + frame + '</div>'
+        + '<div class="be-actions-row">'
+        + '<button type="button" class="be-btn" id="be-insp-confirm-btn">Confirm &amp; continue</button>'
+        + presetBtn
+        + '</div></div>';
     }
 
     function overCapMessage(ce) {
@@ -2068,19 +2113,56 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /* Render the compiled brief inline, reveal the submit bar, and gate Submit on the
-     * cost estimate: over the remaining cap disables Submit with a clear message. */
+     * cost estimate: over the remaining cap disables Submit with a clear message. For an
+     * inspiration source, a confirmation gate shows the detected structure FIRST; the
+     * submit bar stays hidden until the operator confirms (or picks the preset). */
     function renderCompiled(resp) {
       var el = document.getElementById('be-compiled');
-      if (el) el.innerHTML = compiledHtml(resp);
       var bar = document.getElementById('be-submit-bar');
-      if (bar && bar.style) bar.style.display = '';
       var prog = document.getElementById('be-progress');
       if (prog) prog.innerHTML = '';
+      if (beIsInspiration() && beInspStructure && !beInspConfirmed) {
+        if (el) el.innerHTML = inspirationConfirmHtml();
+        if (bar && bar.style) bar.style.display = 'none';
+        return;
+      }
+      if (el) el.innerHTML = compiledHtml(resp);
+      if (bar && bar.style) bar.style.display = '';
       var ce = (resp && resp.cost_estimate) || {};
       var over = !!ce.exceeds_cap;
       var btn = document.getElementById('be-submit-btn');
       if (btn) btn.disabled = over;
       setSubmitNote(over ? overCapMessage(ce) : readyMessage(ce), over);
+    }
+
+    /* The operator confirmed the detected inspiration structure — reveal the per-region
+     * editor + submit bar. */
+    function confirmInspiration() {
+      beInspConfirmed = true;
+      beInspUsePreset = false;
+      renderCompiled(beCompiled);
+      if (window.F10A) F10A.track('inspiration_structure_confirmed', { confidence: beInspConfidence });
+    }
+
+    /* The operator chose the preset fallback over the detected structure. When the backend
+     * offered a preset structure, adopt it as the variant working copy; then reveal the
+     * editor + submit bar. */
+    function useInspirationPreset() {
+      if (!beInspPreset) return;
+      beInspUsePreset = true;
+      beInspConfirmed = true;
+      // Adopt the preset structure for every structured variant (the preset carries its
+      // own region_copy defaults, if any).
+      if (beCompiled && Array.isArray(beCompiled.variants)) {
+        beCompiled.variants.forEach(function (v, vi) {
+          if (v && v.structure) {
+            beVariantStructures[vi] = clone(beInspPreset.structure || beInspPreset);
+            beVariantRegionCopy[vi] = clone(beInspPreset.region_copy || beVariantRegionCopy[vi] || {});
+          }
+        });
+      }
+      renderCompiled(beCompiled);
+      if (window.F10A) F10A.track('inspiration_preset_used', {});
     }
 
     function renderCompileError(msg) {
@@ -2102,11 +2184,32 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (!resp || resp.ok === false) throw new Error((resp && resp.error) || 'compile failed');
         beCompiled = resp;
         beCompiledEdits = {};
-        // US-009/US-012: carry the seeded blueprint (edit baseline) + its status,
-        // and reset the faithful rating for this compile.
-        beReferenceBlueprint = resp.reference_blueprint || null;
-        beBlueprintStatus = resp.blueprint_status || null;
-        beBlueprintFaithful = null;
+        // Phase 3 (US-022): build a per-variant working copy of the structure + region
+        // copy. Every edit (region text, a repeat add/remove, a box nudge) mutates these,
+        // and readCompiledBrief() submits exactly them.
+        beVariantStructures = [];
+        beVariantRegionCopy = [];
+        (Array.isArray(resp.variants) ? resp.variants : []).forEach(function (v, vi) {
+          if (v && v.structure) {
+            beVariantStructures[vi] = clone(v.structure);
+            beVariantRegionCopy[vi] = clone(v.region_copy || {});
+          } else {
+            beVariantStructures[vi] = null;
+            beVariantRegionCopy[vi] = null;
+          }
+        });
+        // Inspiration source: capture the DETECTED structure + confidence + any preset
+        // fallback, and require confirmation before the submit bar appears.
+        beInspStructure = null; beInspConfidence = null; beInspPreset = null;
+        beInspConfirmed = false; beInspUsePreset = false;
+        if (beIsInspiration()) {
+          var v0 = (Array.isArray(resp.variants) && resp.variants[0]) ? resp.variants[0] : {};
+          beInspStructure = resp.detected_structure || v0.structure || null;
+          var c = resp.structure_confidence;
+          if (c == null && beInspStructure) c = beInspStructure.structure_confidence;
+          beInspConfidence = (c == null) ? null : c;
+          beInspPreset = resp.preset_fallback || resp.preset || null;
+        }
         renderCompiled(resp);
       } catch (err) {
         beCompiled = null;
@@ -2211,14 +2314,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (prog) prog.innerHTML = '<div class="be-muted">Submitting...</div>';
       try {
         var req = buildCompileRequest();
+        // Phase 3 (US-022): /submit carries the edited structure + region_copy per variant
+        // (readCompiledBrief packs them into compiledBrief.variants), alongside the source
+        // + render buildCompileRequest already emits. When the operator used the preset
+        // fallback in inspiration mode, the source becomes the explore preset.
         req.compiledBrief = compiledBrief;
-        // US-009: on the blueprint path generation runs from the operator-EDITED
-        // blueprint; the seeded baseline + an optional faithful rating ride along so
-        // the backend logs the success signal (edit distance + faithfulness).
-        if (beMode === 'inspiration' && beReferenceBlueprint) {
-          req.referenceBlueprintBaseline = beReferenceBlueprint;
-          req.referenceBlueprint = readEditedBlueprint();
-          if (beBlueprintFaithful !== null) req.blueprintFaithful = beBlueprintFaithful;
+        if (beIsInspiration() && beInspUsePreset && beInspPreset) {
+          var pref = beInspPreset.preset_id || beInspPreset.ref || (beInspPreset.structure && beInspPreset.structure.layout_family) || '';
+          req.source = { kind: 'explore', ref: String(pref) };
         }
         var resp = await store().submit(req);
         if (!resp || resp.ok === false) throw new Error((resp && resp.error) || 'submit failed');
@@ -2230,172 +2333,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (btn) btn.disabled = false;
       }
     }
-
-    /* ---- Phase 2: the design edit loop (draft -> edit -> preview -> publish) ----
-     *
-     * A design ad is drafted ONCE (Draft ad -> /compile, no spend), the operator edits
-     * the wording, and every preview + the publish RE-RENDER the exact edited spec
-     * (deterministic renderer, no second strategist call), so what publishes equals
-     * what was previewed. Editing is a new way for a results claim to reach an ad with
-     * no disclaimer slot, so the backend re-checks compliance and a failing edit is
-     * surfaced inline before anything renders or spends. */
-
-    /* A friendly label for a copy-block role: 'headline' -> 'Headline',
-     * 'card.quote' -> 'Quote', 'list.item.0.text' -> 'Item 1'. Falls back to a
-     * title-cased role so an unknown role is still readable. */
-    function designRoleLabel(role) {
-      var r = String(role || '');
-      var m = r.match(/\.item\.(\d+)\./);
-      if (m) return 'Item ' + (parseInt(m[1], 10) + 1);
-      var last = r.split('.').pop() || r;
-      var named = {
-        headline: 'Headline', cta: 'Call to action', quote: 'Quote',
-        attribution: 'Attribution', title: 'Title', eyebrow: 'Eyebrow',
-        offer: 'Offer', code: 'Code', terms: 'Terms', question: 'Question',
-        answer: 'Answer', label: 'Label', value: 'Value', body: 'Body',
-        query: 'Search query', snippet: 'Snippet',
-      };
-      if (named[last]) return named[last];
-      return last.charAt(0).toUpperCase() + last.slice(1).replace(/[_-]/g, ' ');
-    }
-
-    /* Render the drafted design's editable copy fields. All visible text lives in the
-     * spec's copy_blocks by role, so one field per copy block covers every format's
-     * wording (rows, list items, quotes, answers, values). Fields are indexed to
-     * preserve order for read-back. */
-    function renderDesignEditor(spec) {
-      var wrap = document.getElementById('be-design-fields');
-      var blocks = (spec && spec.copy_blocks) || [];
-      if (wrap) {
-        wrap.innerHTML = blocks.map(function (cb, i) {
-          var role = (cb && cb.role) || '';
-          var text = (cb && cb.text) != null ? cb.text : '';
-          return '<label class="be-field"><span class="be-label">' + esc(designRoleLabel(role)) + '</span>'
-            + '<textarea class="be-design-field" id="be-df-' + i + '" data-role="' + esc(role) + '" rows="2">'
-            + esc(text) + '</textarea></label>';
-        }).join('');
-      }
-      var edit = document.getElementById('be-design-edit');
-      if (edit && edit.style) edit.style.display = '';
-    }
-
-    /* Read the on-screen edits back into a deep clone of the drafted spec: each
-     * field's value replaces its copy block's text by position. The clone is what
-     * preview + publish render, so the strategist is never re-run. */
-    function readEditedDesignSpec() {
-      if (!beDesignSpec) return null;
-      var spec = JSON.parse(JSON.stringify(beDesignSpec));
-      var blocks = spec.copy_blocks || [];
-      for (var i = 0; i < blocks.length; i++) {
-        var el = document.getElementById('be-df-' + i);
-        if (el && typeof el.value === 'string') blocks[i].text = el.value;
-      }
-      return spec;
-    }
-
-    function designCostNote(compileResp) {
-      var ce = compileResp && compileResp.cost_estimate;
-      if (!ce || !ce.unique_image_generations) return '';
-      return 'Publishing generates ' + ce.unique_image_generations + ' image (~$'
-        + Number(ce.estimated_usd || 0).toFixed(2) + ').';
-    }
-
-    function showDesignIssues(issues) {
-      var box = document.getElementById('be-design-issues');
-      if (!box) return;
-      if (!issues || !issues.length) {
-        box.style.display = 'none';
-        box.innerHTML = '';
-        return;
-      }
-      box.style.display = '';
-      box.innerHTML = '<div class="be-error"><strong>This can\'t run yet:</strong><ul>'
-        + issues.map(function (i) { return '<li>' + esc(String(i)) + '</li>'; }).join('')
-        + '</ul></div>';
-    }
-
-    /* Draft a design ad: compile (no spend) to resolve the layout_spec, then show the
-     * editable fields and an immediate preview of the draft. */
-    async function draftDesign() {
-      var btn = document.getElementById('be-design-draft-btn');
-      if (btn) btn.disabled = true;
-      var prog = document.getElementById('be-progress');
-      if (prog) prog.innerHTML = '<div class="be-muted">Drafting…</div>';
-      try {
-        var req = buildCompileRequest(); // carries archetypeId + creativeDirection + wantImage
-        var resp = await store().compile(req);
-        if (!resp || resp.ok === false) throw new Error((resp && resp.error) || 'draft failed');
-        var variant = (resp.variants && resp.variants[0]) || null;
-        var spec = variant && variant.design_spec;
-        if (!spec) throw new Error('the draft returned no editable design.');
-        beDesignSpec = spec;
-        beCompiled = resp; // reuse the cost estimate for the cost note
-        if (prog) prog.innerHTML = '';
-        renderDesignEditor(spec);
-        showDesignIssues(null);
-        var note = document.getElementById('be-design-cost-note');
-        if (note) note.textContent = designCostNote(resp);
-        await previewDesign(); // show the drafted result straight away
-      } catch (err) {
-        renderProgressError('Draft failed: ' + (err && err.message ? err.message : err));
-      } finally {
-        if (btn) btn.disabled = false;
-      }
-    }
-
-    /* Re-render the edited spec (no spend) and show it, or surface the compliance
-     * issues that block it. Runs after Draft and on every Preview click. */
-    async function previewDesign() {
-      var spec = readEditedDesignSpec();
-      if (!spec) return;
-      var out = document.getElementById('be-design-preview');
-      if (out) out.innerHTML = '<div class="be-muted">Rendering preview…</div>';
-      try {
-        var resp = await store().designPreview({ layoutSpec: spec });
-        if (resp && resp.issues && resp.issues.length) {
-          showDesignIssues(resp.issues);
-          if (out) out.innerHTML = '';
-          return;
-        }
-        showDesignIssues(null);
-        var uri = resp && resp.png_data_uri;
-        if (out) {
-          out.innerHTML = uri
-            ? '<img class="be-design-preview-img" alt="Design preview" src="' + esc(uri) + '">'
-            : '<div class="be-muted">No preview returned.</div>';
-        }
-      } catch (err) {
-        if (out) out.innerHTML = '<div class="be-error">Preview failed: '
-          + esc(err && err.message ? err.message : String(err)) + '</div>';
-      }
-    }
-
-    /* Publish the edited spec verbatim: submit with the edited layout_spec so the job
-     * renders exactly what was previewed (no re-draft). Progress polls as usual. */
-    async function publishDesign() {
-      var spec = readEditedDesignSpec();
-      if (!spec) { renderProgressError('Draft the ad before publishing.'); return; }
-      var btn = document.getElementById('be-design-publish-btn');
-      if (btn) btn.disabled = true;
-      var prog = document.getElementById('be-progress');
-      if (prog) prog.innerHTML = '<div class="be-muted">Publishing…</div>';
-      try {
-        var req = buildCompileRequest();
-        req.layoutSpec = spec; // render THIS verbatim; skip the strategist re-draft
-        var resp = await store().submit(req);
-        if (!resp || resp.ok === false) throw new Error((resp && resp.error) || 'publish failed');
-        beJobId = resp.job_id || null;
-        renderProgress(resp);
-        if (beJobId) startPolling(beJobId);
-      } catch (err) {
-        renderProgressError('Publish failed: ' + (err && err.message ? err.message : err));
-      } finally {
-        if (btn) btn.disabled = false;
-      }
-    }
-
-    // Back-compat alias: the design entry point is now Draft (compile-first edit loop).
-    var generateDesign = draftDesign;
 
     /* Wire the inspiration picker's events once the panel exists. Delegated clicks so the
      * dynamically rendered chips + thumbs need no per-node listeners. */
@@ -2526,42 +2463,28 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (form && form.addEventListener) {
         form.addEventListener('submit', function (e) { if (e && e.preventDefault) e.preventDefault(); saveNewRevision(); });
       }
-      // Mode toggle (From scratch / From inspiration): delegated click on the tab row.
-      // Defaults to scratch; toggling shows/hides the axes + copy sections and relabels the
-      // creative-direction section live, with nothing persisted.
-      var modeTabs = document.getElementById('be-mode-tabs');
-      if (modeTabs && modeTabs.addEventListener) {
-        modeTabs.addEventListener('click', function (e) {
+      // Phase 3 (US-022): the shared wireframe CSS (built once in f10-utils.js) is injected
+      // once so the source-preview + per-region editor + review overlay look identical.
+      if (typeof window !== 'undefined' && window.f10EnsureWireframeStyles) window.f10EnsureWireframeStyles();
+      // SOURCE picker: a delegated change resolves the picked source and redraws the
+      // structure wireframe + default render.
+      var sourceSel = document.getElementById('be-source');
+      if (sourceSel && sourceSel.addEventListener) {
+        sourceSel.addEventListener('change', function () { setSource(sourceSel.value || ''); });
+      }
+      // RENDER toggle: a delegated click sets scene/typeset.
+      var renderTabs = document.getElementById('be-render-tabs');
+      if (renderTabs && renderTabs.addEventListener) {
+        renderTabs.addEventListener('click', function (e) {
           var t = e && e.target;
-          var m = t && t.getAttribute && t.getAttribute('data-be-mode');
-          if (!m) return;
+          var r = t && t.getAttribute && t.getAttribute('data-be-render');
+          if (!r) return;
           if (e.preventDefault) e.preventDefault();
-          setMode(m);
+          setRender(r);
         });
       }
-      setMode(beMode); // reflect the default (scratch) state on the freshly injected panel
-      // Format picker (Image ad / Comparison chart / Native UI note): delegated click
-      // on the tab row. A design format hides the image build flow and shows Generate.
-      var formatTabs = document.getElementById('be-format-tabs');
-      if (formatTabs && formatTabs.addEventListener) {
-        formatTabs.addEventListener('click', function (e) {
-          var t = e && e.target;
-          var f = t && t.getAttribute && t.getAttribute('data-be-format');
-          if (!f) return;
-          if (e.preventDefault) e.preventDefault();
-          setFormat(f);
-        });
-      }
-      setFormat(beFormat); // reflect the default (image) format on the freshly injected panel
-      // Layout picker (image ads): a delegated change sets the pinned/explore layout.
-      var layoutSel = document.getElementById('be-layout');
-      if (layoutSel && layoutSel.addEventListener) {
-        layoutSel.addEventListener('change', function () {
-          beLayout = layoutSel.value || '';
-          if (window.F10A) F10A.track('brief_layout_changed', { layout: beLayout || 'auto' });
-        });
-      }
-      bePopulateLayouts(); // fire-and-forget; fills the picker when list-archetypes returns
+      setRender(beRender, true); // reflect the default render on the freshly injected panel
+      bePopulateSources(); // fire-and-forget; fills the picker + wireframe when list-sources returns
 
       wireInspiration();
       // Show the copy section's default headline + body fields on boot so the operator
@@ -2580,18 +2503,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (submitBtn && submitBtn.addEventListener) {
         submitBtn.addEventListener('click', function (e) { if (e && e.preventDefault) e.preventDefault(); submitCompiled(); });
       }
-      var designDraftBtn = document.getElementById('be-design-draft-btn');
-      if (designDraftBtn && designDraftBtn.addEventListener) {
-        designDraftBtn.addEventListener('click', function (e) { if (e && e.preventDefault) e.preventDefault(); draftDesign(); });
-      }
-      var designPreviewBtn = document.getElementById('be-design-preview-btn');
-      if (designPreviewBtn && designPreviewBtn.addEventListener) {
-        designPreviewBtn.addEventListener('click', function (e) { if (e && e.preventDefault) e.preventDefault(); previewDesign(); });
-      }
-      var designPublishBtn = document.getElementById('be-design-publish-btn');
-      if (designPublishBtn && designPublishBtn.addEventListener) {
-        designPublishBtn.addEventListener('click', function (e) { if (e && e.preventDefault) e.preventDefault(); publishDesign(); });
-      }
+      // The compiled container hosts the per-region editor + the inspiration confirmation
+      // gate. One delegated `input` handler maps a region-copy / repeat-item / region-box
+      // edit back into the per-variant working copy; one delegated `click` handler drives
+      // repeat add/remove and the inspiration confirm / use-preset buttons. Legacy
+      // (no-structure) prompt/copy edits still go through applyCompiledEdit.
       var compiledEl = document.getElementById('be-compiled');
       if (compiledEl && compiledEl.addEventListener) {
         compiledEl.addEventListener('input', function (e) {
@@ -2599,15 +2515,28 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (!t || !t.getAttribute) return;
           var kind = t.getAttribute('data-be-edit');
           if (!kind) return;
-          applyCompiledEdit(kind, parseInt(t.getAttribute('data-vi'), 10) || 0,
-            parseInt(t.getAttribute('data-idx'), 10) || 0, t.value);
+          var vi = parseInt(t.getAttribute('data-vi'), 10) || 0;
+          if (kind === 'region-copy' || kind === 'region-item' || kind === 'region-box') {
+            syncVariantFromDom(vi); // fold the live edit into the working copy
+            return;
+          }
+          applyCompiledEdit(kind, vi, parseInt(t.getAttribute('data-idx'), 10) || 0, t.value);
         });
         compiledEl.addEventListener('click', function (e) {
           var t = e && e.target;
           if (!t || !t.getAttribute) return;
-          var rating = t.getAttribute('data-be-bp-faithful');
-          if (rating == null) return;
-          setBlueprintFaithful(rating === 'yes');
+          if (t.getAttribute('id') === 'be-insp-confirm-btn') { if (e.preventDefault) e.preventDefault(); confirmInspiration(); return; }
+          if (t.getAttribute('id') === 'be-insp-usepreset') { if (e.preventDefault) e.preventDefault(); useInspirationPreset(); return; }
+          if (t.getAttribute('data-be-repeat-add') != null) {
+            if (e.preventDefault) e.preventDefault();
+            addRepeatItem(parseInt(t.getAttribute('data-vi'), 10) || 0, t.getAttribute('data-region-id'));
+            return;
+          }
+          if (t.getAttribute('data-be-repeat-rm') != null) {
+            if (e.preventDefault) e.preventDefault();
+            removeRepeatItem(parseInt(t.getAttribute('data-vi'), 10) || 0,
+              t.getAttribute('data-region-id'), parseInt(t.getAttribute('data-idx'), 10) || 0);
+          }
         });
       }
       var others = document.querySelectorAll ? document.querySelectorAll('#sidebar nav a') : [];
@@ -2691,13 +2620,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       setStore: function (s) { beStore = s; },
       setClient: function (c) { beClient = c; },
       getClient: function () { return beClient; },
-      populateLayouts: bePopulateLayouts,
       buildCompileRequest: buildCompileRequest,
-      setFormat: setFormat,
-      getLayout: function () { return beLayout; },
-      setLayout: function (v) { beLayout = v || ''; },
       getLoaded: function () { return beLoadedRevision; },
       isBooted: function () { return beBooted; },
+      // source picker + render toggle (Phase 3, US-022)
+      populateSources: bePopulateSources,
+      setSource: setSource,
+      getSource: function () { return { kind: beSource.kind, ref: beSourceRef(), label: beSource.label, default_render: beSource.default_render }; },
+      setRender: setRender,
+      getRender: function () { return beRender; },
+      renderWireframe: function (structure, opts) {
+        // Delegates to the shared, build-once renderer in f10-utils.js.
+        var fn = (typeof window !== 'undefined' && window.f10RenderWireframe) || null;
+        return fn ? fn(structure, opts) : '';
+      },
+      renderSourceWireframe: renderSourceWireframe,
       // inspiration picker surface (US-Phase-1 part 2)
       switchInspTab: switchInspTab,
       loadClient: loadClient,
@@ -2710,35 +2647,28 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       getInspiration: function () { return beInspiration.slice(); },
       getClientPage: function () { return { offset: beClientPage.offset, hasMore: beClientPage.hasMore }; },
       getCompState: function () { return JSON.parse(JSON.stringify(beCompState)); },
-      // compile / review / tweak / submit surface (US-009)
+      // compile / review / tweak / submit surface (US-009 + US-022 structure editor)
       compileBrief: compileBrief,
       submitCompiled: submitCompiled,
       pollStatusOnce: pollStatusOnce,
       applyCompiledEdit: applyCompiledEdit,
       readCompiledBrief: readCompiledBrief,
-      buildCompileRequest: buildCompileRequest,
-      // mode toggle (From scratch / From inspiration)
-      setMode: setMode,
-      getMode: function () { return beMode; },
-      // format picker (Image ad / Comparison chart / Native UI note)
-      setFormat: setFormat,
-      getFormat: function () { return beFormat; },
-      generateDesign: generateDesign,
-      // Phase 2 design edit loop (draft -> edit -> preview -> publish)
-      draftDesign: draftDesign,
-      previewDesign: previewDesign,
-      publishDesign: publishDesign,
-      renderDesignEditor: renderDesignEditor,
-      readEditedDesignSpec: readEditedDesignSpec,
-      blueprintEditorHtml: blueprintEditorHtml,
-      readEditedBlueprint: readEditedBlueprint,
-      setBlueprintFaithful: setBlueprintFaithful,
-      getReferenceBlueprint: function () { return beReferenceBlueprint; },
-      thumbHtml: thumbHtml,
-      designRoleLabel: designRoleLabel,
-      designPreviewEndpoint: designPreviewEndpoint,
-      getDesignSpec: function () { return beDesignSpec; },
       renderCompiled: renderCompiled,
+      // per-region structure editor read/write (Phase 3, US-022)
+      regionEditorHtml: regionEditorHtml,
+      readEditedStructure: readEditedStructure,
+      readEditedRegionCopy: readEditedRegionCopy,
+      addRepeatItem: addRepeatItem,
+      removeRepeatItem: removeRepeatItem,
+      getVariantStructure: function (vi) { return clone(beVariantStructures[vi]); },
+      getVariantRegionCopy: function (vi) { return clone(beVariantRegionCopy[vi]); },
+      // inspiration confirmation gate (Phase 3, US-022)
+      confirmInspiration: confirmInspiration,
+      useInspirationPreset: useInspirationPreset,
+      getInspirationStructure: function () { return beInspStructure; },
+      getInspirationConfidence: function () { return beInspConfidence; },
+      isInspirationConfirmed: function () { return beInspConfirmed; },
+      thumbHtml: thumbHtml,
       compileEndpoint: compileEndpoint,
       submitEndpoint: submitEndpoint,
       statusEndpoint: statusEndpoint,
@@ -2748,13 +2678,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       setRemainingCap: function (c) { beRemainingCap = c; },
       stopPolling: stopPolling,
       resetForTest: function () {
-        beBooted = false; beLoadedRevision = null; beMode = 'scratch'; beFormat = 'image';
+        beBooted = false; beLoadedRevision = null;
+        beSource = { kind: 'winner', ref: '', label: 'Auto (top performer)', default_render: 'scene', structure: null };
+        beRender = 'scene'; beSourcesData = null; beSourceIndex = {}; beSourceStructure = null;
+        beInspStructure = null; beInspConfidence = null; beInspPreset = null;
+        beInspConfirmed = false; beInspUsePreset = false;
         beInspiration = []; beRefIndex = {}; beInspTab = 'upload';
         beClientPage = { offset: 0, hasMore: false, loading: false }; beCompState = {};
         stopPolling();
-        beCompiled = null; beDesignSpec = null; beCompiledEdits = null; beVariantMatrix = null;
+        beCompiled = null; beCompiledEdits = null; beVariantMatrix = null;
         beRemainingCap = null; beJobId = null;
-        beReferenceBlueprint = null; beBlueprintStatus = null; beBlueprintFaithful = null;
+        beVariantStructures = []; beVariantRegionCopy = [];
       },
     };
   })();
