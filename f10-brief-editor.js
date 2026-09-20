@@ -1031,16 +1031,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + sectionHeadHtml('1', 'Creative axes', 'Visual style, hook, message angle and CTA — locked to the canonical vocabulary.')
         + '<div class="be-grid">' + axisFields + '</div>'
         + '</div>'
-        // 2 — Copy (optional). Hidden in From-inspiration mode (copy is auto-generated).
-        + '<div class="be-section" id="be-section-copy">'
-        + sectionHeadHtml('2', 'Copy', 'Optional — headline and body text. Leave any field blank to let generation write it.')
+        // Copy is written PER REGION after compile (the per-region editor in the compiled
+        // result below), so the pre-compile fixed-copy fields are hidden. Kept in the DOM
+        // (display:none) so a loaded revision's copy still threads through readForm().
+        + '<div class="be-section" id="be-section-copy" style="display:none;">'
+        + sectionHeadHtml('', 'Copy', 'Optional — headline and body text. Leave any field blank to let generation write it.')
         + '<div class="be-copy" id="be-copy"></div>'
         + '</div>'
-        // 3 — Creative direction (free text). For an inspiration source this becomes the
+        // 2 — Creative direction (free text). For an inspiration source this becomes the
         //     primary "What you want" prompt, so its heading + sub-line are addressable and
         //     get relabelled by setSource(); kept out of sectionHeadHtml to carry those ids.
         + '<div class="be-section" id="be-section-direction">'
-        + '<div class="be-section-head"><span class="be-step">3</span>'
+        + '<div class="be-section-head"><span class="be-step">2</span>'
         + '<span id="be-direction-title">' + esc(BE_DIRECTION_SCRATCH_TITLE) + '</span></div>'
         + '<div class="be-section-sub" id="be-direction-sub">' + esc(BE_DIRECTION_SCRATCH_SUB) + '</div>'
         + '<label class="be-field"><textarea id="be-direction" aria-label="Creative direction" '
@@ -1048,7 +1050,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '</div>'
         // 4 — Inspiration references (upload / your library / competitors).
         + '<div class="be-section">'
-        + sectionHeadHtml('4', 'Inspiration references', 'Optional — real images the model looks at for style and subject. Upload your own, or pick from your library or competitors.')
+        + sectionHeadHtml('3', 'Inspiration references', 'Optional — real images the model looks at for style and subject. Upload your own, or pick from your library or competitors.')
         + '<div class="be-insp" id="be-insp">'
         + '<div class="be-chips" id="be-insp-chips"></div>'
         + '<div class="be-insp-tabs" id="be-insp-tabs">'
@@ -1074,7 +1076,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '</div>'
         // 5 — Compile the brief (primary). Saving a revision is an optional secondary action.
         + '<div class="be-section">'
-        + sectionHeadHtml('5', 'Compile brief', 'Resolve the exact prompts, copy and cost with no spend before generating. Saving a revision is optional.')
+        + sectionHeadHtml('4', 'Compile brief', 'Resolve the exact prompts, copy and cost with no spend before generating. Saving a revision is optional.')
         + '<div class="be-actions-row">'
         + '<button type="button" class="be-btn" id="be-compile-btn">Compile brief</button>'
         + '<button type="submit" class="be-btn be-btn-secondary" id="be-save-btn" disabled>Save as new revision</button>'
@@ -1143,8 +1145,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var insp = beIsInspiration();
       var axes = document.getElementById('be-section-axes');
       if (axes && axes.style) axes.style.display = insp ? 'none' : '';
+      // Copy is written per region AFTER compile, so the pre-compile copy section stays
+      // hidden in every mode (not just inspiration). The per-region editor in the
+      // compiled result is the one place copy is entered and edited.
       var copy = document.getElementById('be-section-copy');
-      if (copy && copy.style) copy.style.display = insp ? 'none' : '';
+      if (copy && copy.style) copy.style.display = 'none';
       var title = document.getElementById('be-direction-title');
       if (title) title.textContent = insp ? BE_DIRECTION_INSP_TITLE : BE_DIRECTION_SCRATCH_TITLE;
       var sub = document.getElementById('be-direction-sub');
