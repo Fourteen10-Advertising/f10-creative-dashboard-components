@@ -1238,8 +1238,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         });
         html += '</optgroup>';
       }
-      // Explore: families/presets not already covered by a mined winner, labelled untested.
-      var expShown = explore.filter(function (e) { return e && !have[e.family]; });
+      // Explore: hide a family's CANONICAL layout once it is already a mined winner (it
+      // shows in the winners group), but KEEP that family's alternate sub-formats. A
+      // family can ship more than one preset (checklist + faq_card, native_ui +
+      // native_ui_search, testimonial_card + native_ui_review); each is its own untested
+      // option with its own label. is_family_default marks the canonical preset; when the
+      // backend does not send it (older service), fall back to the family filter so
+      // nothing regresses.
+      var expShown = explore.filter(function (e) {
+        if (!e) return false;
+        var isDefault = (e.is_family_default === undefined) ? true : !!e.is_family_default;
+        return !(have[e.family] && isDefault);
+      });
       if (expShown.length) {
         html += '<optgroup label="Explore — untested">';
         expShown.forEach(function (e) {
@@ -1247,7 +1257,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           var val = 'explore:' + ref;
           beSourceIndex[val] = {
             kind: 'explore', ref: ref,
-            label: beTitleize(e.family || e.preset_id || ''),
+            label: String(e.name || beTitleize(e.family || e.preset_id || '')),
             default_render: e.default_render || 'typeset', structure: e.structure || null,
           };
           html += '<option value="' + esc(val) + '">' + esc(beSourceIndex[val].label) + ' (untested)</option>';
