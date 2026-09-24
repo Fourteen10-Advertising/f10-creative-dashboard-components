@@ -808,6 +808,43 @@ async function runBrowser() {
     assert.strictEqual(submitted.render, 'scene', 'submit carries the render');
   });
 
+  // ── per-region direction: a generated (image) region takes a direction textarea, and
+  //     the operator's per-region direction round-trips into /submit as regionDirection. ──
+  await check('a generated region takes a per-region direction that round-trips into /submit', async () => {
+    const ctx = makeBrowserCtx();
+    const be = ctx.window.f10BriefEditor;
+    let submitted = null;
+    be.setStore({
+      async probe() { return true; }, async load() { return null; }, async save() {},
+      async sources() { return sourcesResponse(); },
+      async compile() { return structuredCompileResponse(); },
+      async submit(p) { submitted = p; return { ok: true, job_id: 'j2', status: 'running' }; },
+      async status() { return { ok: true, job: { status: 'completed', asset_uris: [] } }; },
+    });
+    await ctx.window.initBriefEditor();
+    await be.compileBrief();
+    const html = ctx._slots['be-compiled'].innerHTML;
+    // The hero region (role product-shot, image_need) is generated, so it shows a
+    // direction textarea; the copy regions (headline ri0, cta ri3) do not.
+    assert.ok(/be-rd-0-2/.test(html), 'the generated hero region has a direction textarea');
+    assert.ok(/data-be-edit="region-direction"/.test(html), 'the direction field is wired for edits');
+    assert.ok(!/be-rd-0-0\b/.test(html) && !/be-rd-0-3\b/.test(html), 'copy regions get no direction field');
+    // Type a distinctive direction and submit.
+    ctx.document.getElementById('be-rd-0-2').value = 'a 300 pound man eating a big hamburger';
+    await be.submitCompiled();
+    be.stopPolling();
+    assert.ok(submitted, 'submit fired');
+    assert.ok(submitted.regionDirection, 'submit carries a regionDirection map');
+    assert.strictEqual(submitted.regionDirection.hero, 'a 300 pound man eating a big hamburger',
+      'the per-region direction round-tripped keyed by region id');
+    assert.strictEqual(be.getRegionDirection().hero, 'a 300 pound man eating a big hamburger',
+      'the shared direction map holds the edit');
+    // A blank direction is dropped, never sent as an empty string.
+    ctx.document.getElementById('be-rd-0-2').value = '   ';
+    const req = be.buildCompileRequest();
+    assert.ok(!('hero' in (req.regionDirection || {})), 'a blank direction is dropped, not sent as empty');
+  });
+
   // ── e2e 1 (repeat bounds): add stops at max, remove stops at min. ──
   await check('repeat add/remove respects [min,max]', async () => {
     const ctx = makeBrowserCtx();

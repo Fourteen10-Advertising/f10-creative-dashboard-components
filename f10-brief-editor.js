@@ -663,6 +663,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // exactly what /submit sends back. Parallel arrays, indexed by variant.
     var beVariantStructures = [];   // [structure clone, ...]
     var beVariantRegionCopy = [];   // [region_copy clone, ...]
+    // Per-region creative direction: a map of region id -> a free-form direction
+    // string that steers ONLY that region's generated asset (e.g. hero -> "a man in
+    // his 40s eating a burger"). Copy varies per variant, but the structure (and so
+    // the regions) is shared across variants, and the backend applies ONE direction
+    // map across the whole variant matrix, so this is global keyed by region id
+    // rather than per-variant. Every direction edit mutates it; compile + submit send
+    // it back as regionDirection.
+    var beRegionDirection = {};     // {region_id: direction, ...}
     function beIsInspiration() { return beSource && beSource.kind === 'inspiration'; }
     var beInspiration = [];   // selected inspiration refs: [{gcs_uri, thumb_url, source, label}]
     var beInspTab = 'upload'; // active inspiration picker tab: upload | client | competitor
@@ -986,6 +994,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + 'background:#fff;border-radius:6px;cursor:pointer;color:#444;}'
         + '#panel-brief-editor .be-repeat-add[disabled]{opacity:0.5;cursor:default;}'
         + '#panel-brief-editor .be-repeat-note{font-size:11px;color:#888;margin-left:6px;}'
+        + '#panel-brief-editor .be-region-direction-field{margin-top:6px;}'
+        + '#panel-brief-editor .be-region-direction{min-height:44px;font:inherit;font-size:12px;'
+        + 'padding:6px 8px;border:1px solid rgba(0,0,0,0.18);border-radius:6px;resize:vertical;}'
         + '</style>'
         + '<div class="be-insight"><strong>Brief editor:</strong> build the brief top to bottom — pick a '
         + 'source (a winning layout, an explore preset, or an inspiration ad) and a render, see the layout '
@@ -1770,6 +1781,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         source: { kind: beSource.kind, ref: beSourceRef() },
         render: beRender,
         creativeDirection: creativeDirection,
+        regionDirection: readEditedRegionDirection(),
         baseInspirationImageUris: beInspiration.map(function (r) { return r.gcs_uri; }),
         variantMatrix: beVariantMatrix || {},
         brief: insp ? readInspirationBrief() : readForm(),
@@ -1896,6 +1908,33 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + f('x') + f('y') + f('w') + f('h') + '</span>';
     }
 
+    /* The region roles whose asset is GENERATED as its own image (a scene draws each
+     * photographic region separately), so they take a per-region direction. Mirrors
+     * the backend's generated scene roles; an explicit image_need / image.source marks
+     * a generated region too, regardless of role. */
+    var BE_GENERATED_ROLES = { background: 1, hero: 1, person: 1, 'product-shot': 1 };
+    function beIsGeneratedRegion(region) {
+      if (!region) return false;
+      if (region.image_need || (region.image && region.image.source)) return true;
+      var role = String(region.role != null ? region.role : (region.id != null ? region.id : ''));
+      return !!BE_GENERATED_ROLES[role];
+    }
+
+    /* A generated region's direction editor: the "filled by the render" note plus a
+     * textarea for the operator's per-region direction (what to put in THIS region's
+     * image). Prefilled from the shared beRegionDirection map, keyed by region id. */
+    function regionDirectionHtml(vi, ri, id) {
+      var val = (beRegionDirection && beRegionDirection[id] != null) ? beRegionDirection[id] : '';
+      return '<div class="be-muted">Image region — filled by the render.</div>'
+        + '<label class="be-field be-region-direction-field">'
+        + '<span class="be-label">Direction (what to generate)</span>'
+        + '<textarea class="be-region-direction" id="be-rd-' + vi + '-' + ri + '" '
+        + 'data-be-edit="region-direction" data-vi="' + vi + '" data-ri="' + ri + '" '
+        + 'data-region-id="' + esc(id) + '" '
+        + 'placeholder="e.g. a man in his 40s eating a burger, natural candid photo">'
+        + esc(String(val)) + '</textarea></label>';
+    }
+
     /* A repeat group's editable items + add/remove controls, bounded by [min,max]. */
     function repeatItemsHtml(vi, ri, groupId, arr, rep) {
       arr = Array.isArray(arr) ? arr : [];
@@ -1940,8 +1979,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           body = '<textarea class="be-region-copy" id="be-rc-' + vi + '-' + ri + '" '
             + 'data-be-edit="region-copy" data-vi="' + vi + '" data-ri="' + ri + '">'
             + esc(String(rc[id] == null ? '' : rc[id])) + '</textarea>';
-        } else if (region.image_need || (region.image && region.image.source)) {
-          body = '<div class="be-muted">Image region — filled by the render.</div>';
+        } else if (beIsGeneratedRegion(region)) {
+          body = regionDirectionHtml(vi, ri, id);
         } else if (region.container) {
           body = '<div class="be-muted">Container.</div>';
         } else {
@@ -1981,6 +2020,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           var el = document.getElementById('be-rc-' + vi + '-' + ri);
           if (el && el.value != null) rc[id] = el.value;
         }
+        // A generated region carries a direction textarea; fold its value into the
+        // shared per-region direction map (empty clears the key so no blank is sent).
+        if (beIsGeneratedRegion(region)) {
+          var dEl = document.getElementById('be-rd-' + vi + '-' + ri);
+          if (dEl && dEl.value != null) {
+            var dv = String(dEl.value);
+            if (dv.trim()) beRegionDirection[id] = dv;
+            else delete beRegionDirection[id];
+          }
+        }
       });
     }
 
@@ -1988,6 +2037,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      * DOM, deep-cloned so the submit payload is independent of later edits. */
     function readEditedStructure(vi) { syncVariantFromDom(vi); return clone(beVariantStructures[vi]); }
     function readEditedRegionCopy(vi) { syncVariantFromDom(vi); return clone(beVariantRegionCopy[vi]); }
+
+    /* The shared per-region direction map, synced from every present variant's DOM so
+     * it reflects the latest edit regardless of which variant the operator typed in.
+     * Global (not per-variant): the backend applies one direction map across the whole
+     * variant matrix. */
+    function readEditedRegionDirection() {
+      for (var vi = 0; vi < beVariantStructures.length; vi++) {
+        if (beVariantStructures[vi]) syncVariantFromDom(vi);
+      }
+      return clone(beRegionDirection) || {};
+    }
 
     /* Re-render one variant's region editor in place (after an add/remove). */
     function rerenderVariant(vi) {
@@ -2203,6 +2263,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             beVariantRegionCopy[vi] = null;
           }
         });
+        // Seed the shared per-region direction ONLY when the operator has none yet, so
+        // a re-compile preserves their in-progress edits. On the first compile it takes
+        // a loaded revision's saved direction (re-opening a brief) or a response echo.
+        if (!beRegionDirection || !Object.keys(beRegionDirection).length) {
+          beRegionDirection = clone(
+            (beLoadedRevision && beLoadedRevision.region_direction) || resp.region_direction || {}
+          ) || {};
+        }
         // Inspiration source: capture the DETECTED structure + confidence + any preset
         // fallback, and require confirmation before the submit bar appears.
         beInspStructure = null; beInspConfidence = null; beInspPreset = null;
@@ -2521,7 +2589,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           var kind = t.getAttribute('data-be-edit');
           if (!kind) return;
           var vi = parseInt(t.getAttribute('data-vi'), 10) || 0;
-          if (kind === 'region-copy' || kind === 'region-item' || kind === 'region-box') {
+          if (kind === 'region-copy' || kind === 'region-item' || kind === 'region-box'
+              || kind === 'region-direction') {
             syncVariantFromDom(vi); // fold the live edit into the working copy
             return;
           }
@@ -2663,10 +2732,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       regionEditorHtml: regionEditorHtml,
       readEditedStructure: readEditedStructure,
       readEditedRegionCopy: readEditedRegionCopy,
+      readEditedRegionDirection: readEditedRegionDirection,
       addRepeatItem: addRepeatItem,
       removeRepeatItem: removeRepeatItem,
       getVariantStructure: function (vi) { return clone(beVariantStructures[vi]); },
       getVariantRegionCopy: function (vi) { return clone(beVariantRegionCopy[vi]); },
+      getRegionDirection: function () { return clone(beRegionDirection) || {}; },
       // inspiration confirmation gate (Phase 3, US-022)
       confirmInspiration: confirmInspiration,
       useInspirationPreset: useInspirationPreset,
@@ -2693,7 +2764,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         stopPolling();
         beCompiled = null; beCompiledEdits = null; beVariantMatrix = null;
         beRemainingCap = null; beJobId = null;
-        beVariantStructures = []; beVariantRegionCopy = [];
+        beVariantStructures = []; beVariantRegionCopy = []; beRegionDirection = {};
       },
     };
   })();
