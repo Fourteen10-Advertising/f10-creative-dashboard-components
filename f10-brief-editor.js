@@ -1151,7 +1151,27 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      * creative-direction section, and redraws the structure wireframe. buildCompileRequest
      * reads beSource to emit source:{kind,ref}; NO picker-derived layout is ever applied in
      * inspiration mode. Universal — no per-client branching. */
+    /* The (source, render) a compiled result was built for. */
+    function beChoiceKey() {
+      return (beSource ? beSource.kind + ':' + beSource.ref : '') + '|' + beRender;
+    }
+
+    /* A compiled result describes ONE source + render. Once either changes it no longer
+     * matches what Generate would publish, so drop it and hide the submit bar; the
+     * operator compiles the new choice. A no-op when nothing is compiled or the choice
+     * is unchanged (a picker re-populate re-selects the same source). */
+    function clearStaleCompiled(prevKey) {
+      if (!beCompiled || prevKey === beChoiceKey()) return;
+      beCompiled = null; beCompiledEdits = null;
+      beVariantStructures = []; beVariantRegionCopy = [];
+      var el = document.getElementById('be-compiled');
+      if (el) el.innerHTML = '';
+      var bar = document.getElementById('be-submit-bar');
+      if (bar && bar.style) bar.style.display = 'none';
+    }
+
     function setSource(value) {
+      var prevKey = beChoiceKey();
       var v = (value == null) ? '' : String(value);
       var desc = beSourceIndex[v] || (v ? null : { kind: 'winner', ref: '', label: 'Auto (top performer)', default_render: 'scene', structure: null });
       if (!desc) desc = { kind: 'winner', ref: '', label: v, default_render: 'scene', structure: null };
@@ -1182,12 +1202,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // Default the render to the source's default_render (operator can still override).
       setRender(beSource.default_render, true);
       renderSourceWireframe();
+      clearStaleCompiled(prevKey);
       if (window.F10A) F10A.track('brief_source_changed', { kind: beSource.kind, ref: beSource.ref });
     }
 
     /* Switch the RENDER live. `silent` suppresses the analytics event (used when a source
      * change defaults the render). Reflects the active tab button. */
     function setRender(value, silent) {
+      var prevKey = beChoiceKey();
       beRender = (value === 'typeset') ? 'typeset' : 'scene';
       var tabs = document.getElementById('be-render-tabs');
       if (tabs && tabs.querySelectorAll) {
@@ -1197,6 +1219,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (r === beRender) b.classList.add('active'); else b.classList.remove('active');
         });
       }
+      clearStaleCompiled(prevKey);
       if (!silent && window.F10A) F10A.track('brief_render_changed', { render: beRender });
     }
 
@@ -1859,6 +1882,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         });
         var legacy = { prompts: prompts, copy: copy };
         if (v.brief_id) legacy.brief_id = v.brief_id;
+        // A design-format variant echoes its compiled design_spec so /submit renders
+        // exactly the format that was compiled (with the edited copy above laid over
+        // it) instead of re-drafting a different ad.
+        if (v.design_spec) legacy.design_spec = v.design_spec;
         return legacy;
       });
       return { variants: variants, sizes: beCompiled.sizes || [] };
