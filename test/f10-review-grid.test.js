@@ -1,32 +1,19 @@
 /**
- * Roadmap #5 - Scored batch review: the Creative Review tab as a RANKED GRID of scorecards
- * (f10-review.js).
+ * Creative Review batch grid (f10-review.js).
  *
  * Extends the US-007 / US-009 Creative Review module: when more than one bundle is visible
- * the DEFAULT view is a ranked grid of cards, best-first, each carrying its coherence
- * scorecard. Bundles are auto-discovered through the store's list-bundles method. For each
- * bundle the module fetches a scorecard from the backend via a store method
- * `coherence(client, bundleId, platform)` that posts { action:'coherence', client,
- * bundleId, platform } to BQ_FUNCTION, and consumes this response contract (fail-closed on any
- * error -> unscored):
- *   { found:bool,
- *     overall_verdict:'pass'|'flag', overall_score:number(0..1),
- *     dimensions:{
- *       client_fit:{ score, verdict, reason },
- *       component_fidelity:{ score, verdict, reason, matched, total },
- *       brand_compliance:{ score, verdict, reason } },
- *     flags:[string] }
+ * the DEFAULT view is a grid of cards in discovery order, so a human reviewer can look over a
+ * whole batch at once. Bundles are auto-discovered through the store's list-bundles method.
+ * There is no automated score or rank on the cards.
  *
  * Fully offline and dependency-free (no jsdom): the real f10-review.js is loaded into a vm
- * sandbox with a tiny DOM stub, and BOTH the discovery/preview/coherence store and the
- * feedback client are injected fakes. Covers:
- *   - the default store's coherence method posts the exact request contract;
- *   - the grid renders N cards sorted by (pass, overall_score desc), unscored last, with a
- *     rank / among-N indicator;
- *   - a card shows the three dimension scores + flags + verdict when the store returns a
- *     scorecard, and renders "not scored" when found:false OR on a coherence fetch error;
+ * sandbox with a tiny DOM stub, and BOTH the discovery/preview store and the feedback client
+ * are injected fakes. Covers:
+ *   - the grid renders one card per bundle in discovery order, each with its thumbnail and
+ *     decision gate, and no rank badge or scorecard;
  *   - approve / decline + persisted-state still work per card through the existing feedback seam;
- *   - a single visible bundle renders the detail view (not a grid).
+ *   - a single visible bundle renders the detail view (not a grid);
+ *   - live-path safety: no endpoint and no store means no network and no tab.
  *
  * Run: node test/f10-review-grid.test.js
  */
@@ -47,54 +34,23 @@ function jsonResponse(payload) {
   return { ok: true, status: 200, json: async () => payload, text: async () => JSON.stringify(payload) };
 }
 
-/* A representative coherence scorecard, per the consumed contract. */
-function scorecard(verdict, overall, opts) {
-  opts = opts || {};
-  return {
-    found: true,
-    overall_verdict: verdict,
-    overall_score: overall,
-    dimensions: {
-      client_fit: { score: opts.cf != null ? opts.cf : 0.9, verdict: opts.cfV || 'pass', reason: 'on-brief audience' },
-      component_fidelity: {
-        score: opts.compScore != null ? opts.compScore : 0.8, verdict: opts.compV || 'pass',
-        reason: 'proven components reused', matched: opts.matched != null ? opts.matched : 3, total: opts.total != null ? opts.total : 4,
-      },
-      brand_compliance: { score: opts.bc != null ? opts.bc : 0.85, verdict: opts.bcV || 'pass', reason: 'palette + logo ok' },
-    },
-    flags: opts.flags || [],
-  };
-}
-
-/* Four bundles: makes the sort observable (pass-high, pass-low, flag-high, unscored).
- * All share one generation date so the grid shows them together; the date-filter
- * behaviour is covered in f10-review.test.js. */
+/* A discovered bundle. Bundles in one test share a generation date so the grid shows
+ * them together; the date-filter behaviour is covered in f10-review.test.js. */
 function bundle(id, label, date) {
   return {
     bundle_id: id, platform: 'meta', label: label || id, date: date || '2026-08-20',
     components: { hook_type: 'Founder story' },
-    coherence_flags: ['visual_style held for review'],
     held_dimensions: ['visual_style_canonical'],
     new_ad: { headline: 'Meet the founder' },
   };
 }
 
-/* Build a store whose coherence() serves a per-bundle map, and records every coherence
- * request so the exact posted contract can be asserted. `cohThrows` forces a fetch error.
- * The list-bundles discovery is wired per-boot in bootGrid. */
-function makeStore(scoreMap, opts) {
-  opts = opts || {};
-  const coherenceCalls = [];
+/* Build a store that serves a signed preview per bundle. The list-bundles discovery is
+ * wired per-boot in bootGrid. */
+function makeStore() {
   return {
-    coherenceCalls,
     store: {
       async preview(client, id) { return { url: 'https://signed.example/' + id + '.png' }; },
-      async coherence(client, id, platform) {
-        coherenceCalls.push({ client, id, platform });
-        if (opts.cohThrows) throw new Error('coherence endpoint 500');
-        const sc = Object.prototype.hasOwnProperty.call(scoreMap, id) ? scoreMap[id] : { found: false };
-        return sc;
-      },
     },
   };
 }
@@ -186,118 +142,36 @@ async function bootGrid(bundles, storeObj, feedbackFake) {
 /* Ordered list of card bundle_ids as they appear in the rendered grid. */
 function cardOrder(html) {
   const ids = [];
-  const re = /class="rev-card(?:\s+rev-card-unscored)?"\s+data-bundle-id="([^"]+)"/g;
+  const re = /class="rev-card"\s+data-bundle-id="([^"]+)"/g;
   let m;
   while ((m = re.exec(html))) ids.push(m[1]);
   return ids;
 }
 
 async function run() {
-  console.log('Roadmap #5 Scored batch review - ranked scorecard grid');
+  console.log('Creative Review batch grid');
 
-  // ── The default store's coherence method posts the exact request contract. ──
-  await check('the default store posts { action:"coherence", client, bundleId, platform } to BQ_FUNCTION', async () => {
-    let posted = null;
-    const ctx = makeCtx({ CLIENT: 'moshy', BUNDLES: [bundle('b1'), bundle('b2')] }, async (url, opts) => {
-      const body = JSON.parse(opts.body);
-      if (body.action === 'coherence') { posted = { url, body }; return jsonResponse(scorecard('pass', 0.9)); }
-      if (body.probe) return jsonResponse({ exists: true });
-      return jsonResponse({});
-    });
-    // Drive the coherence fetch through the real default store (no setStore).
-    ctx.window.f10Review.setClient('moshy');
-    const sc = await ctx.window.f10Review.fetchCoherence(bundle('b1'));
-    assert.ok(posted, 'a coherence request was posted');
-    assert.strictEqual(posted.url, 'https://fn.example/.netlify/functions/bq', 'posts to BQ_FUNCTION');
-    assert.strictEqual(posted.body.action, 'coherence', 'action is coherence');
-    assert.strictEqual(posted.body.client, 'moshy', 'client is scoped');
-    assert.strictEqual(posted.body.bundleId, 'b1', 'bundleId sent');
-    assert.strictEqual(posted.body.platform, 'meta', 'platform sent');
-    assert.strictEqual(sc.overall_verdict, 'pass', 'the scorecard is returned to the caller');
-  });
-
-  // ── Grid renders N cards, sorted (pass, overall_score desc), unscored last. ──
-  await check('the grid renders one card per bundle, sorted by (pass, overall_score desc) with unscored last', async () => {
-    const bundles = [bundle('low_pass'), bundle('flag_high'), bundle('top_pass'), bundle('none')];
-    const scoreMap = {
-      low_pass: scorecard('pass', 0.72),
-      flag_high: scorecard('flag', 0.95),          // high score but flagged -> below any pass
-      top_pass: scorecard('pass', 0.91),
-      none: { found: false },                       // unscored -> always last
-    };
-    const st = makeStore(scoreMap);
-    const { body } = await bootGrid(bundles, st.store, makeFeedbackFake());
+  // ── Grid renders one card per bundle, in discovery order, with no score or rank. ──
+  await check('the grid renders one card per bundle in discovery order, with no rank badge or scorecard', async () => {
+    const bundles = [bundle('first'), bundle('second'), bundle('third'), bundle('fourth')];
+    const { body } = await bootGrid(bundles, makeStore().store, makeFeedbackFake());
     const html = body();
     assert.ok(/rev-cards/.test(html), 'a grid container is rendered');
-    const order = cardOrder(html);
-    assert.strictEqual(order.length, 4, 'one card per bundle');
-    assert.deepStrictEqual(order, ['top_pass', 'low_pass', 'flag_high', 'none'],
-      'passing cards first by score desc, then flagged, then unscored last');
-    // A rank / among-N indicator rides on the cards.
-    assert.ok(/#1 of 4/.test(html), 'the top card shows a rank / among-N indicator');
-    assert.ok(/Unscored/.test(html), 'the unscored card is labelled unscored');
-  });
-
-  // ── A card shows the three dimension scores + flags + verdict when scored. ──
-  await check('a scored card shows the three dimension scores, flags list, and overall verdict + score', async () => {
-    const sc = scorecard('flag', 0.66, {
-      cf: 0.9, cfV: 'pass',
-      compScore: 0.5, compV: 'flag', matched: 2, total: 5,
-      bc: 0.8, bcV: 'pass',
-      flags: ['brand palette drift on CTA', 'hook not proven for this client'],
-    });
-    const st = makeStore({ b1: sc, b2: scorecard('pass', 0.9) });
-    const { body } = await bootGrid([bundle('b1', 'Founder story'), bundle('b2')], st.store, makeFeedbackFake());
-    const html = body();
-    // Overall verdict badge + score.
-    assert.ok(/data-rev-verdict="flag"[^>]*>FLAG/.test(html), 'overall FLAG badge rendered');
-    assert.ok(/rev-overall-score">66%/.test(html), 'overall score rendered as a percent');
-    // Three dimensions.
-    assert.ok(/Client fit/.test(html) && />90%</.test(html), 'client_fit score shown');
-    assert.ok(/Component fidelity/.test(html) && />2\/5</.test(html), 'component_fidelity shown as matched/total');
-    assert.ok(/Brand compliance/.test(html) && />80%</.test(html), 'brand_compliance score shown');
-    // Per-dimension pass/flag chips.
-    assert.ok(/rev-chip-pass/.test(html) && /rev-chip-flag/.test(html), 'pass and flag chips both present');
-    // Flags list.
-    assert.ok(/brand palette drift on CTA/.test(html), 'first flag rendered');
-    assert.ok(/hook not proven for this client/.test(html), 'second flag rendered');
-  });
-
-  // ── found:false renders a clean "not scored" card, still approvable. ──
-  await check('found:false renders a "not scored yet" card that is still approvable', async () => {
-    const st = makeStore({ b1: { found: false }, b2: scorecard('pass', 0.9) });
-    const fb = makeFeedbackFake();
-    const { R, body } = await bootGrid([bundle('b1'), bundle('b2')], st.store, fb);
-    let html = body();
-    assert.ok(/rev-scorecard-unscored/.test(html), 'an unscored scorecard block is rendered');
-    assert.ok(/Not scored yet/.test(html), 'the "not scored yet" label is shown');
-    // Still approvable: the approve control is present for the unscored bundle and works.
-    assert.ok(/data-bundle-id="b1"[\s\S]*?data-rev-action="approve"/.test(html), 'the unscored card has an approve control');
-    await R.approve('b1');
-    assert.strictEqual(R.statusOf('b1').state, 'approved', 'an unscored bundle can still be approved');
-    assert.strictEqual(fb.submissions[0].bundle_id, 'b1', 'the decision posted for the unscored bundle');
-  });
-
-  // ── A coherence fetch error is fail-closed: the card renders unscored, tab intact. ──
-  await check('a coherence fetch error renders an unscored card and never breaks the tab', async () => {
-    const st = makeStore({}, { cohThrows: true });
-    const { R, body } = await bootGrid([bundle('b1'), bundle('b2')], st.store, makeFeedbackFake());
-    const html = body();
-    assert.ok(/rev-cards/.test(html), 'the grid still renders on a coherence error');
-    assert.strictEqual((html.match(/rev-scorecard-unscored/g) || []).length, 2, 'both cards fall back to unscored');
-    assert.ok(!/rev-overall-pass|rev-overall-flag/.test(html), 'no invented verdict on a fetch error');
-    // The tab is fully usable: decisions still work.
-    await R.approve('b1');
-    assert.strictEqual(R.statusOf('b1').state, 'approved', 'decisions still work after a coherence error');
+    assert.deepStrictEqual(cardOrder(html), ['first', 'second', 'third', 'fourth'],
+      'cards keep the discovery order');
+    // Each card carries its thumbnail and its decision gate.
+    assert.strictEqual((html.match(/rev-card-thumb"/g) || []).length, 4, 'one thumbnail per card');
+    assert.ok(/src="https:\/\/signed\.example\/first\.png"/.test(html), 'the signed preview is the thumbnail');
+    assert.strictEqual((html.match(/data-rev-action="approve"/g) || []).length, 4, 'one approve control per card');
+    // No automated score, verdict or rank rides on the cards.
+    assert.ok(!/rev-rank|rev-scorecard|data-rev-verdict|data-rev-scored/.test(html), 'no rank badge or scorecard');
   });
 
   // ── Approve / decline + persisted state work per card, and survive a reload. ──
   await check('approve / decline work per card and the persisted state survives a reload', async () => {
     const bundles = [bundle('b1'), bundle('b2'), bundle('b3')];
-    const scoreMap = { b1: scorecard('pass', 0.9), b2: scorecard('flag', 0.6), b3: { found: false } };
-    const st = makeStore(scoreMap);
     const fb = makeFeedbackFake();
-    const { R, body } = await bootGrid(bundles, st.store, fb);
+    const { R, body } = await bootGrid(bundles, makeStore().store, fb);
 
     await R.approve('b1');
     await R.decline('b2', '  off-brand tone  ');
@@ -309,7 +183,7 @@ async function run() {
     assert.ok(/data-bundle-id="b2"[\s\S]*?rev-state-declined/.test(html), 'b2 card shows declined');
 
     // Reload with a fresh module instance sharing only the persisted feedback backing store.
-    const { R: R2, body: body2 } = await bootGrid(bundles, makeStore(scoreMap).store, fb);
+    const { R: R2, body: body2 } = await bootGrid(bundles, makeStore().store, fb);
     assert.strictEqual(R2.statusOf('b1').state, 'approved', 'reloaded grid shows b1 approved');
     assert.strictEqual(R2.statusOf('b2').state, 'declined', 'reloaded grid shows b2 declined');
     assert.ok(/off-brand tone/.test(body2()), 'the persisted decline reason is read back into the grid');
@@ -317,13 +191,12 @@ async function run() {
 
   // ── A single visible bundle still renders the detail view, not a grid. ──
   await check('a single bundle renders the detail view (not a grid)', async () => {
-    const st = makeStore({ only: scorecard('pass', 0.9) });
-    const { body } = await bootGrid([bundle('only', 'Solo concept')], st.store, makeFeedbackFake());
+    const { body } = await bootGrid([bundle('only', 'Solo concept')], makeStore().store, makeFeedbackFake());
     const html = body();
     assert.ok(!/rev-cards/.test(html), 'no grid container for a single bundle');
     assert.ok(/rev-bundle"/.test(html), 'the single-bundle detail block is rendered');
     assert.ok(/data-bundle-id="only"/.test(html), 'the discovered bundle is rendered in the detail view');
-    assert.ok(/visual_style held for review/.test(html), 'the bundle coherence flags render in the detail view');
+    assert.ok(/visual_style_canonical/.test(html), 'the bundle held dimensions render in the detail view');
   });
 
   // ── Live-path safety: no BQ_FUNCTION AND no injected store injects nothing and never posts. ──
@@ -342,7 +215,7 @@ async function run() {
     vm.runInContext(UTILS, sandbox, { filename: 'f10-utils.js' });
     vm.runInContext(REVIEW, sandbox, { filename: 'f10-review.js' });
     await sandbox.window.initReview();
-    assert.strictEqual(fetched, 0, 'no discovery and no coherence call without an endpoint or store');
+    assert.strictEqual(fetched, 0, 'no discovery or preview call without an endpoint or store');
     const nav = (slots['__nav'] && slots['__nav'].innerHTML) || '';
     assert.ok(!/review-nav-link/.test(nav), 'no Review nav link on the live path');
   });
@@ -350,5 +223,5 @@ async function run() {
 
 (async () => {
   await run();
-  console.log('\nRoadmap #5 OK - ' + passed + ' checks passed.');
-})().catch((e) => { console.error('\nRoadmap #5 FAILED:', (e && e.stack) || e); process.exit(1); });
+  console.log('\nCreative Review batch grid OK - ' + passed + ' checks passed.');
+})().catch((e) => { console.error('\nCreative Review batch grid FAILED:', (e && e.stack) || e); process.exit(1); });

@@ -6,7 +6,7 @@
  * that client's top-N winning historical ads (from {client}_reporting.creative_reporting)
  * with their policy metric and a signed image each, the winning component scoreboard
  * (from {client}_marts.component_performance), the new generated ad, the bundle's
- * coherence flags, and a so-what / now-what comparison. This test pins:
+ * held dimensions, and a so-what / now-what comparison. This test pins:
  *   - top-N winners returned for the RIGHT client, each with a signed image;
  *   - STRICT per-client scoping, a query for client A never reads client B's
  *     {client}_marts / {client}_reporting datasets (no cross-client pooling);
@@ -14,7 +14,7 @@
  *     FastCover, and a lead-gen (CPA) client never exposes conversion_value as
  *     revenue;
  *   - injection-safety of the client key (a value that cannot be a bound param);
- *   - AC4: the bundle's coherence flags ride alongside; and the insight-ladder
+ *   - AC4: the bundle's held dimensions ride alongside; and the insight-ladder
  *     L4/L5 so-what / now-what read is present.
  *
  * Dependency-free: the real bq.js is compiled with the two @google-cloud modules
@@ -148,7 +148,6 @@ function makeRouter({ winners = [], components = [], images = [], existsData } =
 const SAMPLE_BUNDLE = {
   bundle_id: 'brief_mosh_ugchook_ab12cd',
   components: { format: 'ugc', angle: 'price', hook_style: 'question' },
-  coherence_flags: ['angle held: price is unproven for this client'],
   held_dimensions: ['angle'],
 };
 const SAMPLE_NEW_AD = { bundle_id: 'brief_mosh_ugchook_ab12cd', preview_url: null, platform: 'meta' };
@@ -324,16 +323,15 @@ function imageRows(ids) {
     assert.strictEqual(queries.length, 0);
   });
 
-  // ── Scenario 5: AC4 coherence flags + insight-ladder L4/L5 read ──
-  await check('the bundle coherence flags ride alongside and the L4/L5 so-what/now-what is present', async () => {
+  // ── Scenario 5: AC4 held dimensions + insight-ladder L4/L5 read ──
+  await check('the bundle held dimensions ride alongside and the L4/L5 so-what/now-what is present', async () => {
     const { FakeBigQuery } = makeFakeBigQuery(makeRouter({ winners: cpaWinners(), components: componentWinners(), images: [] }));
     const handler = loadHandler(FakeBigQuery, makeFakeStorage([]));
     const res = await handler(makeEvent({ action: 'winning-historical', client: 'mosh', bundle: SAMPLE_BUNDLE, newAd: SAMPLE_NEW_AD }));
     const p = JSON.parse(res.body);
 
-    // AC4: coherence flags + held dimensions surfaced next to the comparison.
-    assert.deepStrictEqual(p.bundle.coherence_flags, SAMPLE_BUNDLE.coherence_flags);
-    assert.deepStrictEqual(p.comparison.coherence_flags, SAMPLE_BUNDLE.coherence_flags);
+    // AC4: held dimensions surfaced on the bundle and next to the comparison.
+    assert.deepStrictEqual(p.bundle.held_dimensions, SAMPLE_BUNDLE.held_dimensions);
     assert.deepStrictEqual(p.comparison.held_dimensions, ['angle']);
 
     // L4/L5: aligned reuses a proven winner (format=ugc, hook_style=question), the
