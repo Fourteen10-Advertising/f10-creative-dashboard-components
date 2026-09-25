@@ -1170,7 +1170,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      * it no longer matches what Generate would publish, so drop it (every per-variant
      * working copy with it) and hide the submit bar; the operator compiles the new
      * choice. A no-op when nothing is compiled or the choice is unchanged. A direction
-     * change is NOT stale: the prompts refresh instead (refreshScenePrompts). */
+     * change is NOT stale: what it affects refreshes instead (refreshFromDirection). */
     function clearStaleCompiled() {
       if (!beCompiled || beCompiledKey === beChoiceKey()) return;
       beCompiled = null; beCompiledEdits = null; beCompiledKey = '';
@@ -1997,26 +1997,35 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     /* True when the backend will generate an image for this region of variant vi. The
      * backend's surfaced prompts ARE that list (one per generated region, none on a
-     * typeset render, never a logo or avatar), so the editor never guesses by role. */
+     * typeset render, never the logo), so the editor never guesses by role. */
     function beIsGeneratedRegion(vi, id) {
       var sp = beVariantScenePrompts[vi];
       return !!(sp && Object.prototype.hasOwnProperty.call(sp, id));
     }
 
-    /* A generated region's editor: the operator's direction for THIS region's image,
-     * then the exact prompt the image model receives (editable). Changing the
-     * direction rebuilds the prompt (refreshScenePrompts); typing in the prompt pins it.
-     * Direction is prefilled from the shared beRegionDirection map, keyed by region id. */
-    function regionDirectionHtml(vi, ri, id) {
+    /* The operator's direction for ONE region, prefilled from the shared
+     * beRegionDirection map (keyed by region id). A generated region's direction steers
+     * its image and its prompt follows (editable, typing pins it); a copy region's
+     * steers the copy writer. Changing a direction rebuilds what it affects
+     * (refreshFromDirection). */
+    function directionFieldHtml(vi, ri, id, label, placeholder) {
       var val = (beRegionDirection && beRegionDirection[id] != null) ? beRegionDirection[id] : '';
       return '<label class="be-field be-region-direction-field">'
-        + '<span class="be-label">Direction (what to generate)</span>'
+        + '<span class="be-label">' + label + '</span>'
         + '<textarea class="be-region-direction" id="be-rd-' + vi + '-' + ri + '" '
         + 'data-be-edit="region-direction" data-vi="' + vi + '" data-ri="' + ri + '" '
         + 'data-region-id="' + esc(id) + '" '
-        + 'placeholder="e.g. a man in his 40s eating a burger, natural candid photo">'
-        + esc(String(val)) + '</textarea></label>'
+        + 'placeholder="' + esc(placeholder) + '">'
+        + esc(String(val)) + '</textarea></label>';
+    }
+    function regionDirectionHtml(vi, ri, id) {
+      return directionFieldHtml(vi, ri, id, 'Direction (what to generate)',
+        'e.g. a man in his 40s eating a burger, natural candid photo')
         + scenePromptFieldHtml(vi, id);
+    }
+    function copyDirectionHtml(vi, ri, id) {
+      return directionFieldHtml(vi, ri, id, 'Direction (what to say)',
+        'e.g. lead with no lock-in, keep it short');
     }
 
     /* A repeat group's editable items + add/remove controls, bounded by [min,max]. */
@@ -2058,16 +2067,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var rep = repByGroup[id];
         var body;
         if (rep && Array.isArray(rc[id])) {
-          body = repeatItemsHtml(vi, ri, id, rc[id], rep);
+          body = repeatItemsHtml(vi, ri, id, rc[id], rep) + copyDirectionHtml(vi, ri, id);
         } else if (Object.prototype.hasOwnProperty.call(rc, id)) {
           body = '<textarea class="be-region-copy" id="be-rc-' + vi + '-' + ri + '" '
             + 'data-be-edit="region-copy" data-vi="' + vi + '" data-ri="' + ri + '">'
-            + esc(String(rc[id] == null ? '' : rc[id])) + '</textarea>';
+            + esc(String(rc[id] == null ? '' : rc[id])) + '</textarea>'
+            + copyDirectionHtml(vi, ri, id);
         } else if (beIsGeneratedRegion(vi, id)) {
           body = regionDirectionHtml(vi, ri, id);
         } else if (region.image_need) {
-          body = '<div class="be-muted">Not generated: drawn from the brand kit'
-            + (beRender === 'typeset' ? ' (a typeset render draws no imagery)' : '') + '.</div>';
+          body = '<div class="be-muted">Not generated: '
+            + (beRender === 'typeset' ? 'a typeset render draws no imagery' : 'drawn from the brand kit')
+            + '.</div>';
         } else if (region.container) {
           body = '<div class="be-muted">Container.</div>';
         } else {
@@ -2107,15 +2118,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           var el = document.getElementById('be-rc-' + vi + '-' + ri);
           if (el && el.value != null) rc[id] = el.value;
         }
-        // A generated region carries a direction textarea; fold its value into the
-        // shared per-region direction map (empty clears the key so no blank is sent).
-        if (beIsGeneratedRegion(vi, id)) {
-          var dEl = document.getElementById('be-rd-' + vi + '-' + ri);
-          if (dEl && dEl.value != null) {
-            var dv = String(dEl.value);
-            if (dv.trim()) beRegionDirection[id] = dv;
-            else delete beRegionDirection[id];
-          }
+        // A region offering a direction (generated image or copy) folds its value into
+        // the shared per-region direction map (empty clears the key so no blank is sent).
+        var dEl = document.getElementById('be-rd-' + vi + '-' + ri);
+        if (dEl && dEl.value != null) {
+          var dv = String(dEl.value);
+          if (dv.trim()) beRegionDirection[id] = dv;
+          else delete beRegionDirection[id];
         }
       });
     }
@@ -2217,39 +2226,61 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     /* The operator changed a direction (one region's, or the Creative direction for
      * every region): the direction is the newer instruction, so it unpins the affected
-     * prompts. The prompts are then rebuilt so the boxes show what will generate. */
+     * prompts. What it affects is then rebuilt so the boxes show what will generate. */
     function onDirectionChanged(regionId) {
       beVariantPromptEdited.forEach(function (edited) {
         if (!edited) return;
         if (regionId == null) Object.keys(edited).forEach(function (k) { delete edited[k]; });
         else delete edited[String(regionId)];
       });
-      return refreshScenePrompts();
+      return refreshFromDirection(regionId);
     }
 
-    /* Rebuild the shown prompts from the current directions with a no-spend compile,
-     * updating ONLY the prompt text (copy, structure and box edits are untouched) and
-     * leaving any prompt the operator pinned by typing in it. */
-    async function refreshScenePrompts() {
+    /* Rebuild from the current directions with a no-spend compile (no image is
+     * generated): every prompt the operator has not pinned by typing, and the copy the
+     * direction applies to (that region's copy, or all copy for the Creative
+     * direction). Other copy, the structure and box edits are untouched. */
+    async function refreshFromDirection(regionId) {
       if (!beCompiled || beCompiledKey !== beChoiceKey()) return;
       var resp;
       try {
         resp = await store().compile(buildCompileRequest());
       } catch (err) {
+        if (typeof console !== 'undefined') console.warn('Brief editor: direction refresh failed', err);
         return;
       }
-      if (!resp || resp.ok === false || !Array.isArray(resp.variants)) return;
+      if (!resp || resp.ok === false || !Array.isArray(resp.variants)) {
+        if (typeof console !== 'undefined') console.warn('Brief editor: direction refresh returned no variants', resp);
+        return;
+      }
       resp.variants.forEach(function (v, vi) {
         var sp = beVariantScenePrompts[vi];
-        if (!sp) return;
         var edited = beVariantPromptEdited[vi] || {};
-        (Array.isArray(v.scene_prompts) ? v.scene_prompts : []).forEach(function (p) {
-          var rid = String(p.region_id);
-          if (!Object.prototype.hasOwnProperty.call(sp, rid) || edited[rid]) return;
-          sp[rid] = String(p.prompt == null ? '' : p.prompt);
-          var el = document.getElementById(scenePromptId(vi, rid));
-          if (el) el.value = sp[rid];
+        if (sp) {
+          (Array.isArray(v.scene_prompts) ? v.scene_prompts : []).forEach(function (p) {
+            var rid = String(p.region_id);
+            if (!Object.prototype.hasOwnProperty.call(sp, rid) || edited[rid]) return;
+            sp[rid] = String(p.prompt == null ? '' : p.prompt);
+            var el = document.getElementById(scenePromptId(vi, rid));
+            if (el) el.value = sp[rid];
+          });
+        }
+        var rc = beVariantRegionCopy[vi];
+        var fresh = v && v.region_copy;
+        if (!rc || !fresh || typeof fresh !== 'object') return;
+        syncVariantFromDom(vi);
+        var regions = (beVariantStructures[vi] && beVariantStructures[vi].regions) || [];
+        var regroup = false; // a rewritten repeat group may change its item count
+        Object.keys(rc).forEach(function (rid) {
+          if (regionId != null && rid !== String(regionId)) return;
+          if (!Object.prototype.hasOwnProperty.call(fresh, rid)) return;
+          rc[rid] = clone(fresh[rid]);
+          if (Array.isArray(rc[rid])) { regroup = true; return; }
+          var ri = regions.findIndex(function (r) { return String(r.id != null ? r.id : r.role) === rid; });
+          var el = ri >= 0 ? document.getElementById('be-rc-' + vi + '-' + ri) : null;
+          if (el) el.value = String(rc[rid] == null ? '' : rc[rid]);
         });
+        if (regroup) rerenderVariant(vi);
       });
     }
 
@@ -2881,7 +2912,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       applyCompiledEdit: applyCompiledEdit,
       applyScenePromptEdit: applyScenePromptEdit,
       onDirectionChanged: onDirectionChanged,
-      refreshScenePrompts: refreshScenePrompts,
+      refreshFromDirection: refreshFromDirection,
       readCompiledBrief: readCompiledBrief,
       renderCompiled: renderCompiled,
       // per-region structure editor read/write (Phase 3, US-022)

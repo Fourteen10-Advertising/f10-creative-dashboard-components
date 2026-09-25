@@ -827,10 +827,12 @@ async function runBrowser() {
     await be.compileBrief();
     const html = ctx._slots['be-compiled'].innerHTML;
     // The hero region is one the backend generates (it has a surfaced prompt), so it
-    // shows a direction textarea; the copy regions (headline ri0, cta ri3) do not.
+    // shows an image direction; the copy regions (headline ri0, cta ri3) take a copy
+    // direction for the copy writer instead.
     assert.ok(/be-rd-0-2/.test(html), 'the generated hero region has a direction textarea');
     assert.ok(/data-be-edit="region-direction"/.test(html), 'the direction field is wired for edits');
-    assert.ok(!/be-rd-0-0\b/.test(html) && !/be-rd-0-3\b/.test(html), 'copy regions get no direction field');
+    assert.strictEqual((html.match(/Direction \(what to generate\)/g) || []).length, 1, 'only the hero takes an image direction');
+    assert.ok(/be-rd-0-0\b/.test(html) && /be-rd-0-3\b/.test(html), 'copy regions take a copy direction');
     // Type a distinctive direction and submit.
     ctx.document.getElementById('be-rd-0-2').value = 'a 300 pound man eating a big hamburger';
     await be.submitCompiled();
