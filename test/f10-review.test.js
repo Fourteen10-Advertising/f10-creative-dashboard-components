@@ -8,8 +8,8 @@
  *     discovery and a discovery error both fail closed with zero DOM trace;
  *   - LIVE-PATH SAFETY: with no BQ_FUNCTION endpoint AND no injected store the module
  *     injects nothing AND never touches the network - strictly additive;
- *   - render: given faked list-bundles + generated-preview + coherence responses, each
- *     new ad renders with its preview image, coherence flags and held dimensions;
+ *   - render: given faked list-bundles + generated-preview responses, each new ad
+ *     renders with its preview image and held dimensions;
  *   - the generation-date filter lists the distinct dates newest-first, defaults to the
  *     most recent, and re-filters the visible bundles on change.
  *
@@ -53,25 +53,9 @@ function sampleBundle(overrides) {
     date: '2026-08-20',
     label: 'Founder story - bold typographic',
     components: { hook_type: 'Founder story', format_canonical: 'Bold typographic' },
-    coherence_flags: ['visual_style held for review'],
     held_dimensions: ['visual_style_canonical'],
     new_ad: { headline: 'Meet the founder', body: 'Why we built this' },
   }, overrides || {});
-}
-
-/* A representative coherence scorecard, per the roadmap #5 contract. */
-function scorecard(verdict, overall) {
-  return {
-    found: true,
-    overall_verdict: verdict,
-    overall_score: overall,
-    dimensions: {
-      client_fit: { score: 0.9, verdict: 'pass', reason: 'on-brief audience' },
-      component_fidelity: { score: 0.8, verdict: 'pass', reason: 'proven components', matched: 3, total: 4 },
-      brand_compliance: { score: 0.85, verdict: 'pass', reason: 'palette + logo ok' },
-    },
-    flags: [],
-  };
 }
 
 /* ========================================================================== *
@@ -243,22 +227,21 @@ async function runUnit() {
     assert.ok(!/review-nav-link/.test(nav), 'no Review nav link without a REVIEW block');
   });
 
-  // ── Render: each new ad renders with its preview, coherence flags and held dimensions. ──
-  await check('renders each new ad with its preview image, coherence flags and held dimensions', async () => {
+  // ── Render: each new ad renders with its preview and held dimensions. ──
+  await check('renders each new ad with its preview image and held dimensions', async () => {
     const ctx = makeUnitCtx(async () => jsonResponse({}));
     const previewUrl = 'https://signed.example/new-composite.png';
     ctx.window.f10Review.setStore({
       async listBundles() { return { bundles: [sampleBundle()] }; },
       async preview() { return { url: previewUrl }; },
-      async coherence() { return scorecard('pass', 0.9); },
     });
     ctx.window.f10Review.setClient('moshy');
     await ctx.window.f10Review.load();
     const html = (ctx._slots['rev-body'] && ctx._slots['rev-body'].innerHTML) || '';
     // New generated ad preview image is shown.
     assert.ok(html.indexOf(previewUrl) !== -1, 'the new ad preview image (US-005) is rendered');
-    // Coherence flags + held dimensions shown in context.
-    assert.ok(/visual_style held for review/.test(html), 'coherence flag rendered');
+    // Held dimensions shown in context.
+    assert.ok(/Held for testing:/.test(html), 'held dimensions row rendered');
     assert.ok(/visual_style_canonical/.test(html), 'held dimension rendered');
     // A single discovered bundle renders the detail view, not a grid.
     assert.ok(/rev-bundle"/.test(html) && !/rev-cards/.test(html), 'single bundle renders the detail view');
@@ -270,7 +253,6 @@ async function runUnit() {
     ctx.window.f10Review.setStore({
       async listBundles() { return { bundles: [sampleBundle()] }; },
       async preview() { return { url: null, reason: 'not-found' }; },
-      async coherence() { return null; },
     });
     ctx.window.f10Review.setClient('moshy');
     await ctx.window.f10Review.load();
@@ -307,7 +289,6 @@ async function runUnit() {
     ctx.window.f10Review.setStore({
       async listBundles() { return { bundles: [bundle] }; },
       async preview() { return { url: previewUrl }; },
-      async coherence() { return scorecard('pass', 0.9); },
     });
     ctx.window.f10Review.setClient('moshy');
     await ctx.window.f10Review.load();
@@ -382,7 +363,6 @@ async function runUnit() {
     R.setStore({
       async listBundles() { return { bundles: bundles }; },
       async preview(client, id) { return { url: 'https://signed.example/' + id + '.png' }; },
-      async coherence() { return scorecard('pass', 0.9); },
     });
     R.setClient('moshy');
     await R.load();
@@ -421,26 +401,22 @@ async function runUnit() {
       sampleBundle({ bundle_id: 'new_b', date: '2026-08-20', label: 'New B' }),
     ];
     const previewCalls = [];
-    const coherenceCalls = [];
     const ctx = makeUnitCtx(async () => jsonResponse({}));
     const R = ctx.window.f10Review;
     R.setStore({
       async listBundles() { return { bundles: bundles }; },
       async preview(client, id) { previewCalls.push(id); return { url: 'https://signed.example/' + id + '.png' }; },
-      async coherence(client, id) { coherenceCalls.push(id); return scorecard('pass', 0.9); },
     });
     R.setClient('moshy');
     await R.load();
 
     // Initial load fetched ONLY the most-recent date's two bundles, never the older date's.
     assert.deepStrictEqual(previewCalls.slice().sort(), ['new_a', 'new_b'], 'preview fetched only for the most-recent date on load');
-    assert.deepStrictEqual(coherenceCalls.slice().sort(), ['new_a', 'new_b'], 'coherence fetched only for the most-recent date on load');
     assert.ok(previewCalls.indexOf('old_a') === -1 && previewCalls.indexOf('old_b') === -1, 'the older date is NOT loaded up front');
 
     // Selecting the older date now lazy-loads exactly that date's bundles.
     await R.setDate('2026-08-18');
     assert.deepStrictEqual(previewCalls.slice().sort(), ['new_a', 'new_b', 'old_a', 'old_b'], 'the older date is fetched only after it is selected');
-    assert.deepStrictEqual(coherenceCalls.slice().sort(), ['new_a', 'new_b', 'old_a', 'old_b'], 'coherence for the older date fetched on selection');
     let html = (ctx._slots['rev-body'] && ctx._slots['rev-body'].innerHTML) || '';
     assert.ok(/data-bundle-id="old_a"/.test(html) && /data-bundle-id="old_b"/.test(html), 'the older date bundles render after selection');
 
@@ -660,7 +636,6 @@ function activePanels(document) {
 const REVIEW_STORE = {
   async listBundles() { return { bundles: [sampleBundle()] }; },
   async preview() { return { url: 'https://signed.example/new-composite.png' }; },
-  async coherence() { return null; },
 };
 
 // A store whose discovery finds NO bundles (a client with no generated creative).

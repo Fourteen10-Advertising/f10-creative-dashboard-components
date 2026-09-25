@@ -170,7 +170,7 @@ exports.handler = async function (event) {
   // returns that client's top-N winning historical ads (from {client}_reporting.
   // creative_reporting) with their policy metric and a signed image each, the
   // winning component scoreboard (from {client}_marts.component_performance), the
-  // new generated ad, the bundle's coherence flags, and a so-what / now-what read
+  // new generated ad, the bundle's held dimensions, and a so-what / now-what read
   // comparing the concept to what already works. No mart pairs a generated ad with
   // a client's winners, so this is composed at read time. Scoping is the DATASET
   // identifier ({client}_marts / {client}_reporting), never cross-client pooling;
@@ -1612,8 +1612,6 @@ function normalizeBundle(b) {
     bundle_id: typeof src.bundle_id === 'string' ? src.bundle_id
       : (typeof src.bundleId === 'string' ? src.bundleId : null),
     components: comps,
-    coherence_flags: Array.isArray(src.coherence_flags) ? src.coherence_flags
-      : (Array.isArray(src.coherenceFlags) ? src.coherenceFlags : []),
     held_dimensions: Array.isArray(src.held_dimensions) ? src.held_dimensions
       : (Array.isArray(src.heldDimensions) ? src.heldDimensions : []),
     new_ad: (src.new_ad && typeof src.new_ad === 'object') ? src.new_ad
@@ -1681,8 +1679,8 @@ async function resolveWinnerImages(bq, credentials, adIds) {
  * Each of the bundle's component values is compared (in JS, never in SQL) against
  * the client's PROVEN winning component values: a match is an aligned dimension
  * (reuses a proven winner, the "so what"), a miss is an unproven dimension to
- * hold and test (the "now what"). The bundle's coherence flags / held dimensions
- * ride alongside so held dimensions are visible next to the comparison. */
+ * hold and test (the "now what"). The bundle's held dimensions ride alongside so
+ * they are visible next to the comparison. */
 function buildComparison(bundle, winningComponents, metric, winners) {
   const norm = (component, value) =>
     `${String(component).toLowerCase()}=${String(value).toLowerCase()}`;
@@ -1720,7 +1718,6 @@ function buildComparison(bundle, winningComponents, metric, winners) {
       : null,
     aligned_components: aligned,
     unproven_components: unproven,
-    coherence_flags: (bundle && Array.isArray(bundle.coherence_flags)) ? bundle.coherence_flags : [],
     held_dimensions: (bundle && Array.isArray(bundle.held_dimensions)) ? bundle.held_dimensions : [],
     so_what: soWhat,
     now_what: nowWhat,
