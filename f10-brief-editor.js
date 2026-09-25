@@ -663,6 +663,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // exactly what /submit sends back. Parallel arrays, indexed by variant.
     var beVariantStructures = [];   // [structure clone, ...]
     var beVariantRegionCopy = [];   // [region_copy clone, ...]
+    // Per-variant working copy of the SCENE image prompt(s): parallel array of
+    // [{ '<region_id>': '<prompt>' }, ...]. A structured scene never drafts its prompt,
+    // so /compile surfaces the prompt it WILL generate (variant.scene_prompts) and the
+    // operator edits it here; readCompiledBrief() sends it back so generation uses it.
+    var beVariantScenePrompts = []; // [{region_id: prompt}, ...]
+    var beVariantSceneRoles = [];   // [{region_id: role}, ...] (role kept for the submit payload)
     // Per-region creative direction: a map of region id -> a free-form direction
     // string that steers ONLY that region's generated asset (e.g. hero -> "a man in
     // his 40s eating a burger"). Copy varies per variant, but the structure (and so
@@ -932,6 +938,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '#panel-brief-editor .be-variant{border:1px solid rgba(0,0,0,0.12);border-radius:8px;padding:14px;'
         + 'margin:0 0 14px;background:rgba(0,0,0,0.015);}'
         + '#panel-brief-editor .be-variant-head{margin:0 0 10px;}'
+        + '#panel-brief-editor .be-variant-prompts{margin:12px 0;}'
+        + '#panel-brief-editor .be-scene-prompt{min-height:64px;}'
         + '#panel-brief-editor .be-variant-id{font-family:monospace;font-size:11px;margin-left:6px;color:#777;}'
         + '#panel-brief-editor .be-compile-insps{margin-top:8px;display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start;}'
         + '#panel-brief-editor .be-compile-insp{width:104px;border:1px solid rgba(0,0,0,0.15);border-radius:6px;padding:5px;'
@@ -1824,6 +1832,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var variants = beCompiled.variants.map(function (v, vi) {
         if (v && v.structure) {
           var out = { structure: readEditedStructure(vi), region_copy: readEditedRegionCopy(vi) };
+          // The operator's edited SCENE image prompt(s), keyed by region id -> the exact
+          // prompt to generate. Sent so the backend uses it verbatim instead of re-deriving.
+          // Empty for a typeset render, so nothing is added there.
+          syncScenePromptsFromDom(vi);
+          var sp = beVariantScenePrompts[vi];
+          var roles = beVariantSceneRoles[vi] || {};
+          if (sp && typeof sp === 'object') {
+            var scenePrompts = Object.keys(sp).map(function (rid) {
+              return { region_id: rid, role: roles[rid] || '', prompt: String(sp[rid] == null ? '' : sp[rid]) };
+            });
+            if (scenePrompts.length) out.scene_prompts = scenePrompts;
+          }
           if (v.brief_id) out.brief_id = v.brief_id;
           return out;
         }
@@ -2091,8 +2111,44 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return true;
     }
 
+    /* The SCENE image prompt(s) for a structured scene variant as EDITABLE textareas,
+     * one per generated image region, keyed by region id. This is the exact prompt that
+     * goes to the image model; the operator sees it (it was hidden before) and can tweak
+     * it, and readCompiledBrief() sends the edit so generation uses it verbatim. Reads
+     * from the per-variant working copy, so an in-progress edit survives a region-editor
+     * re-render. Empty (typeset render) => nothing shown. */
+    function scenePromptEditorHtml(vi) {
+      var sp = beVariantScenePrompts[vi];
+      if (!sp || typeof sp !== 'object') return '';
+      var ids = Object.keys(sp);
+      if (!ids.length) return '';
+      var roles = beVariantSceneRoles[vi] || {};
+      var rows = ids.map(function (rid, n) {
+        var label = roles[rid] || rid;
+        return '<label class="be-field"><span class="be-label">Generation prompt: ' + esc(label) + '</span>'
+          + '<textarea class="be-scene-prompt" id="be-sp-' + vi + '-' + n + '" data-be-edit="scene-prompt" '
+          + 'data-vi="' + vi + '" data-region-id="' + esc(rid) + '">'
+          + esc(String(sp[rid] == null ? '' : sp[rid])) + '</textarea>'
+          + '</label>';
+      }).join('');
+      return '<div class="be-variant-prompts">' + rows + '</div>';
+    }
+
+    /* Fold the on-screen scene-prompt edits into the per-variant working copy, so a submit
+     * captures the current textarea values even when the live `input` handler did not run
+     * (mirrors syncVariantFromDom for region copy). Keyed by the same stable id order. */
+    function syncScenePromptsFromDom(vi) {
+      var sp = beVariantScenePrompts[vi];
+      if (!sp || typeof sp !== 'object') return;
+      Object.keys(sp).forEach(function (rid, n) {
+        var el = document.getElementById('be-sp-' + vi + '-' + n);
+        if (el && el.value != null) sp[rid] = el.value;
+      });
+    }
+
     /* One variant card in the structure path: a small provenance line (source / render /
-     * layout family), the structure wireframe, and the per-region editor. */
+     * layout family), the structure wireframe, the generation prompt (scene renders), and
+     * the per-region editor. */
     function variantStructureCardHtml(v, vi) {
       var st = beVariantStructures[vi];
       var wf = (typeof window !== 'undefined' && window.f10RenderWireframe) || null;
@@ -2108,6 +2164,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '<div class="be-variant-head"><strong>Variant ' + (vi + 1) + '</strong>' + idLine + '</div>'
         + meta
         + '<div class="be-variant-wireframe">' + frame + '</div>'
+        + scenePromptEditorHtml(vi)
         + '<div class="be-regions-host" id="be-regions-' + vi + '">' + regionEditorHtml(vi) + '</div>'
         + '</div>';
     }
@@ -2131,7 +2188,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '</div></div>';
       var head = '<div class="be-compile-head"><strong>Compiled brief</strong> '
         + '<span class="be-muted">' + variants.length + ' variant' + (variants.length === 1 ? '' : 's')
-        + ', no spend yet. Edit the copy, counts and boxes per region below; your edits are what generate.</span></div>';
+        + ', no spend yet. Edit the generation prompt, the copy, counts and boxes per region below; your edits are what generate.</span></div>';
       var cards = variants.map(function (v, vi) {
         return (v && v.structure) ? variantStructureCardHtml(v, vi) : variantCardHtml(v, vi);
       }).join('');
@@ -2233,6 +2290,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (v && v.structure) {
             beVariantStructures[vi] = clone(beInspPreset.structure || beInspPreset);
             beVariantRegionCopy[vi] = clone(beInspPreset.region_copy || beVariantRegionCopy[vi] || {});
+            // The preset is a DIFFERENT structure than the one the surfaced prompts were
+            // built for, so the per-region prompts no longer apply. Clear them; generation
+            // derives fresh prompts for the preset's regions from the creative direction.
+            beVariantScenePrompts[vi] = {};
+            beVariantSceneRoles[vi] = {};
           }
         });
       }
@@ -2264,13 +2326,29 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // and readCompiledBrief() submits exactly them.
         beVariantStructures = [];
         beVariantRegionCopy = [];
+        beVariantScenePrompts = [];
+        beVariantSceneRoles = [];
         (Array.isArray(resp.variants) ? resp.variants : []).forEach(function (v, vi) {
           if (v && v.structure) {
             beVariantStructures[vi] = clone(v.structure);
             beVariantRegionCopy[vi] = clone(v.region_copy || {});
+            // The scene image prompt(s) this variant will generate, keyed by region id, so
+            // the operator sees and can edit the exact prompt before spend. Empty for a
+            // typeset render (backend sends no scene_prompts there).
+            var sp = {}, roles = {};
+            (Array.isArray(v.scene_prompts) ? v.scene_prompts : []).forEach(function (p) {
+              if (p && p.region_id != null) {
+                sp[String(p.region_id)] = String(p.prompt == null ? '' : p.prompt);
+                roles[String(p.region_id)] = String(p.role == null ? '' : p.role);
+              }
+            });
+            beVariantScenePrompts[vi] = sp;
+            beVariantSceneRoles[vi] = roles;
           } else {
             beVariantStructures[vi] = null;
             beVariantRegionCopy[vi] = null;
+            beVariantScenePrompts[vi] = null;
+            beVariantSceneRoles[vi] = null;
           }
         });
         // Seed the shared per-region direction ONLY when the operator has none yet, so
@@ -2599,6 +2677,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           var kind = t.getAttribute('data-be-edit');
           if (!kind) return;
           var vi = parseInt(t.getAttribute('data-vi'), 10) || 0;
+          if (kind === 'scene-prompt') {
+            var rid = t.getAttribute('data-region-id');
+            if (rid != null) {
+              var sp = beVariantScenePrompts[vi] || (beVariantScenePrompts[vi] = {});
+              sp[String(rid)] = t.value; // the operator's edited image prompt for this region
+            }
+            return;
+          }
           if (kind === 'region-copy' || kind === 'region-item' || kind === 'region-box'
               || kind === 'region-direction') {
             syncVariantFromDom(vi); // fold the live edit into the working copy
@@ -2775,6 +2861,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         beCompiled = null; beCompiledEdits = null; beVariantMatrix = null;
         beRemainingCap = null; beJobId = null;
         beVariantStructures = []; beVariantRegionCopy = []; beRegionDirection = {};
+        beVariantScenePrompts = []; beVariantSceneRoles = [];
       },
     };
   })();
