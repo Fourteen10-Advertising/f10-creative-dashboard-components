@@ -686,6 +686,8 @@ async function runBrowser() {
         brief_id: 'brief_a', source: { kind: 'winner', ref: 'moshy-split-screen' }, render: 'scene',
         layout_family: 'app-phone-mockup', structure: sampleStructure(),
         region_copy: { headline: 'Sleep better', thread: ['Hey!', 'Does it work?', 'Yes, love it'], cta: 'Shop now' },
+        // The backend lists every region it will generate an image for (here the hero).
+        scene_prompts: [{ region_id: 'hero', role: 'product-shot', prompt: 'HERO PROMPT' }],
       }],
       sizes: [[1080, 1350]], warnings: [],
       cost_estimate: { files_produced: 1, unique_image_generations: 1, estimated_usd: 0.02, remaining_cap_usd: 25, exceeds_cap: false },
@@ -824,8 +826,8 @@ async function runBrowser() {
     await ctx.window.initBriefEditor();
     await be.compileBrief();
     const html = ctx._slots['be-compiled'].innerHTML;
-    // The hero region (role product-shot, image_need) is generated, so it shows a
-    // direction textarea; the copy regions (headline ri0, cta ri3) do not.
+    // The hero region is one the backend generates (it has a surfaced prompt), so it
+    // shows a direction textarea; the copy regions (headline ri0, cta ri3) do not.
     assert.ok(/be-rd-0-2/.test(html), 'the generated hero region has a direction textarea');
     assert.ok(/data-be-edit="region-direction"/.test(html), 'the direction field is wired for edits');
     assert.ok(!/be-rd-0-0\b/.test(html) && !/be-rd-0-3\b/.test(html), 'copy regions get no direction field');
@@ -876,18 +878,16 @@ async function runBrowser() {
   });
 
   // ── AC3 / inspiration e2e: an inspiration source shows the detected-structure
-  //     confirmation with confidence and applies NO picker-derived layout. ──
+  //     confirmation and applies NO picker-derived layout. ──
   await check('inspiration mode shows the detected-structure confirmation and applies no picker layout', async () => {
     const ctx = makeBrowserCtx();
     const be = ctx.window.f10BriefEditor;
-    const detected = sampleStructure({ layout_family: 'testimonial-quote-card', structure_confidence: 0.58 });
+    const detected = sampleStructure({ layout_family: 'testimonial-quote-card' });
     be.setStore({
       async probe() { return true; }, async load() { return null; }, async save() {},
       async sources() { return sourcesResponse(); },
       async compile() {
         return structuredCompileResponse({
-          detected_structure: detected, structure_confidence: 0.58,
-          preset_fallback: { preset_id: 'quote-card', structure: sampleStructure({ layout_family: 'testimonial-quote-card' }), region_copy: {} },
           variants: [{ brief_id: 'i1', source: { kind: 'inspiration', ref: 'gs://insp/a.png' }, render: 'scene',
             layout_family: 'testimonial-quote-card', structure: detected, region_copy: { headline: 'x', thread: ['a', 'b'], cta: 'y' } }],
         });
@@ -906,8 +906,6 @@ async function runBrowser() {
     const html = ctx._slots['be-compiled'].innerHTML;
     assert.ok(/be-insp-confirm/.test(html), 'the confirmation gate is shown');
     assert.ok(/data-region-id=/.test(html), 'the detected structure is drawn as a wireframe');
-    assert.ok(/58%/.test(html), 'the detection confidence is shown');
-    assert.ok(/be-insp-usepreset/.test(html), 'a preset fallback is offered below threshold');
     assert.strictEqual(ctx._slots['be-submit-bar'].style.display, 'none', 'the submit bar is hidden until confirmed');
     assert.strictEqual(JSON.stringify(be.getInspirationStructure()), JSON.stringify(detected), 'the detected structure is captured');
     // Confirming reveals the per-region editor + submit bar.
@@ -931,9 +929,9 @@ async function runBrowser() {
     assert.strictEqual(req.render, 'scene', 'and a scene render');
   });
 
-  // ── Legacy fall-through: a compile response with no structure still renders the flat
-  //     prompt/copy editor (backward compatibility). ──
-  await check('a legacy compile response with no structure falls through to the flat prompt/copy editor', async () => {
+  // ── Fall-through: a compile response with no structure (a design format) renders the
+  //     flat prompt/copy editor. ──
+  await check('a compile response with no structure falls through to the flat prompt/copy editor', async () => {
     const ctx = makeBrowserCtx();
     const be = ctx.window.f10BriefEditor;
     be.setStore({
@@ -941,7 +939,7 @@ async function runBrowser() {
       async sources() { return sourcesResponse(); },
       async compile() {
         return {
-          ok: true, client: 'moshy', variants: [{ brief_id: 'b', prompts: [{ component_role: 'background', prompt: 'A scene' }],
+          ok: true, client: 'moshy', variants: [{ brief_id: 'b', scene_prompts: [{ region_id: 'image_slot_0', role: 'background', prompt: 'A scene' }],
             copy: [{ role: 'headline', text: 'Hi' }] }],
           sizes: [[1080, 1080]], cost_estimate: { files_produced: 1, unique_image_generations: 1, estimated_usd: 0.02, remaining_cap_usd: 25, exceeds_cap: false },
         };
@@ -950,7 +948,7 @@ async function runBrowser() {
     await ctx.window.initBriefEditor();
     await be.compileBrief();
     const html = ctx._slots['be-compiled'].innerHTML;
-    assert.ok(/data-be-edit="prompt"/.test(html) && /data-be-edit="copy"/.test(html), 'the legacy flat editor renders when no structure is present');
+    assert.ok(/data-be-edit="scene-prompt"/.test(html) && /data-be-edit="copy"/.test(html), 'the flat prompt/copy editor renders when no structure is present');
     assert.ok(!/be-region\b/.test(html), 'no per-region editor for a legacy response');
   });
 }

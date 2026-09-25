@@ -91,14 +91,12 @@ function sourcesResponse() {
   };
 }
 
-// An inspiration /compile response: the DETECTED structure + confidence, a preset
-// fallback (offered below threshold), and one variant carrying the detected structure.
+// An inspiration /compile response: one variant carrying the DETECTED structure (a
+// low-confidence detection has already fallen back to the family preset server-side).
 function inspirationCompile(over) {
-  const detected = structure({ structure_confidence: 0.58 });
+  const detected = structure();
   return Object.assign({
     ok: true, client: 'moshy', variant_count: 1,
-    detected_structure: detected, structure_confidence: 0.58,
-    preset_fallback: { preset_id: 'quote-card', structure: structure({ layout_family: 'testimonial-quote-card' }), region_copy: { quote: 'Preset quote', attribution: '', cta: 'Learn more' } },
     variants: [{
       brief_id: 'i1', source: { kind: 'inspiration', ref: 'gs://insp/a.png' }, render: 'scene',
       layout_family: 'testimonial-quote-card', structure: detected,
@@ -146,7 +144,7 @@ async function run() {
   });
 
   // ---- US-022: compile shows the detected-structure confirmation gate -----------
-  await check('a from-inspiration compile shows the detected-structure confirmation (wireframe + confidence + preset)', async () => {
+  await check('a from-inspiration compile shows the detected-structure confirmation (wireframe, submit hidden)', async () => {
     const ctx = makeBrowserCtx();
     const be = ctx.window.f10BriefEditor;
     be.setStore({
@@ -162,11 +160,8 @@ async function run() {
     const html = compiledHtmlOf(ctx);
     assert.ok(/id="be-insp-confirm"/.test(html), 'the confirmation gate is present');
     assert.ok(/data-region-id="quote"/.test(html), 'the detected structure is drawn as a wireframe');
-    assert.ok(/58%/.test(html), 'the detection confidence is shown');
-    assert.ok(/id="be-insp-usepreset"/.test(html), 'a preset fallback is offered below threshold');
     assert.strictEqual(ctx._slots['be-submit-bar'].style.display, 'none', 'the submit bar is hidden until confirmed');
-    assert.strictEqual(JSON.stringify(be.getInspirationStructure()), JSON.stringify(structure({ structure_confidence: 0.58 })), 'the detected structure is captured');
-    assert.ok(be.getInspirationConfidence() === 0.58, 'the confidence is captured');
+    assert.strictEqual(JSON.stringify(be.getInspirationStructure()), JSON.stringify(structure()), 'the detected structure is captured');
     assert.strictEqual(be.isInspirationConfirmed(), false, 'not confirmed yet');
   });
 
@@ -204,30 +199,23 @@ async function run() {
     assert.ok(ctx.window.F10A.events.some(function (e) { return e.e === 'inspiration_structure_confirmed'; }), 'confirm event tracked');
   });
 
-  // ---- US-022: the preset fallback replaces the detected structure and re-sources -
-  await check('using the preset fallback adopts the preset structure and submits it as an explore source', async () => {
+  // ---- The chosen ad's provenance rides along, so a competitor ad is guarded ------
+  await check('the lead inspiration ad\'s source is sent as referenceSource (competitor, client, else upload)', async () => {
     const ctx = makeBrowserCtx();
     const be = ctx.window.f10BriefEditor;
-    let submitted = null;
-    be.setStore({
-      async probe() { return true; }, async load() {}, async save() {},
-      async sources() { return sourcesResponse(); },
-      async compile() { return inspirationCompile(); },
-      async submit(p) { submitted = p; return { ok: true, job_id: 'j2', status: 'running' }; },
-      async status() { return { ok: true, job: { status: 'completed', asset_uris: [] } }; },
-    });
+    be.setStore({ async probe() { return true; }, async load() {}, async save() {}, async sources() { return sourcesResponse(); } });
     await ctx.window.initBriefEditor();
     await be.populateSources();
     be.setSource('inspiration');
-    be.selectRef({ gcs_uri: 'gs://insp/a.png', thumb_url: 't' });
-    await be.compileBrief();
-    be.useInspirationPreset();
-    assert.ok(/be-region/.test(compiledHtmlOf(ctx)), 'the per-region editor is shown after choosing the preset');
-    await be.submitCompiled();
-    be.stopPolling();
-    assert.strictEqual(submitted.source.kind, 'explore', 'the preset fallback submits as an explore source');
-    assert.strictEqual(submitted.source.ref, 'quote-card', 'the preset id rides source.ref');
-    assert.ok(ctx.window.F10A.events.some(function (e) { return e.e === 'inspiration_preset_used'; }), 'preset event tracked');
+    assert.strictEqual(be.buildCompileRequest().referenceSource, 'upload', 'nothing picked: upload');
+    be.selectRef({ gcs_uri: 'gs://comp/a.png', thumb_url: 't', source: 'competitor' });
+    assert.strictEqual(be.buildCompileRequest().referenceSource, 'competitor', 'a competitor ad is flagged');
+    be.deselectRef('gs://comp/a.png');
+    be.selectRef({ gcs_uri: 'gs://client/b.png', thumb_url: 't', source: 'client' });
+    assert.strictEqual(be.buildCompileRequest().referenceSource, 'client', 'a client ad is flagged');
+    be.deselectRef('gs://client/b.png');
+    be.selectRef({ gcs_uri: 'gs://up/c.png', thumb_url: 't', source: 'saved' });
+    assert.strictEqual(be.buildCompileRequest().referenceSource, 'upload', 'a saved or uploaded image is an upload');
   });
 
   // ---- A winner / explore source shows NO confirmation gate --------------------
