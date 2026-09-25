@@ -642,7 +642,7 @@ ${list.join(',\n')}
         let mdHtml = '–';
         if (a.metricDelta != null) { const worse = m.dir === 'lower' ? a.metricDelta > 0 : a.metricDelta < 0; const cls = Math.abs(a.metricDelta) < 1e-6 ? 'delta-flat' : (worse ? 'delta-bad' : 'delta-good'); mdHtml = `<span class="${cls}">${a.metricDelta > 0 ? '+' : ''}${fmtMetric(a.metricDelta, m)}</span>`; }
         const cr = creativeRates(a.cur, PROFILE); registerAdMetrics(a.ad_id, a.cur, PROFILE);
-        return `<tr>
+        return `<tr ${adNameAttr(a.ad_name, a.campaign_name)}>
           <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;" title="${a.ad_name || ''}">${a.ad_name || '–'}<br><span style="color:var(--grey);font-size:10px;">${a.campaign_name || ''}</span></td>
           <td><span class="badge ${sm.cls}"${stateDefAttr(a.state)}>${stateLabel(a.state)}</span></td>
           <td class="num">${fmt$(a.sCur)}</td>
@@ -805,7 +805,7 @@ ${list.join(',\n')}
         /* Feed the hover the OUTBOUND CTR, because that is the rate liScoreOpts fed
          * the SQL — the breakdown must explain the score it is shown next to. */
         registerAdMetrics(r.ad_id, ce, PROFILE, creativeScoreHover(r.creative_score, { spend: r.lifetime_spend, metric: r[mCol], hook: cr.hook, hold: cr.hold, ctr: cr.outboundCtr, completion: cr.completion, hasVideo: cr.hasVideo, activeDays: r.active_days }, liScoreOpts()));
-        return `<tr><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adgroup_name}">${r.adgroup_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmt$(r.lifetime_spend)}</td><td>${Number(r[mCol]) > 0 ? fmtMetricCell(r[mCol]) : '–'}</td><td>${fmtNum(r.total_conversions)}</td><td class="num">${cr.hook != null ? fmtPct(cr.hook, 2) : '–'}</td><td class="num">${cr.hold != null ? fmtPct(cr.hold, 2) : '–'}</td><td class="num">${cr.completion != null ? fmtPct(cr.completion, 2) : '–'}</td><td>${r.creative_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="linkedin" href="${r.creative_link}" target="_blank">Preview</a>` : '–'}</td><td><span class="badge ${badgeClass}">${cls}</span></td><td>${creativeScoreBadge(r.creative_score)}</td></tr>`;
+        return `<tr ${adNameAttr(r.ad_name, r.campaign_name, r.adgroup_name)}><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adgroup_name}">${r.adgroup_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmt$(r.lifetime_spend)}</td><td>${Number(r[mCol]) > 0 ? fmtMetricCell(r[mCol]) : '–'}</td><td>${fmtNum(r.total_conversions)}</td><td class="num">${cr.hook != null ? fmtPct(cr.hook, 2) : '–'}</td><td class="num">${cr.hold != null ? fmtPct(cr.hold, 2) : '–'}</td><td class="num">${cr.completion != null ? fmtPct(cr.completion, 2) : '–'}</td><td>${r.creative_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="linkedin" href="${r.creative_link}" target="_blank">Preview</a>` : '–'}</td><td><span class="badge ${badgeClass}">${cls}</span></td><td>${creativeScoreBadge(r.creative_score)}</td></tr>`;
       }));
       hideEl('li-scatter-table-loading'); showEl('li-scatter-table');
     } catch (err) { console.error('LinkedIn production error:', err); }
@@ -865,7 +865,7 @@ ${list.join(',\n')}
         options: { responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { font: { size: 10 } } }, y: { title: { display: true, text: '% of Spend', font: { size: 10 } }, ticks: { callback: (v) => v + '%' } }, y2: { position: 'right', min: 0, max: 100, title: { display: true, text: 'Cumulative %', font: { size: 10 } }, ticks: { callback: (v) => v + '%', font: { size: 10 } }, grid: { drawOnChartArea: false } } }, plugins: { legend: { position: 'top', labels: { font: { size: 11 } } } } },
       });
       renderPagedTable('li-powerlaw-table-body', data.map((r) =>
-        `<tr><td class="rank-num">${r.rank_num}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name || ''}">${r.campaign_name || '–'}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adgroup_name || ''}">${r.adgroup_name || '–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name || ''}">${r.ad_name || '–'}</td><td>${fmtDate(r.launch_date)}</td><td>${fmtDate(r.last_spend_date)}</td><td>${r.preview_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="linkedin" href="${r.preview_link}" target="_blank">Preview</a>` : '–'}</td><td>${fmt$(r.spend)}</td><td>${fmtPct(r.spend_pct, 2)}</td><td>${fmtPct(r.rolling_pct, 2)}</td><td>${Number(r[mCol]) > 0 ? fmtMetricCell(r[mCol]) : '–'}</td></tr>`));
+        `<tr ${adNameAttr(r.ad_name, r.campaign_name, r.adgroup_name)}><td class="rank-num">${r.rank_num}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name || ''}">${r.campaign_name || '–'}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adgroup_name || ''}">${r.adgroup_name || '–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name || ''}">${r.ad_name || '–'}</td><td>${fmtDate(r.launch_date)}</td><td>${fmtDate(r.last_spend_date)}</td><td>${r.preview_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="linkedin" href="${r.preview_link}" target="_blank">Preview</a>` : '–'}</td><td>${fmt$(r.spend)}</td><td>${fmtPct(r.spend_pct, 2)}</td><td>${fmtPct(r.rolling_pct, 2)}</td><td>${Number(r[mCol]) > 0 ? fmtMetricCell(r[mCol]) : '–'}</td></tr>`));
       liHide('li-powerlaw-table-loading'); liShow('li-powerlaw-table');
     } catch (err) { console.error('LinkedIn power law error:', err); const el = document.getElementById('li-powerlaw-table-loading'); if (el) el.innerHTML = 'Error loading data: ' + err.message; }
   }
@@ -978,7 +978,7 @@ ${list.join(',\n')}
         options: { responsive: true, maintainAspectRatio: true, scales: { x: { stacked: true, ticks: { font: { size: 10 }, maxRotation: 45 } }, y: { stacked: true, max: 100, ticks: { callback: (v) => v + '%' } } }, plugins: { legend: { position: 'top', labels: { font: { size: 11 } } }, tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${ctx.raw}%` } } } },
       });
       renderPagedTable('li-age-table-body', tableData.map((r) =>
-        `<tr><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name || ''}">${r.campaign_name || '–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.adgroup_name || ''}">${r.adgroup_name || '–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name || ''}">${r.ad_name || '–'}</td><td>${fmtDate(r.launch_date)}</td><td>${fmtDate(r.last_spend)}</td><td>${r.preview_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="linkedin" href="${r.preview_link}" target="_blank">Preview</a>` : '–'}</td><td>${fmt$(r.lifetime_spend)}</td><td>${Number(r[mCol]) > 0 ? fmtMetricCell(r[mCol]) : '–'}</td><td>${fmtNum(r.total_conversions)}</td></tr>`));
+        `<tr ${adNameAttr(r.ad_name, r.campaign_name, r.adgroup_name)}><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name || ''}">${r.campaign_name || '–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.adgroup_name || ''}">${r.adgroup_name || '–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name || ''}">${r.ad_name || '–'}</td><td>${fmtDate(r.launch_date)}</td><td>${fmtDate(r.last_spend)}</td><td>${r.preview_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="linkedin" href="${r.preview_link}" target="_blank">Preview</a>` : '–'}</td><td>${fmt$(r.lifetime_spend)}</td><td>${Number(r[mCol]) > 0 ? fmtMetricCell(r[mCol]) : '–'}</td><td>${fmtNum(r.total_conversions)}</td></tr>`));
       liHide('li-age-table-loading'); liShow('li-age-table');
     } catch (err) { console.error('LinkedIn age error:', err); const el = document.getElementById('li-age-table-loading'); if (el) el.innerHTML = 'Error loading data: ' + err.message; }
   }
@@ -1020,7 +1020,7 @@ ${list.join(',\n')}
         tImpr += ce.impressions; tViews += ce.video_views; tHold += ce.video_p50; t25 += ce.video_p25; t50 += ce.video_p50; t75 += ce.video_p75; t100 += ce.video_p100;
         const pct = (v) => v != null ? fmtPct(v, 2) : '–';
         const pv = r.creative_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="linkedin" href="${r.creative_link}" target="_blank">Preview</a>` : '–';
-        return `<tr><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name || ''}">${r.ad_name || '–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name || ''}">${r.campaign_name || '–'}</td><td class="num">${fmt$(r.spend)}</td><td class="num">${fmtNum(ce.impressions)}</td><td class="num">${pct(cr.hook)}</td><td class="num">${pct(cr.hold)}</td><td class="num">${pct(cr.completion)}</td><td class="num">${pct(cr.retention.p25)}</td><td class="num">${pct(cr.retention.p50)}</td><td class="num">${pct(cr.retention.p75)}</td><td class="num">${pct(cr.retention.p100)}</td><td class="num">${pct(cr.ctr)}</td><td class="num">${cr.outboundCtr != null ? fmtPct(cr.outboundCtr, 3) : '–'}</td><td>${pv}</td><td>${creativeScoreBadge(r.creative_score)}</td></tr>`;
+        return `<tr ${adNameAttr(r.ad_name, r.campaign_name)}><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name || ''}">${r.ad_name || '–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name || ''}">${r.campaign_name || '–'}</td><td class="num">${fmt$(r.spend)}</td><td class="num">${fmtNum(ce.impressions)}</td><td class="num">${pct(cr.hook)}</td><td class="num">${pct(cr.hold)}</td><td class="num">${pct(cr.completion)}</td><td class="num">${pct(cr.retention.p25)}</td><td class="num">${pct(cr.retention.p50)}</td><td class="num">${pct(cr.retention.p75)}</td><td class="num">${pct(cr.retention.p100)}</td><td class="num">${pct(cr.ctr)}</td><td class="num">${cr.outboundCtr != null ? fmtPct(cr.outboundCtr, 3) : '–'}</td><td>${pv}</td><td>${creativeScoreBadge(r.creative_score)}</td></tr>`;
       });
       renderPagedTable('li-creative-table-body', rows);
       hideEl('li-creative-table-loading'); showEl('li-creative-table');
@@ -1068,7 +1068,8 @@ ${list.join(',\n')}
     const panel = document.getElementById('panel-' + tab); if (panel) panel.classList.add('active');
     const title = document.getElementById('page-title'); if (title) title.textContent = liTitles[tab];
     liActive = tab;
-    const bar = document.getElementById('li-controls-bar'); if (bar) bar.style.display = liIsWeekly(tab) ? 'flex' : 'none';
+    const bar = document.getElementById('li-controls-bar'); if (bar) bar.style.display = 'flex';
+    const wk = document.getElementById('li-weekly-controls'); if (wk) wk.style.display = liIsWeekly(tab) ? 'flex' : 'none';
     if (window.F10A) F10A.track('tab_viewed', { tab: tab, tab_label: liTitles[tab] });
     if (!liIsWeekly(tab) && !liLoaded[tab]) liLoadTab(tab);
   }
@@ -1083,6 +1084,11 @@ ${list.join(',\n')}
   }
 
   function liWireControls() {
+    /* Ad search shares the Meta box's term (see wireAdSearchInput): the tables here
+     * re-filter in place, and the Meta board re-renders if it is loaded. */
+    wireAdSearchInput(document.getElementById('li-ctrl-adsearch'), () => {
+      if (typeof applyAdSearch === 'function') applyAdSearch(); else refilterAllTables();
+    });
     document.querySelectorAll('.li-nav-link').forEach((link) =>
       link.addEventListener('click', (e) => { e.preventDefault(); liSelectTab(link.dataset.liTab); })
     );

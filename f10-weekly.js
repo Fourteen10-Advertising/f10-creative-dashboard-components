@@ -368,7 +368,7 @@ function renderBoard(movers, c){
       let mdHtml='–';
       if(a.metricDelta!=null){ const worse=m.dir==='lower'?a.metricDelta>0:a.metricDelta<0; const cls=Math.abs(a.metricDelta)<1e-6?'delta-flat':(worse?'delta-bad':'delta-good'); mdHtml=`<span class="${cls}">${a.metricDelta>0?'+':''}${fmtMetric(a.metricDelta,m)}</span>`; }
       const cr = creativeRates(a.cur); registerAdMetrics(a.ad_id, a.cur);
-      return `<tr ${adNameAttr(a.ad_name)}>
+      return `<tr ${adNameAttr(a.ad_name, a.campaign_name)}>
         <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;" title="${a.ad_name||''}">${a.ad_name||'–'}<br><span style="color:var(--grey);font-size:10px;">${a.campaign_name||''}</span></td>
         <td><span class="badge ${sm.cls}"${stateDefAttr(a.state)}>${stateLabel(a.state)}</span></td>
         <td class="num">${fmt$(a.sCur)}</td>
@@ -472,19 +472,8 @@ function wireControls(){
    * control exists only when the dashboard sets SHOW_STATE_FILTER. */
   const stateSel = document.getElementById('ctrl-state');
   if(stateSel) stateSel.addEventListener('change', onStateChange);
-  /* Ad-name search = client-side filter of the current view (debounced) */
-  const searchInput = document.getElementById('ctrl-adsearch');
-  if(searchInput){
-    let _searchTimer = null;
-    searchInput.addEventListener('input', () => {
-      clearTimeout(_searchTimer);
-      _searchTimer = setTimeout(() => {
-        adSearchTerm = searchInput.value.trim().toLowerCase();
-        if (window.F10A) F10A.track('ad_search', { has_term: adSearchTerm.length > 0 });
-        applyAdSearch();
-      }, 150);
-    });
-  }
+  /* Ad search = client-side filter of the current view (debounced) */
+  wireAdSearchInput(document.getElementById('ctrl-adsearch'), applyAdSearch);
   document.getElementById('refresh-btn').addEventListener('click', () => {
     if (window.F10A) F10A.track('refresh_clicked', { tab: activeTab });
     if(isWeekly(activeTab)) initWeekly(); else { delete loadedTabs[activeTab]; loadMonthlyTab(activeTab); }
