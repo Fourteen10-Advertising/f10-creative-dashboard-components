@@ -124,7 +124,7 @@ async function run() {
     const html = compiledHtml(ctx);
 
     assert.ok(/be-variant-structured/.test(html), 'the structured variant card is rendered');
-    assert.ok(html.indexOf('Generation prompt') !== -1, 'the generation prompt is labelled');
+    assert.ok(html.indexOf('Prompt sent to the image model') !== -1, 'the generation prompt is labelled');
     assert.ok(html.indexOf('ORIGINAL SCENE PROMPT: calm studio, one person') !== -1, 'the resolved prompt text is shown');
     assert.ok(/<textarea[^>]*class="be-scene-prompt"[^>]*data-be-edit="scene-prompt"/.test(html),
       'the prompt is an editable textarea wired to data-be-edit="scene-prompt"');
@@ -176,7 +176,7 @@ async function run() {
     await ctx.window.initBriefEditor();
     await ctx.window.f10BriefEditor.compileBrief();
     const html = compiledHtml(ctx);
-    assert.ok(html.indexOf('Generation prompt') === -1, 'no generation prompt label on a typeset variant');
+    assert.ok(html.indexOf('Prompt sent to the image model') === -1, 'no generation prompt label on a typeset variant');
     assert.ok(!/be-scene-prompt/.test(html), 'no prompt textarea on a typeset variant');
 
     await ctx.window.f10BriefEditor.submitCompiled();

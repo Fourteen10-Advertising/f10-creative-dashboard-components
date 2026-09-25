@@ -654,21 +654,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     var beSourceIndex = {};    // <select> option value -> resolved source descriptor {kind, ref, label, default_render, structure}
     var beSourceStructure = null; // the chosen source's LayoutStructure, shown as a wireframe before compile
     var beInspStructure = null;   // the detected structure from an inspiration compile (confirmation gate)
-    var beInspConfidence = null;  // its structure_confidence, when the backend returns one
-    var beInspPreset = null;      // a preset fallback the backend offers below the confidence threshold
-    var beInspConfirmed = false;  // operator confirmed the detected structure (or chose the preset)
-    var beInspUsePreset = false;  // operator chose the preset fallback over the detected structure
+    var beInspConfirmed = false;  // operator confirmed the detected structure
     // Per-variant working copies of the compiled structure + region copy. Every edit
     // (region text, a repeat add/remove, a box nudge) mutates these, and they are
     // exactly what /submit sends back. Parallel arrays, indexed by variant.
     var beVariantStructures = [];   // [structure clone, ...]
     var beVariantRegionCopy = [];   // [region_copy clone, ...]
-    // Per-variant working copy of the SCENE image prompt(s): parallel array of
-    // [{ '<region_id>': '<prompt>' }, ...]. A structured scene never drafts its prompt,
-    // so /compile surfaces the prompt it WILL generate (variant.scene_prompts) and the
-    // operator edits it here; readCompiledBrief() sends it back so generation uses it.
+    // Per-variant working copy of the image prompt(s) the backend will send: parallel
+    // array of [{ '<region_id>': '<prompt>' }, ...], one entry per generated region (or
+    // design photo slot), exactly as /compile surfaced them (variant.scene_prompts). The
+    // KEYS are the backend's list of what generates, so they also decide which regions
+    // show a direction box. beVariantPromptEdited marks the prompts the operator typed
+    // in: only those are sent back as overrides. Every other prompt is rebuilt by the
+    // backend from the current direction, so a direction typed after compile is never
+    // frozen out by the compiled text.
     var beVariantScenePrompts = []; // [{region_id: prompt}, ...]
     var beVariantSceneRoles = [];   // [{region_id: role}, ...] (role kept for the submit payload)
+    var beVariantPromptEdited = []; // [{region_id: true}, ...] hand-edited since the last compile
     // Per-region creative direction: a map of region id -> a free-form direction
     // string that steers ONLY that region's generated asset (e.g. hero -> "a man in
     // his 40s eating a burger"). Copy varies per variant, but the structure (and so
@@ -697,7 +699,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      * message (the server also rejects an over-cap submit 402, so this is defence in
      * depth, not the only guard). */
     var beCompiled = null;        // last /compile response (resolved variants + cost)
-    var beCompiledEdits = null;   // legacy operator overrides for a no-structure response: { 'p:vi:pi': text, 'c:vi:ci': text }
+    var beCompiledKey = '';       // beChoiceKey() the last compile was built for (stale guard)
+    var beCompiledEdits = null;   // copy edits for a no-structure (design format) variant: { 'c:vi:ci': text }
     var beVariantMatrix = null;   // optional variant config passed through compile + submit
     var beRemainingCap = null;    // optional remaining spend cap (omitted -> backend default)
     var beJobId = null;           // the running generation job id (submit -> status polling)
@@ -1151,27 +1154,36 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      * creative-direction section, and redraws the structure wireframe. buildCompileRequest
      * reads beSource to emit source:{kind,ref}; NO picker-derived layout is ever applied in
      * inspiration mode. Universal — no per-client branching. */
-    /* The (source, render) a compiled result was built for. */
+    /* Everything a compiled result was drafted from, other than the direction: the
+     * source, the render, the four axes, and the attached inspiration images (they
+     * condition the image and, for an inspiration source, decide the layout). */
     function beChoiceKey() {
-      return (beSource ? beSource.kind + ':' + beSource.ref : '') + '|' + beRender;
+      var axes = F10_BRIEF_AXES.map(function (a) {
+        var sel = document.getElementById('be-axis-' + a.key);
+        return sel ? String(sel.value || '') : '';
+      }).join(',');
+      var refs = beInspiration.map(function (r) { return r.gcs_uri; }).join(',');
+      return (beSource ? beSource.kind + ':' + beSource.ref : '') + '|' + beRender + '|' + axes + '|' + refs;
     }
 
-    /* A compiled result describes ONE source + render. Once either changes it no longer
-     * matches what Generate would publish, so drop it and hide the submit bar; the
-     * operator compiles the new choice. A no-op when nothing is compiled or the choice
-     * is unchanged (a picker re-populate re-selects the same source). */
-    function clearStaleCompiled(prevKey) {
-      if (!beCompiled || prevKey === beChoiceKey()) return;
-      beCompiled = null; beCompiledEdits = null;
+    /* A compiled result describes ONE source + render + axes. Once any of them changes
+     * it no longer matches what Generate would publish, so drop it (every per-variant
+     * working copy with it) and hide the submit bar; the operator compiles the new
+     * choice. A no-op when nothing is compiled or the choice is unchanged. A direction
+     * change is NOT stale: the prompts refresh instead (refreshScenePrompts). */
+    function clearStaleCompiled() {
+      if (!beCompiled || beCompiledKey === beChoiceKey()) return;
+      beCompiled = null; beCompiledEdits = null; beCompiledKey = '';
       beVariantStructures = []; beVariantRegionCopy = [];
+      beVariantScenePrompts = []; beVariantSceneRoles = []; beVariantPromptEdited = [];
+      beInspStructure = null; beInspConfirmed = false;
       var el = document.getElementById('be-compiled');
-      if (el) el.innerHTML = '';
+      if (el) el.innerHTML = '<div class="be-muted">The layout, render, axes or inspiration changed since the last compile. Compile again to see what will generate.</div>';
       var bar = document.getElementById('be-submit-bar');
       if (bar && bar.style) bar.style.display = 'none';
     }
 
     function setSource(value) {
-      var prevKey = beChoiceKey();
       var v = (value == null) ? '' : String(value);
       var desc = beSourceIndex[v] || (v ? null : { kind: 'winner', ref: '', label: 'Auto (top performer)', default_render: 'scene', structure: null });
       if (!desc) desc = { kind: 'winner', ref: '', label: v, default_render: 'scene', structure: null };
@@ -1202,14 +1214,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // Default the render to the source's default_render (operator can still override).
       setRender(beSource.default_render, true);
       renderSourceWireframe();
-      clearStaleCompiled(prevKey);
+      clearStaleCompiled();
       if (window.F10A) F10A.track('brief_source_changed', { kind: beSource.kind, ref: beSource.ref });
     }
 
     /* Switch the RENDER live. `silent` suppresses the analytics event (used when a source
      * change defaults the render). Reflects the active tab button. */
     function setRender(value, silent) {
-      var prevKey = beChoiceKey();
       beRender = (value === 'typeset') ? 'typeset' : 'scene';
       var tabs = document.getElementById('be-render-tabs');
       if (tabs && tabs.querySelectorAll) {
@@ -1219,7 +1230,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (r === beRender) b.classList.add('active'); else b.classList.remove('active');
         });
       }
-      clearStaleCompiled(prevKey);
+      clearStaleCompiled();
       if (!silent && window.F10A) F10A.track('brief_render_changed', { render: beRender });
     }
 
@@ -1356,12 +1367,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
       renderInspChips();
       markThumbs();
+      clearStaleCompiled();
     }
 
     function deselectRef(uri) {
       beInspiration = beInspiration.filter(function (r) { return r.gcs_uri !== uri; });
       renderInspChips();
       markThumbs();
+      clearStaleCompiled();
     }
 
     function indexRefs(refs) {
@@ -1805,6 +1818,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return beSource.ref || '';
     }
 
+    /* Where the lead inspiration image came from. A competitor ad is loose direction
+     * only and carries the no-copy guard on its image prompts; a client ad or upload is
+     * matched closely. */
+    function beReferenceSource() {
+      var src = beInspiration.length ? String(beInspiration[0].source || '') : '';
+      return (src === 'competitor' || src === 'client') ? src : 'upload';
+    }
+
     function buildCompileRequest() {
       var loaded = beLoadedRevision || {};
       var dirEl = document.getElementById('be-direction');
@@ -1824,6 +1845,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         creativeDirection: creativeDirection,
         regionDirection: readEditedRegionDirection(),
         baseInspirationImageUris: beInspiration.map(function (r) { return r.gcs_uri; }),
+        referenceSource: beReferenceSource(),
         variantMatrix: beVariantMatrix || {},
         brief: insp ? readInspirationBrief() : readForm(),
       };
@@ -1834,59 +1856,66 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return req;
     }
 
-    /* Record an operator edit to a resolved prompt or copy block. Keyed by variant +
-     * index so readCompiledBrief() overlays it onto the compiled brief at submit time.
-     * This is exactly what the delegated textarea `input` handler calls, so a DOM edit
-     * and a test edit take the identical path. */
+    /* Record an operator edit to a design format's copy block, keyed by variant + index
+     * so readCompiledBrief() overlays it at submit time. The delegated `input` handler
+     * calls this, so a DOM edit and a test edit take the identical path. */
     function applyCompiledEdit(kind, variantIdx, idx, text) {
+      if (kind !== 'copy') return;
       if (!beCompiledEdits) beCompiledEdits = {};
-      var prefix = (kind === 'prompt') ? 'p' : 'c';
-      beCompiledEdits[prefix + ':' + (variantIdx | 0) + ':' + (idx | 0)] = String(text == null ? '' : text);
+      beCompiledEdits['c:' + (variantIdx | 0) + ':' + (idx | 0)] = String(text == null ? '' : text);
     }
 
-    /* The approved compiled brief to submit. Phase 3 (US-022): a variant compiled with a
-     * `structure` submits the operator-EDITED structure + region_copy (the per-region
-     * editor's working copy, synced from the DOM); a legacy variant with no structure
-     * still submits its edited prompts + copy (fall-through). brief_id is carried either
-     * way so the backend matches each approved variant to its re-resolved brief. */
+    /* Record an operator edit to an image prompt. The text becomes what generates for
+     * that region, so it is marked as edited and sent back as an override. */
+    function applyScenePromptEdit(variantIdx, regionId, text) {
+      var vi = variantIdx | 0, rid = String(regionId);
+      var sp = beVariantScenePrompts[vi] || (beVariantScenePrompts[vi] = {});
+      sp[rid] = String(text == null ? '' : text);
+      (beVariantPromptEdited[vi] || (beVariantPromptEdited[vi] = {}))[rid] = true;
+      var note = document.getElementById(scenePromptId(vi, rid) + '-note');
+      if (note) note.textContent = 'Your edit is what generates.';
+    }
+
+    /* The prompts to send for a variant: ONLY the ones the operator typed in. Every
+     * other region's prompt is rebuilt by the backend from the current direction. */
+    function editedScenePrompts(vi) {
+      syncScenePromptsFromDom(vi);
+      var sp = beVariantScenePrompts[vi] || {};
+      var edited = beVariantPromptEdited[vi] || {};
+      var roles = beVariantSceneRoles[vi] || {};
+      return Object.keys(sp).filter(function (rid) { return edited[rid]; }).map(function (rid) {
+        return { region_id: rid, role: roles[rid] || '', prompt: String(sp[rid] == null ? '' : sp[rid]) };
+      });
+    }
+
+    /* The approved compiled brief to submit. A structured variant carries its edited
+     * structure + region_copy (the per-region editor's working copy); a design format
+     * carries its compiled design_spec and edited copy. Either way only hand-edited image
+     * prompts ride along, and brief_id lets the backend match each variant. */
     function readCompiledBrief() {
       if (!beCompiled || !Array.isArray(beCompiled.variants)) return null;
       var edits = beCompiledEdits || {};
       var variants = beCompiled.variants.map(function (v, vi) {
+        var out;
         if (v && v.structure) {
-          var out = { structure: readEditedStructure(vi), region_copy: readEditedRegionCopy(vi) };
-          // The operator's edited SCENE image prompt(s), keyed by region id -> the exact
-          // prompt to generate. Sent so the backend uses it verbatim instead of re-deriving.
-          // Empty for a typeset render, so nothing is added there.
-          syncScenePromptsFromDom(vi);
-          var sp = beVariantScenePrompts[vi];
-          var roles = beVariantSceneRoles[vi] || {};
-          if (sp && typeof sp === 'object') {
-            var scenePrompts = Object.keys(sp).map(function (rid) {
-              return { region_id: rid, role: roles[rid] || '', prompt: String(sp[rid] == null ? '' : sp[rid]) };
-            });
-            if (scenePrompts.length) out.scene_prompts = scenePrompts;
-          }
-          if (v.brief_id) out.brief_id = v.brief_id;
-          return out;
+          out = { structure: readEditedStructure(vi), region_copy: readEditedRegionCopy(vi) };
+        } else {
+          out = {
+            copy: (v.copy || []).map(function (cb, ci) {
+              var k = 'c:' + vi + ':' + ci;
+              var c = { role: cb.role, text: (k in edits) ? edits[k] : (cb.text || '') };
+              if (cb.slot_index !== undefined && cb.slot_index !== null) c.slot_index = cb.slot_index;
+              return c;
+            }),
+          };
+          // A design format echoes its compiled design_spec so /submit renders exactly the
+          // format that was compiled (with the edited copy above laid over it).
+          if (v.design_spec) out.design_spec = v.design_spec;
         }
-        var prompts = (v.prompts || []).map(function (p, pi) {
-          var k = 'p:' + vi + ':' + pi;
-          return { component_role: p.component_role, prompt: (k in edits) ? edits[k] : (p.prompt || '') };
-        });
-        var copy = (v.copy || []).map(function (cb, ci) {
-          var k = 'c:' + vi + ':' + ci;
-          var out = { role: cb.role, text: (k in edits) ? edits[k] : (cb.text || '') };
-          if (cb.slot_index !== undefined && cb.slot_index !== null) out.slot_index = cb.slot_index;
-          return out;
-        });
-        var legacy = { prompts: prompts, copy: copy };
-        if (v.brief_id) legacy.brief_id = v.brief_id;
-        // A design-format variant echoes its compiled design_spec so /submit renders
-        // exactly the format that was compiled (with the edited copy above laid over
-        // it) instead of re-drafting a different ad.
-        if (v.design_spec) legacy.design_spec = v.design_spec;
-        return legacy;
+        var prompts = editedScenePrompts(vi);
+        if (prompts.length) out.scene_prompts = prompts;
+        if (v.brief_id) out.brief_id = v.brief_id;
+        return out;
       });
       return { variants: variants, sizes: beCompiled.sizes || [] };
     }
@@ -1903,17 +1932,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return '<div class="be-compile-insp" title="' + esc(im.uri || '') + '">' + body + warn + '</div>';
     }
 
-    /* One variant card: its resolved prompt(s) and copy as EDITABLE textareas (data
-     * attributes let the delegated input handler map an edit back to the model), plus
-     * the inspiration cells. */
+    /* One design-format variant card: its photo prompt (a scene render) and copy as
+     * EDITABLE textareas (data attributes let the delegated input handler map an edit
+     * back to the model), plus the inspiration cells. The photo takes its direction from
+     * the Creative direction box above. */
     function variantCardHtml(v, vi) {
       v = v || {};
-      var prompts = (v.prompts || []).map(function (p, pi) {
-        return '<label class="be-field"><span class="be-label">Prompt: '
-          + esc(p.component_role || ('image ' + (pi + 1))) + '</span>'
-          + '<textarea class="be-compile-prompt" data-be-edit="prompt" data-vi="' + vi + '" data-idx="' + pi + '">'
-          + esc(p.prompt || '') + '</textarea></label>';
-      }).join('');
+      var sp = beVariantScenePrompts[vi] || {};
+      var prompts = Object.keys(sp).map(function (rid) { return scenePromptFieldHtml(vi, rid); }).join('');
+      if (prompts) {
+        prompts = '<div class="be-variant-prompts">' + prompts
+          + '<div class="be-muted">The photo follows your Creative direction above.</div></div>';
+      }
       var copy = (v.copy || []).map(function (cb, ci) {
         return '<label class="be-field"><span class="be-label">Copy: '
           + esc(cb.role || ('block ' + (ci + 1))) + '</span>'
@@ -1965,31 +1995,28 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + f('x') + f('y') + f('w') + f('h') + '</span>';
     }
 
-    /* The region roles whose asset is GENERATED as its own image (a scene draws each
-     * photographic region separately), so they take a per-region direction. Mirrors
-     * the backend's generated scene roles; an explicit image_need / image.source marks
-     * a generated region too, regardless of role. */
-    var BE_GENERATED_ROLES = { background: 1, hero: 1, person: 1, 'product-shot': 1 };
-    function beIsGeneratedRegion(region) {
-      if (!region) return false;
-      if (region.image_need || (region.image && region.image.source)) return true;
-      var role = String(region.role != null ? region.role : (region.id != null ? region.id : ''));
-      return !!BE_GENERATED_ROLES[role];
+    /* True when the backend will generate an image for this region of variant vi. The
+     * backend's surfaced prompts ARE that list (one per generated region, none on a
+     * typeset render, never a logo or avatar), so the editor never guesses by role. */
+    function beIsGeneratedRegion(vi, id) {
+      var sp = beVariantScenePrompts[vi];
+      return !!(sp && Object.prototype.hasOwnProperty.call(sp, id));
     }
 
-    /* A generated region's direction editor: the "filled by the render" note plus a
-     * textarea for the operator's per-region direction (what to put in THIS region's
-     * image). Prefilled from the shared beRegionDirection map, keyed by region id. */
+    /* A generated region's editor: the operator's direction for THIS region's image,
+     * then the exact prompt the image model receives (editable). Changing the
+     * direction rebuilds the prompt (refreshScenePrompts); typing in the prompt pins it.
+     * Direction is prefilled from the shared beRegionDirection map, keyed by region id. */
     function regionDirectionHtml(vi, ri, id) {
       var val = (beRegionDirection && beRegionDirection[id] != null) ? beRegionDirection[id] : '';
-      return '<div class="be-muted">Image region — filled by the render.</div>'
-        + '<label class="be-field be-region-direction-field">'
+      return '<label class="be-field be-region-direction-field">'
         + '<span class="be-label">Direction (what to generate)</span>'
         + '<textarea class="be-region-direction" id="be-rd-' + vi + '-' + ri + '" '
         + 'data-be-edit="region-direction" data-vi="' + vi + '" data-ri="' + ri + '" '
         + 'data-region-id="' + esc(id) + '" '
         + 'placeholder="e.g. a man in his 40s eating a burger, natural candid photo">'
-        + esc(String(val)) + '</textarea></label>';
+        + esc(String(val)) + '</textarea></label>'
+        + scenePromptFieldHtml(vi, id);
     }
 
     /* A repeat group's editable items + add/remove controls, bounded by [min,max]. */
@@ -2036,8 +2063,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           body = '<textarea class="be-region-copy" id="be-rc-' + vi + '-' + ri + '" '
             + 'data-be-edit="region-copy" data-vi="' + vi + '" data-ri="' + ri + '">'
             + esc(String(rc[id] == null ? '' : rc[id])) + '</textarea>';
-        } else if (beIsGeneratedRegion(region)) {
+        } else if (beIsGeneratedRegion(vi, id)) {
           body = regionDirectionHtml(vi, ri, id);
+        } else if (region.image_need) {
+          body = '<div class="be-muted">Not generated: drawn from the brand kit'
+            + (beRender === 'typeset' ? ' (a typeset render draws no imagery)' : '') + '.</div>';
         } else if (region.container) {
           body = '<div class="be-muted">Container.</div>';
         } else {
@@ -2079,7 +2109,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
         // A generated region carries a direction textarea; fold its value into the
         // shared per-region direction map (empty clears the key so no blank is sent).
-        if (beIsGeneratedRegion(region)) {
+        if (beIsGeneratedRegion(vi, id)) {
           var dEl = document.getElementById('be-rd-' + vi + '-' + ri);
           if (dEl && dEl.value != null) {
             var dv = String(dEl.value);
@@ -2138,38 +2168,88 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return true;
     }
 
-    /* The SCENE image prompt(s) for a structured scene variant as EDITABLE textareas,
-     * one per generated image region, keyed by region id. This is the exact prompt that
-     * goes to the image model; the operator sees it (it was hidden before) and can tweak
-     * it, and readCompiledBrief() sends the edit so generation uses it verbatim. Reads
-     * from the per-variant working copy, so an in-progress edit survives a region-editor
-     * re-render. Empty (typeset render) => nothing shown. */
-    function scenePromptEditorHtml(vi) {
-      var sp = beVariantScenePrompts[vi];
-      if (!sp || typeof sp !== 'object') return '';
-      var ids = Object.keys(sp);
-      if (!ids.length) return '';
-      var roles = beVariantSceneRoles[vi] || {};
-      var rows = ids.map(function (rid, n) {
-        var label = roles[rid] || rid;
-        return '<label class="be-field"><span class="be-label">Generation prompt: ' + esc(label) + '</span>'
-          + '<textarea class="be-scene-prompt" id="be-sp-' + vi + '-' + n + '" data-be-edit="scene-prompt" '
-          + 'data-vi="' + vi + '" data-region-id="' + esc(rid) + '">'
-          + esc(String(sp[rid] == null ? '' : sp[rid])) + '</textarea>'
-          + '</label>';
-      }).join('');
-      return '<div class="be-variant-prompts">' + rows + '</div>';
+    /* The textarea id of region rid's prompt in variant vi (its position in the
+     * backend's list, which is stable for the life of a compile). */
+    function scenePromptId(vi, rid) {
+      return 'be-sp-' + vi + '-' + Object.keys(beVariantScenePrompts[vi] || {}).indexOf(String(rid));
     }
 
-    /* Fold the on-screen scene-prompt edits into the per-variant working copy, so a submit
-     * captures the current textarea values even when the live `input` handler did not run
-     * (mirrors syncVariantFromDom for region copy). Keyed by the same stable id order. */
+    /* One image prompt as an EDITABLE textarea: the exact text the image model receives
+     * for that region. Typing in it pins it (sent as an override); otherwise the backend
+     * rebuilds it from the current direction at generation. */
+    function scenePromptFieldHtml(vi, rid) {
+      var sp = beVariantScenePrompts[vi] || {};
+      var label = (beVariantSceneRoles[vi] || {})[rid] || rid;
+      var pinned = !!(beVariantPromptEdited[vi] || {})[rid];
+      return '<label class="be-field"><span class="be-label">Prompt sent to the image model: ' + esc(label) + '</span>'
+        + '<textarea class="be-scene-prompt" id="' + scenePromptId(vi, rid) + '" data-be-edit="scene-prompt" '
+        + 'data-vi="' + vi + '" data-region-id="' + esc(rid) + '">'
+        + esc(String(sp[rid] == null ? '' : sp[rid])) + '</textarea>'
+        + '<span class="be-muted be-prompt-note" id="' + scenePromptId(vi, rid) + '-note">'
+        + (pinned ? 'Your edit is what generates.' : 'Rebuilt from your direction when you generate.')
+        + '</span></label>';
+    }
+
+    /* The prompts of a structured variant that have no region row of their own. */
+    function scenePromptEditorHtml(vi) {
+      var st = beVariantStructures[vi];
+      var inStructure = {};
+      ((st && st.regions) || []).forEach(function (r) { inStructure[String(r.id != null ? r.id : r.role)] = 1; });
+      var rows = Object.keys(beVariantScenePrompts[vi] || {}).filter(function (rid) {
+        return !inStructure[rid];
+      }).map(function (rid) { return scenePromptFieldHtml(vi, rid); }).join('');
+      return rows ? '<div class="be-variant-prompts">' + rows + '</div>' : '';
+    }
+
+    /* Fold the on-screen prompt text into the working copy, so a submit captures the
+     * current textarea values even when the live `input` handler did not run. A value
+     * that differs from the working copy is an edit, and pins the prompt. */
     function syncScenePromptsFromDom(vi) {
       var sp = beVariantScenePrompts[vi];
       if (!sp || typeof sp !== 'object') return;
-      Object.keys(sp).forEach(function (rid, n) {
-        var el = document.getElementById('be-sp-' + vi + '-' + n);
-        if (el && el.value != null) sp[rid] = el.value;
+      Object.keys(sp).forEach(function (rid) {
+        var el = document.getElementById(scenePromptId(vi, rid));
+        if (el && el.value != null && el.value !== '' && el.value !== sp[rid]) {
+          applyScenePromptEdit(vi, rid, el.value);
+        }
+      });
+    }
+
+    /* The operator changed a direction (one region's, or the Creative direction for
+     * every region): the direction is the newer instruction, so it unpins the affected
+     * prompts. The prompts are then rebuilt so the boxes show what will generate. */
+    function onDirectionChanged(regionId) {
+      beVariantPromptEdited.forEach(function (edited) {
+        if (!edited) return;
+        if (regionId == null) Object.keys(edited).forEach(function (k) { delete edited[k]; });
+        else delete edited[String(regionId)];
+      });
+      return refreshScenePrompts();
+    }
+
+    /* Rebuild the shown prompts from the current directions with a no-spend compile,
+     * updating ONLY the prompt text (copy, structure and box edits are untouched) and
+     * leaving any prompt the operator pinned by typing in it. */
+    async function refreshScenePrompts() {
+      if (!beCompiled || beCompiledKey !== beChoiceKey()) return;
+      var resp;
+      try {
+        resp = await store().compile(buildCompileRequest());
+      } catch (err) {
+        return;
+      }
+      if (!resp || resp.ok === false || !Array.isArray(resp.variants)) return;
+      resp.variants.forEach(function (v, vi) {
+        var sp = beVariantScenePrompts[vi];
+        if (!sp) return;
+        var edited = beVariantPromptEdited[vi] || {};
+        (Array.isArray(v.scene_prompts) ? v.scene_prompts : []).forEach(function (p) {
+          var rid = String(p.region_id);
+          if (!Object.prototype.hasOwnProperty.call(sp, rid) || edited[rid]) return;
+          sp[rid] = String(p.prompt == null ? '' : p.prompt);
+          var el = document.getElementById(scenePromptId(vi, rid));
+          if (el) el.value = sp[rid];
+        });
       });
     }
 
@@ -2191,8 +2271,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + '<div class="be-variant-head"><strong>Variant ' + (vi + 1) + '</strong>' + idLine + '</div>'
         + meta
         + '<div class="be-variant-wireframe">' + frame + '</div>'
-        + scenePromptEditorHtml(vi)
         + '<div class="be-regions-host" id="be-regions-' + vi + '">' + regionEditorHtml(vi) + '</div>'
+        + scenePromptEditorHtml(vi)
         + '</div>';
     }
 
@@ -2224,32 +2304,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     /* ---- inspiration confirmation (Phase 3, US-022) ----
      *
-     * When the source is Inspiration, a compile returns the DETECTED structure (and a
-     * confidence). Before generating, the operator confirms that structure — or, below the
-     * confidence threshold, uses the preset fallback the backend offers. No picker-derived
-     * layout is ever applied in inspiration mode. */
+     * When the source is Inspiration, a compile returns the DETECTED structure. Before
+     * generating, the operator confirms it (a low-confidence detection already falls back
+     * to the family preset server-side). No picker-derived layout is ever applied in
+     * inspiration mode. */
     function inspirationConfirmHtml() {
       var wf = (typeof window !== 'undefined' && window.f10RenderWireframe) || null;
       var frame = (wf && beInspStructure) ? wf(beInspStructure, { title: 'Detected structure' }) : '';
-      var conf = '';
-      if (beInspConfidence != null) {
-        var pct = Math.round(Number(beInspConfidence) * 100);
-        var low = !!beInspPreset; // a preset offered means the detection was below threshold
-        conf = '<div class="be-conf' + (low ? ' be-conf-low' : '') + '">Detection confidence: '
-          + pct + '%' + (low ? ' — below the confidence threshold; you can use a preset instead.' : '') + '</div>';
-      }
-      var presetBtn = beInspPreset
-        ? '<button type="button" class="be-btn be-btn-secondary" id="be-insp-usepreset">Use preset instead</button>'
-        : '';
       return '<div class="be-insp-confirm" id="be-insp-confirm">'
         + '<div class="be-compile-head"><strong>Confirm the detected structure</strong> '
         + '<span class="be-muted">This is the layout detected from your inspiration ad. '
-        + 'Confirm it to generate, or use a preset.</span></div>'
-        + conf
+        + 'Confirm it to edit and generate.</span></div>'
         + '<div class="be-wireframe-wrap">' + frame + '</div>'
         + '<div class="be-actions-row">'
         + '<button type="button" class="be-btn" id="be-insp-confirm-btn">Confirm &amp; continue</button>'
-        + presetBtn
         + '</div></div>';
     }
 
@@ -2274,7 +2342,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     /* Render the compiled brief inline, reveal the submit bar, and gate Submit on the
      * cost estimate: over the remaining cap disables Submit with a clear message. For an
      * inspiration source, a confirmation gate shows the detected structure FIRST; the
-     * submit bar stays hidden until the operator confirms (or picks the preset). */
+     * submit bar stays hidden until the operator confirms. */
     function renderCompiled(resp) {
       var el = document.getElementById('be-compiled');
       var bar = document.getElementById('be-submit-bar');
@@ -2294,39 +2362,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       setSubmitNote(over ? overCapMessage(ce) : readyMessage(ce), over);
     }
 
-    /* The operator confirmed the detected inspiration structure — reveal the per-region
+    /* The operator confirmed the detected inspiration structure: reveal the per-region
      * editor + submit bar. */
     function confirmInspiration() {
       beInspConfirmed = true;
-      beInspUsePreset = false;
       renderCompiled(beCompiled);
-      if (window.F10A) F10A.track('inspiration_structure_confirmed', { confidence: beInspConfidence });
-    }
-
-    /* The operator chose the preset fallback over the detected structure. When the backend
-     * offered a preset structure, adopt it as the variant working copy; then reveal the
-     * editor + submit bar. */
-    function useInspirationPreset() {
-      if (!beInspPreset) return;
-      beInspUsePreset = true;
-      beInspConfirmed = true;
-      // Adopt the preset structure for every structured variant (the preset carries its
-      // own region_copy defaults, if any).
-      if (beCompiled && Array.isArray(beCompiled.variants)) {
-        beCompiled.variants.forEach(function (v, vi) {
-          if (v && v.structure) {
-            beVariantStructures[vi] = clone(beInspPreset.structure || beInspPreset);
-            beVariantRegionCopy[vi] = clone(beInspPreset.region_copy || beVariantRegionCopy[vi] || {});
-            // The preset is a DIFFERENT structure than the one the surfaced prompts were
-            // built for, so the per-region prompts no longer apply. Clear them; generation
-            // derives fresh prompts for the preset's regions from the creative direction.
-            beVariantScenePrompts[vi] = {};
-            beVariantSceneRoles[vi] = {};
-          }
-        });
-      }
-      renderCompiled(beCompiled);
-      if (window.F10A) F10A.track('inspiration_preset_used', {});
+      if (window.F10A) F10A.track('inspiration_structure_confirmed', {});
     }
 
     function renderCompileError(msg) {
@@ -2347,57 +2388,36 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var resp = await store().compile(buildCompileRequest());
         if (!resp || resp.ok === false) throw new Error((resp && resp.error) || 'compile failed');
         beCompiled = resp;
+        beCompiledKey = beChoiceKey();
         beCompiledEdits = {};
-        // Phase 3 (US-022): build a per-variant working copy of the structure + region
-        // copy. Every edit (region text, a repeat add/remove, a box nudge) mutates these,
-        // and readCompiledBrief() submits exactly them.
+        // Per-variant working copies: the structure + region copy every edit mutates
+        // (a structured variant), and the image prompt(s) the backend will send (any
+        // variant that generates imagery). readCompiledBrief() submits exactly them.
         beVariantStructures = [];
         beVariantRegionCopy = [];
         beVariantScenePrompts = [];
         beVariantSceneRoles = [];
+        beVariantPromptEdited = [];
         (Array.isArray(resp.variants) ? resp.variants : []).forEach(function (v, vi) {
-          if (v && v.structure) {
-            beVariantStructures[vi] = clone(v.structure);
-            beVariantRegionCopy[vi] = clone(v.region_copy || {});
-            // The scene image prompt(s) this variant will generate, keyed by region id, so
-            // the operator sees and can edit the exact prompt before spend. Empty for a
-            // typeset render (backend sends no scene_prompts there).
-            var sp = {}, roles = {};
-            (Array.isArray(v.scene_prompts) ? v.scene_prompts : []).forEach(function (p) {
-              if (p && p.region_id != null) {
-                sp[String(p.region_id)] = String(p.prompt == null ? '' : p.prompt);
-                roles[String(p.region_id)] = String(p.role == null ? '' : p.role);
-              }
-            });
-            beVariantScenePrompts[vi] = sp;
-            beVariantSceneRoles[vi] = roles;
-          } else {
-            beVariantStructures[vi] = null;
-            beVariantRegionCopy[vi] = null;
-            beVariantScenePrompts[vi] = null;
-            beVariantSceneRoles[vi] = null;
-          }
+          v = v || {};
+          beVariantStructures[vi] = v.structure ? clone(v.structure) : null;
+          beVariantRegionCopy[vi] = v.structure ? clone(v.region_copy || {}) : null;
+          var sp = {}, roles = {};
+          (Array.isArray(v.scene_prompts) ? v.scene_prompts : []).forEach(function (p) {
+            if (p && p.region_id != null) {
+              sp[String(p.region_id)] = String(p.prompt == null ? '' : p.prompt);
+              roles[String(p.region_id)] = String(p.role == null ? '' : p.role);
+            }
+          });
+          beVariantScenePrompts[vi] = sp;
+          beVariantSceneRoles[vi] = roles;
+          beVariantPromptEdited[vi] = {};
         });
-        // Seed the shared per-region direction ONLY when the operator has none yet, so
-        // a re-compile preserves their in-progress edits. On the first compile it takes
-        // a loaded revision's saved direction (re-opening a brief) or a response echo.
-        if (!beRegionDirection || !Object.keys(beRegionDirection).length) {
-          beRegionDirection = clone(
-            (beLoadedRevision && beLoadedRevision.region_direction) || resp.region_direction || {}
-          ) || {};
-        }
-        // Inspiration source: capture the DETECTED structure + confidence + any preset
-        // fallback, and require confirmation before the submit bar appears.
-        beInspStructure = null; beInspConfidence = null; beInspPreset = null;
-        beInspConfirmed = false; beInspUsePreset = false;
-        if (beIsInspiration()) {
-          var v0 = (Array.isArray(resp.variants) && resp.variants[0]) ? resp.variants[0] : {};
-          beInspStructure = resp.detected_structure || v0.structure || null;
-          var c = resp.structure_confidence;
-          if (c == null && beInspStructure) c = beInspStructure.structure_confidence;
-          beInspConfidence = (c == null) ? null : c;
-          beInspPreset = resp.preset_fallback || resp.preset || null;
-        }
+        // Inspiration source: the DETECTED structure needs confirming before the
+        // submit bar appears.
+        beInspConfirmed = false;
+        var v0 = (Array.isArray(resp.variants) && resp.variants[0]) ? resp.variants[0] : {};
+        beInspStructure = beIsInspiration() ? (v0.structure || null) : null;
         renderCompiled(resp);
       } catch (err) {
         beCompiled = null;
@@ -2492,6 +2512,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      * would 402 anyway). */
     async function submitCompiled() {
       if (!beCompiled) return;
+      clearStaleCompiled();
+      if (!beCompiled) return;
       var ce = beCompiled.cost_estimate || {};
       if (ce.exceeds_cap) { setSubmitNote(overCapMessage(ce), true); return; }
       var compiledBrief = readCompiledBrief();
@@ -2501,16 +2523,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var prog = document.getElementById('be-progress');
       if (prog) prog.innerHTML = '<div class="be-muted">Submitting...</div>';
       try {
+        // /submit re-resolves the brief from the CURRENT inputs (source, render, axes,
+        // directions, inspiration) and lays the edits in compiledBrief.variants on top.
         var req = buildCompileRequest();
-        // Phase 3 (US-022): /submit carries the edited structure + region_copy per variant
-        // (readCompiledBrief packs them into compiledBrief.variants), alongside the source
-        // + render buildCompileRequest already emits. When the operator used the preset
-        // fallback in inspiration mode, the source becomes the explore preset.
         req.compiledBrief = compiledBrief;
-        if (beIsInspiration() && beInspUsePreset && beInspPreset) {
-          var pref = beInspPreset.preset_id || beInspPreset.ref || (beInspPreset.structure && beInspPreset.structure.layout_family) || '';
-          req.source = { kind: 'explore', ref: String(pref) };
-        }
         var resp = await store().submit(req);
         if (!resp || resp.ok === false) throw new Error((resp && resp.error) || 'submit failed');
         beJobId = resp.job_id || null;
@@ -2691,11 +2707,22 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (submitBtn && submitBtn.addEventListener) {
         submitBtn.addEventListener('click', function (e) { if (e && e.preventDefault) e.preventDefault(); submitCompiled(); });
       }
+      // The Creative direction reaches every generated image, so a finished edit after a
+      // compile rebuilds the shown prompts; a changed axis makes the compile stale.
+      var dirEl = document.getElementById('be-direction');
+      if (dirEl && dirEl.addEventListener) {
+        dirEl.addEventListener('change', function () { if (beCompiled) onDirectionChanged(null); });
+      }
+      F10_BRIEF_AXES.forEach(function (a) {
+        var sel = document.getElementById('be-axis-' + a.key);
+        if (sel && sel.addEventListener) sel.addEventListener('change', function () { clearStaleCompiled(); });
+      });
       // The compiled container hosts the per-region editor + the inspiration confirmation
       // gate. One delegated `input` handler maps a region-copy / repeat-item / region-box
-      // edit back into the per-variant working copy; one delegated `click` handler drives
-      // repeat add/remove and the inspiration confirm / use-preset buttons. Legacy
-      // (no-structure) prompt/copy edits still go through applyCompiledEdit.
+      // edit back into the per-variant working copy and pins a typed-in prompt; `change`
+      // on a direction rebuilds the prompts; one delegated `click` handler drives repeat
+      // add/remove and the inspiration confirm button. A design format's copy edits go
+      // through applyCompiledEdit.
       var compiledEl = document.getElementById('be-compiled');
       if (compiledEl && compiledEl.addEventListener) {
         compiledEl.addEventListener('input', function (e) {
@@ -2706,10 +2733,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           var vi = parseInt(t.getAttribute('data-vi'), 10) || 0;
           if (kind === 'scene-prompt') {
             var rid = t.getAttribute('data-region-id');
-            if (rid != null) {
-              var sp = beVariantScenePrompts[vi] || (beVariantScenePrompts[vi] = {});
-              sp[String(rid)] = t.value; // the operator's edited image prompt for this region
-            }
+            if (rid != null) applyScenePromptEdit(vi, rid, t.value); // typing pins the prompt
             return;
           }
           if (kind === 'region-copy' || kind === 'region-item' || kind === 'region-box'
@@ -2719,11 +2743,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           }
           applyCompiledEdit(kind, vi, parseInt(t.getAttribute('data-idx'), 10) || 0, t.value);
         });
+        // A finished direction edit (the field loses focus) rebuilds the prompts.
+        compiledEl.addEventListener('change', function (e) {
+          var t = e && e.target;
+          if (!t || !t.getAttribute || t.getAttribute('data-be-edit') !== 'region-direction') return;
+          syncVariantFromDom(parseInt(t.getAttribute('data-vi'), 10) || 0);
+          onDirectionChanged(t.getAttribute('data-region-id'));
+        });
         compiledEl.addEventListener('click', function (e) {
           var t = e && e.target;
           if (!t || !t.getAttribute) return;
           if (t.getAttribute('id') === 'be-insp-confirm-btn') { if (e.preventDefault) e.preventDefault(); confirmInspiration(); return; }
-          if (t.getAttribute('id') === 'be-insp-usepreset') { if (e.preventDefault) e.preventDefault(); useInspirationPreset(); return; }
           if (t.getAttribute('data-be-repeat-add') != null) {
             if (e.preventDefault) e.preventDefault();
             addRepeatItem(parseInt(t.getAttribute('data-vi'), 10) || 0, t.getAttribute('data-region-id'));
@@ -2849,6 +2879,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       submitCompiled: submitCompiled,
       pollStatusOnce: pollStatusOnce,
       applyCompiledEdit: applyCompiledEdit,
+      applyScenePromptEdit: applyScenePromptEdit,
+      onDirectionChanged: onDirectionChanged,
+      refreshScenePrompts: refreshScenePrompts,
       readCompiledBrief: readCompiledBrief,
       renderCompiled: renderCompiled,
       // per-region structure editor read/write (Phase 3, US-022)
@@ -2863,9 +2896,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       getRegionDirection: function () { return clone(beRegionDirection) || {}; },
       // inspiration confirmation gate (Phase 3, US-022)
       confirmInspiration: confirmInspiration,
-      useInspirationPreset: useInspirationPreset,
       getInspirationStructure: function () { return beInspStructure; },
-      getInspirationConfidence: function () { return beInspConfidence; },
       isInspirationConfirmed: function () { return beInspConfirmed; },
       thumbHtml: thumbHtml,
       compileEndpoint: compileEndpoint,
@@ -2880,15 +2911,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         beBooted = false; beLoadedRevision = null;
         beSource = { kind: 'winner', ref: '', label: 'Auto (top performer)', default_render: 'scene', structure: null };
         beRender = 'scene'; beSourcesData = null; beSourceIndex = {}; beSourceStructure = null;
-        beInspStructure = null; beInspConfidence = null; beInspPreset = null;
-        beInspConfirmed = false; beInspUsePreset = false;
+        beInspStructure = null; beInspConfirmed = false;
         beInspiration = []; beRefIndex = {}; beInspTab = 'upload';
         beClientPage = { offset: 0, hasMore: false, loading: false }; beCompState = {};
         stopPolling();
-        beCompiled = null; beCompiledEdits = null; beVariantMatrix = null;
+        beCompiled = null; beCompiledKey = ''; beCompiledEdits = null; beVariantMatrix = null;
         beRemainingCap = null; beJobId = null;
         beVariantStructures = []; beVariantRegionCopy = []; beRegionDirection = {};
-        beVariantScenePrompts = []; beVariantSceneRoles = [];
+        beVariantScenePrompts = []; beVariantSceneRoles = []; beVariantPromptEdited = [];
       },
     };
   })();

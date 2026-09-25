@@ -97,7 +97,7 @@ function compileResponse(overrides) {
     variants: [
       {
         brief_id: 'brief_a', archetype_id: 'arch1', scene_only: false, winning_values: {},
-        prompts: [{ component_role: 'background', prompt: 'A calm minimal studio scene, one person' }],
+        scene_prompts: [{ region_id: 'image_slot_0', role: 'background', prompt: 'A calm minimal studio scene, one person' }],
         copy: [{ role: 'headline', text: 'Sleep better tonight' }, { role: 'body', text: 'Clinically formulated.' }],
         inspiration_images: [
           { uri: 'gs://f10-creative-assets/served/meta/a.png', warning: null },
@@ -106,7 +106,7 @@ function compileResponse(overrides) {
       },
       {
         brief_id: 'brief_b', archetype_id: 'arch1', scene_only: false, winning_values: {},
-        prompts: [{ component_role: 'background', prompt: 'A bold graphic hero, high contrast' }],
+        scene_prompts: [{ region_id: 'image_slot_0', role: 'background', prompt: 'A bold graphic hero, high contrast' }],
         copy: [{ role: 'headline', text: 'Wake up ready' }],
         inspiration_images: [],
       },
@@ -156,7 +156,7 @@ async function run() {
     assert.ok(/Variant 1/.test(html) && /Variant 2/.test(html), 'both variants labelled');
 
     // The prompt + copy fields are EDITABLE textareas (not static text).
-    assert.ok(/<textarea[^>]*data-be-edit="prompt"/.test(html), 'prompts are editable textareas');
+    assert.ok(/<textarea[^>]*data-be-edit="scene-prompt"/.test(html), 'prompts are editable textareas');
     assert.ok(/<textarea[^>]*data-be-edit="copy"/.test(html), 'copy is editable textareas');
 
     // Inspiration + warnings (per-image warning and the top-level warning).
@@ -345,7 +345,7 @@ async function run() {
           variant_count: 1,
           variants: [{
             brief_id: 'brief_only', archetype_id: 'arch1', scene_only: false, winning_values: {},
-            prompts: [{ component_role: 'background', prompt: 'ORIGINAL PROMPT' }],
+            scene_prompts: [{ region_id: 'image_slot_0', role: 'background', prompt: 'ORIGINAL PROMPT' }],
             copy: [{ role: 'headline', text: 'ORIGINAL HEADLINE' }],
             inspiration_images: [],
           }],
@@ -358,10 +358,10 @@ async function run() {
     await ctx.window.initBriefEditor();
     await ctx.window.f10BriefEditor.compileBrief();
 
-    // The operator edits the resolved prompt in the textarea. applyCompiledEdit is
+    // The operator edits the resolved prompt in the textarea. applyScenePromptEdit is
     // exactly what the delegated textarea `input` handler calls, so this is the DOM
     // edit path, not a shortcut around it.
-    ctx.window.f10BriefEditor.applyCompiledEdit('prompt', 0, 0, 'EDITED PROMPT XYZ');
+    ctx.window.f10BriefEditor.applyScenePromptEdit(0, 'image_slot_0', 'EDITED PROMPT XYZ');
 
     await ctx.window.f10BriefEditor.submitCompiled();
     ctx.window.f10BriefEditor.stopPolling(); // clear the auto-poll timer so the test exits
@@ -369,7 +369,8 @@ async function run() {
     assert.ok(submitted, 'submit was called');
     const cb = submitted.compiledBrief;
     assert.ok(cb && Array.isArray(cb.variants) && cb.variants.length === 1, 'the approved compiled brief was sent');
-    assert.strictEqual(cb.variants[0].prompts[0].prompt, 'EDITED PROMPT XYZ', 'the EDITED prompt is what is submitted');
+    assert.strictEqual(cb.variants[0].scene_prompts[0].prompt, 'EDITED PROMPT XYZ', 'the EDITED prompt is what is submitted');
+    assert.strictEqual(cb.variants[0].scene_prompts[0].region_id, 'image_slot_0', 'keyed by its slot id');
     assert.strictEqual(cb.variants[0].brief_id, 'brief_only', 'brief_id carried so the backend matches the edit');
     assert.strictEqual(cb.variants[0].copy[0].text, 'ORIGINAL HEADLINE', 'an unedited copy block carries through unchanged');
     // Submit re-sends the same seed inputs so the backend re-resolves identical briefs.
@@ -393,6 +394,10 @@ async function run() {
     ctx.window.f10BriefEditor.stopPolling();
     assert.strictEqual(submitted.compiledBrief.variants[0].copy[0].text, 'EDITED HEADLINE!', 'the edited copy is submitted');
     assert.strictEqual(submitted.compiledBrief.variants[0].copy[1].text, 'Clinically formulated.', 'the other copy block is unchanged');
+    // No prompt was typed in, so none is sent: the backend rebuilds each one from the
+    // current direction instead of generating a frozen compile-time prompt.
+    assert.ok(!('scene_prompts' in submitted.compiledBrief.variants[0]), 'an unedited prompt is not sent');
+    assert.ok(!('scene_prompts' in submitted.compiledBrief.variants[1]), 'nor on the other variant');
   });
 
   // ── AC4 / e2e 3: an over-cap estimate disables Submit with a clear message, and
