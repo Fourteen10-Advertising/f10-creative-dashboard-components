@@ -284,6 +284,87 @@ async function run() {
     assert.ok(/>App Search Mockup \(untested\)</.test(html), 'the sub-format keeps its own untested label');
   });
 
+  // An explore pick compiles as its design FORMAT: a variant with a design_spec (the
+  // drafted format) and editable copy, and no structure.
+  function designCompileResponse() {
+    return {
+      ok: true, client: 'moshy', variant_count: 1,
+      variants: [{
+        brief_id: 'brief_search', archetype_id: 'native-search-v1',
+        source: { kind: 'explore', ref: 'native_ui_search' }, render: 'typeset',
+        layout_family: 'app-phone-mockup', prompts: [],
+        copy: [
+          { role: 'headline', text: 'The search that started it.' },
+          { role: 'search.query', text: 'moshy weight loss program' },
+        ],
+        design_spec: {
+          schema: 'layout_spec', archetype_id: 'native-search-v1',
+          components: [{ kind: 'design', component_type: 'native_ui', spec: { variant: 'search_result' } }],
+          copy_blocks: [
+            { role: 'headline', text: 'The search that started it.' },
+            { role: 'search.query', text: 'moshy weight loss program' },
+          ],
+        },
+      }],
+      sizes: [[1080, 1350]], warnings: [],
+      cost_estimate: { files_produced: 1, unique_image_generations: 0, estimated_usd: 0, remaining_cap_usd: 25, exceeds_cap: false },
+    };
+  }
+
+  await check('a design-format variant submits its compiled design_spec with the edited copy', async () => {
+    const ctx = makeBrowserCtx();
+    const be = ctx.window.f10BriefEditor;
+    let submitted = null;
+    be.setStore({
+      async probe() { return true; }, async load() {}, async save() {},
+      async sources() { return namedSourcesResponse(); },
+      async compile() { return designCompileResponse(); },
+      async submit(p) { submitted = p; return { ok: true, job_id: 'job-fmt', status: 'running' }; },
+      async status() { return { ok: true, job: { status: 'completed', asset_uris: [] } }; },
+    });
+    await ctx.window.initBriefEditor();
+    await be.populateSources();
+    be.setSource('explore:native_ui_search');
+    await be.compileBrief();
+    be.applyCompiledEdit('copy', 0, 0, 'AN EDITED HEADLINE');
+    await be.submitCompiled();
+    be.stopPolling();
+    const v = submitted && submitted.compiledBrief && submitted.compiledBrief.variants[0];
+    assert.ok(v, 'submit carries the compiled variant');
+    assert.deepStrictEqual(v.design_spec, designCompileResponse().variants[0].design_spec,
+      'the compiled design_spec rides back unchanged (the backend lays the edited copy over it)');
+    assert.strictEqual(v.copy[0].text, 'AN EDITED HEADLINE', 'the copy edit is submitted');
+    assert.strictEqual(submitted.source.kind, 'explore', 'the source kind rides submit');
+    assert.strictEqual(submitted.source.ref, 'native_ui_search', 'the source ref rides submit');
+  });
+
+  await check('changing the render or layout after compiling drops the stale compiled result', async () => {
+    const ctx = makeBrowserCtx();
+    const be = ctx.window.f10BriefEditor;
+    be.setStore({
+      async probe() { return true; }, async load() {}, async save() {},
+      async sources() { return namedSourcesResponse(); },
+      async compile() { return designCompileResponse(); },
+    });
+    await ctx.window.initBriefEditor();
+    await be.populateSources();
+    be.setSource('explore:native_ui_search');
+    await be.compileBrief();
+    assert.ok(be.readCompiledBrief(), 'a compiled result is ready to submit');
+    // Re-selecting the SAME layout at the same render (a picker re-populate) keeps it.
+    be.setSource('explore:native_ui_search');
+    assert.ok(be.readCompiledBrief(), 're-selecting the same choice keeps the compiled result');
+    // Switching the render makes it stale: it no longer matches what Generate would publish.
+    be.setRender('scene');
+    assert.strictEqual(be.readCompiledBrief(), null, 'a render change drops the compiled result');
+    assert.strictEqual(ctx._slots['be-submit-bar'].style.display, 'none', 'the submit bar hides');
+    // Same for a layout change.
+    await be.compileBrief();
+    assert.ok(be.readCompiledBrief(), 'recompiled');
+    be.setSource('explore:faq_card');
+    assert.strictEqual(be.readCompiledBrief(), null, 'a layout change drops the compiled result');
+  });
+
   console.log('\n' + passed + ' checks passed.');
 }
 
