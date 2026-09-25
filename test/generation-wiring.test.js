@@ -9,8 +9,8 @@
  *      ignored. Now only a prompt the operator typed in is sent, and a direction
  *      change rebuilds the shown prompts with a no-spend compile.
  *   2. A typed-in prompt is pinned (sent) until the direction for it changes.
- *   3. Direction boxes follow the backend's list of generated regions, so a logo or
- *      avatar never offers a direction the pipeline cannot honour.
+ *   3. Image direction boxes follow the backend's list of generated regions, so the
+ *      logo never offers a direction the pipeline cannot honour.
  *   4. A compile made for a different render, axes or inspiration is dropped rather
  *      than submitted.
  *
