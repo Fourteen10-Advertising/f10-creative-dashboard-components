@@ -224,6 +224,66 @@ async function run() {
     assert.strictEqual(be.getJobId(), 'job-ts', 'the submit job id is tracked (polling started)');
   });
 
+  // US-024: two presets in ONE family are distinct, labelled rows (no duplicate text),
+  // and a sub-format of a WINNING family stays explorable while the canonical is hidden.
+  function namedSourcesResponse() {
+    return {
+      client: 'moshy',
+      sources: {
+        // The client already wins with app-phone-mockup, so its CANONICAL preset is hidden
+        // from explore, but the alternate app-search sub-format is not.
+        winners: [
+          { archetype_id: 'moshy-phone', name: 'App Phone Mockup', layout_family: 'app-phone-mockup',
+            source_ad_count: 27, default_render: 'typeset', structure: presetStructure({ family: 'app-phone-mockup' }) },
+        ],
+        explore: [
+          // Same family (checklist-feature-ui), two presets, two distinct names.
+          { family: 'checklist-feature-ui', preset_id: 'checklist', name: 'Checklist',
+            is_family_default: true, default_render: 'typeset', structure: presetStructure({ family: 'checklist-feature-ui' }) },
+          { family: 'checklist-feature-ui', preset_id: 'faq_card', name: 'FAQ Card',
+            is_family_default: false, default_render: 'typeset', structure: presetStructure({ family: 'checklist-feature-ui' }) },
+          // A winning family: canonical hidden, sub-format kept.
+          { family: 'app-phone-mockup', preset_id: 'native_ui', name: 'App Chat Mockup',
+            is_family_default: true, default_render: 'typeset', structure: presetStructure({ family: 'app-phone-mockup' }) },
+          { family: 'app-phone-mockup', preset_id: 'native_ui_search', name: 'App Search Mockup',
+            is_family_default: false, default_render: 'typeset', structure: presetStructure({ family: 'app-phone-mockup' }) },
+        ],
+        inspiration: { available: true },
+      },
+      renders: ['scene', 'typeset'], explore_prefix: 'family:',
+    };
+  }
+
+  await check('two presets in one family render as distinct, non-duplicate labelled rows', async () => {
+    const ctx = makeBrowserCtx();
+    const be = ctx.window.f10BriefEditor;
+    be.setStore({ async probe() { return true; }, async load() {}, async save() {}, async sources() { return namedSourcesResponse(); } });
+    await ctx.window.initBriefEditor();
+    await be.populateSources();
+    const html = ctx._slots['be-source'].innerHTML;
+    // Both same-family presets appear with their OWN distinct label.
+    assert.ok(/>Checklist \(untested\)</.test(html), 'the checklist preset is labelled "Checklist"');
+    assert.ok(/>FAQ Card \(untested\)</.test(html), 'the faq preset is labelled "FAQ Card"');
+    assert.ok(/value="explore:checklist"/.test(html) && /value="explore:faq_card"/.test(html), 'both are selectable by their own preset id');
+    // The old family-only label that produced the duplicate row is gone.
+    assert.ok(!/Checklist Feature Ui/.test(html), 'no family-titleized duplicate label');
+  });
+
+  await check('a winning family hides only its canonical preset; the sub-format stays explorable', async () => {
+    const ctx = makeBrowserCtx();
+    const be = ctx.window.f10BriefEditor;
+    be.setStore({ async probe() { return true; }, async load() {}, async save() {}, async sources() { return namedSourcesResponse(); } });
+    await ctx.window.initBriefEditor();
+    await be.populateSources();
+    const html = ctx._slots['be-source'].innerHTML;
+    // app-phone-mockup is a winner: its canonical native_ui explore row is hidden.
+    assert.ok(!/value="explore:native_ui"/.test(html), 'the canonical preset of a winning family is hidden from explore');
+    assert.ok(!/>App Chat Mockup \(untested\)</.test(html), 'the canonical label is not offered as untested');
+    // ...but the alternate sub-format stays available to explore.
+    assert.ok(/value="explore:native_ui_search"/.test(html), 'the sub-format of a winning family stays explorable');
+    assert.ok(/>App Search Mockup \(untested\)</.test(html), 'the sub-format keeps its own untested label');
+  });
+
   console.log('\n' + passed + ' checks passed.');
 }
 
