@@ -365,30 +365,73 @@ function getCSS(v){ return getComputedStyle(document.documentElement).getPropert
 const _tablePages = {};
 const _tableSort = {};   /* tbodyId -> { colIndex, ascending } for the active sort */
 
-/* ── Ad-name search (client-side, filters the current view across all ad tables) ──
- * adSearchTerm is a lowercased substring. Ad-row builders tag their <tr> with
- * data-adname (see adNameAttr); renderPagedTable filters on it. Rows without the
- * attribute (e.g. month-level summary tables) are never filtered. */
+/* ── Ad search (client-side, filters the current view across all ad tables) ──
+ * adSearchTerm is the raw lowercased text in the search box. Ad-row builders tag
+ * their <tr> with data-adname (see adNameAttr); renderPagedTable filters on it.
+ * Rows without the attribute (e.g. month-level summary tables) are never filtered.
+ *
+ * Matching ignores spacing and punctuation, because ad names are usually built
+ * from underscores and run-together words ("100926_all_customer_static_movingbackin")
+ * while people type plain phrases ("moving back in", "2% deposit"). Both sides are
+ * reduced to letters and digits; the term is split on whitespace and every word
+ * must appear in the row's key. The key covers the ad name plus the campaign and
+ * ad set names, so a search for a campaign ("broker", "consideration") works too. */
 let adSearchTerm = '';
 
-/* Emit a data-adname attribute (lowercased, attribute-escaped) for an ad row's
- * <tr> so the search filter can match it without touching the visible cells. */
-function adNameAttr(name){
-  const v = String(name == null ? '' : name).toLowerCase().replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+/* Lowercase and keep only letters and digits (any script). */
+function normaliseSearchText(s){
+  return String(s == null ? '' : s).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+/* Split a typed search into normalised words; empty when nothing searchable. */
+function adSearchTokens(term){
+  return String(term == null ? '' : term).toLowerCase().split(/\s+/).map(normaliseSearchText).filter(Boolean);
+}
+
+/* Emit a data-adname attribute for an ad row's <tr> so the search filter can match
+ * it without touching the visible cells. Pass the ad name first, then any other
+ * names the row shows (campaign, ad set). Each name is normalised and joined with
+ * '|', so a search word never matches across two names. The key holds only
+ * letters, digits and '|', so it needs no attribute escaping. */
+function adNameAttr(name, ...more){
+  const v = [name].concat(more).map(normaliseSearchText).filter(Boolean).join('|');
   return `data-adname="${v}"`;
 }
 
-/* Keep only rows that match the active ad-name search. Rows carrying no
- * data-adname attribute always pass, so non-ad tables are unaffected. */
+/* True when a row key contains every word of the active search. */
+function adSearchMatches(key, tokens){
+  for(const t of tokens){ if(key.indexOf(t) === -1) return false; }
+  return true;
+}
+
+/* Keep only rows that match the active ad search. Rows carrying no data-adname
+ * attribute always pass, so non-ad tables are unaffected. */
 function filterRowsBySearch(rowsHtml){
-  const term = adSearchTerm;
-  if(!term) return rowsHtml;
+  const tokens = adSearchTokens(adSearchTerm);
+  if(!tokens.length) return rowsHtml;
   return rowsHtml.filter(html => {
     const i = html.indexOf('data-adname="');
     if(i === -1) return true;
     const start = i + 13;
     const end = html.indexOf('"', start);
-    return html.slice(start, end === -1 ? undefined : end).indexOf(term) !== -1;
+    return adSearchMatches(html.slice(start, end === -1 ? undefined : end), tokens);
+  });
+}
+
+/* Wire one ad-search <input>. Every search box on the page (Meta, TikTok,
+ * LinkedIn bars) shares adSearchTerm, so typing in one updates the others and
+ * the filter carries across sections. onApply runs after the term changes. */
+function wireAdSearchInput(input, onApply){
+  if(!input) return;
+  let timer = null;
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      adSearchTerm = input.value.trim().toLowerCase();
+      document.querySelectorAll('.ctrl-search').forEach(el => { if(el !== input) el.value = input.value; });
+      if (typeof window !== 'undefined' && window.F10A) F10A.track('ad_search', { has_term: adSearchTerm.length > 0 });
+      onApply();
+    }, 150);
   });
 }
 
@@ -415,7 +458,7 @@ function renderPagedTable(tbodyId, rowsHtml, pageSize, footerHtml){
   st.footerHtml = footerHtml;
   const view = st.rows;
   const hasAdRows = st.src.length > 0 && st.src[0].indexOf('data-adname="') !== -1;
-  const foot = (adSearchTerm && hasAdRows) ? '' : footerHtml;
+  const foot = (adSearchTokens(adSearchTerm).length && hasAdRows) ? '' : footerHtml;
   const totalRows = view.length;
   const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
   const page = Math.max(0, Math.min(st.page, totalPages - 1));
