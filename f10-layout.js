@@ -129,7 +129,10 @@ function ttProdBenchmarkHTML(ttTh){
  * TikTok metric columns (Hook 2s / Hold 6s). f10-tiktok.js drives these. */
 function ttControlsMarkup(){
   return `<div class="controls-bar" id="tt-controls-bar" style="display:none;">
-      <div class="weekly-controls" style="display:flex;">
+      <div class="ctrl-groups">
+        <div class="ctrl"><label>Search ad</label><input type="search" id="tt-ctrl-adsearch" class="ctrl-search" placeholder="Ad or campaign name&hellip;" autocomplete="off" /></div>
+      </div>
+      <div class="weekly-controls" id="tt-weekly-controls" style="display:flex;">
         <div class="ctrl"><label>Window length</label>
           <select id="tt-ctrl-length"><option value="7" selected>7 days</option><option value="14">14 days</option><option value="28">28 days</option></select>
         </div>
@@ -328,7 +331,10 @@ function liProdBenchmarkHTML(liTh){
  * reactions, expands) and overstates intent. f10-linkedin.js drives these. */
 function liControlsMarkup(){
   return `<div class="controls-bar" id="li-controls-bar" style="display:none;">
-      <div class="weekly-controls" style="display:flex;">
+      <div class="ctrl-groups">
+        <div class="ctrl"><label>Search ad</label><input type="search" id="li-ctrl-adsearch" class="ctrl-search" placeholder="Ad or campaign name&hellip;" autocomplete="off" /></div>
+      </div>
+      <div class="weekly-controls" id="li-weekly-controls" style="display:flex;">
         <div class="ctrl"><label>Window length</label>
           <select id="li-ctrl-length"><option value="7" selected>7 days</option><option value="14">14 days</option><option value="28">28 days</option></select>
         </div>
@@ -836,7 +842,7 @@ function renderLayout(){
     <div class="controls-bar" id="controls-bar" style="display:none;">
       <div id="ctrl-groups" class="ctrl-groups"></div>
       <div id="ctrl-scope" class="ctrl-groups">
-        <div class="ctrl"><label>Search ad</label><input type="search" id="ctrl-adsearch" class="ctrl-search" placeholder="Ad name&hellip;" autocomplete="off" /></div>
+        <div class="ctrl"><label>Search ad</label><input type="search" id="ctrl-adsearch" class="ctrl-search" placeholder="Ad or campaign name&hellip;" autocomplete="off" /></div>
         <div class="ctrl"><label>Ad status</label><select id="ctrl-status"><option value="all" selected>All ads</option><option value="active">Active only</option></select></div>
         ${zeroSpendFilterEnabled() ? `<div class="ctrl"><label>Zero spend ads</label><select id="ctrl-zerospend"><option value="show" selected>Show</option><option value="hide">Hide</option></select></div>` : ''}
         ${stateFilterEnabled() ? `<div class="ctrl"><label>Ad state</label><select id="ctrl-state">${stateFilterOptionsHTML()}</select></div>` : ''}
