@@ -670,6 +670,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // frozen out by the compiled text.
     var beVariantScenePrompts = []; // [{region_id: prompt}, ...]
     var beVariantSceneRoles = [];   // [{region_id: role}, ...] (role kept for the submit payload)
+    // A subject that sits in the scene (a hero or person) is drawn INSIDE another
+    // region's image (the background photo), listed in that prompt's `covers`. This maps
+    // each covered region id to the region id whose prompt draws it.
+    var beVariantSceneCovers = [];  // [{covered region_id: host region_id}, ...]
     var beVariantPromptEdited = []; // [{region_id: true}, ...] hand-edited since the last compile
     // Per-region creative direction: a map of region id -> a free-form direction
     // string that steers ONLY that region's generated asset (e.g. hero -> "a man in
@@ -1176,6 +1180,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       beCompiled = null; beCompiledEdits = null; beCompiledKey = '';
       beVariantStructures = []; beVariantRegionCopy = [];
       beVariantScenePrompts = []; beVariantSceneRoles = []; beVariantPromptEdited = [];
+      beVariantSceneCovers = [];
       beInspStructure = null; beInspConfirmed = false;
       var el = document.getElementById('be-compiled');
       if (el) el.innerHTML = '<div class="be-muted">The layout, render, axes or inspiration changed since the last compile. Compile again to see what will generate.</div>';
@@ -1995,12 +2000,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + f('x') + f('y') + f('w') + f('h') + '</span>';
     }
 
-    /* True when the backend will generate an image for this region of variant vi. The
-     * backend's surfaced prompts ARE that list (one per generated region, none on a
-     * typeset render, never the logo), so the editor never guesses by role. */
+    /* True when the backend will generate an image for this region of variant vi, as
+     * its own image or drawn inside another's (a person in the background photo). The
+     * backend's surfaced prompts ARE that list (none on a typeset render, never the
+     * logo), so the editor never guesses by role. */
     function beIsGeneratedRegion(vi, id) {
       var sp = beVariantScenePrompts[vi];
-      return !!(sp && Object.prototype.hasOwnProperty.call(sp, id));
+      return !!((sp && Object.prototype.hasOwnProperty.call(sp, id)) || beSceneHost(vi, id));
+    }
+
+    /* The region id whose image draws region `id` inside it, or '' when it has its own. */
+    function beSceneHost(vi, id) {
+      var covers = beVariantSceneCovers[vi];
+      return (covers && Object.prototype.hasOwnProperty.call(covers, id)) ? covers[id] : '';
     }
 
     /* The operator's direction for ONE region, prefilled from the shared
@@ -2019,9 +2031,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         + esc(String(val)) + '</textarea></label>';
     }
     function regionDirectionHtml(vi, ri, id) {
-      return directionFieldHtml(vi, ri, id, 'Direction (what to generate)',
-        'e.g. a man in his 40s eating a burger, natural candid photo')
-        + scenePromptFieldHtml(vi, id);
+      var field = directionFieldHtml(vi, ri, id, 'Direction (what to generate)',
+        'e.g. a man in his 40s eating a burger, natural candid photo');
+      var host = beSceneHost(vi, id);
+      if (!host) return field + scenePromptFieldHtml(vi, id);
+      var hostLabel = (beVariantSceneRoles[vi] || {})[host] || host;
+      return field + '<div class="be-muted be-prompt-note">Drawn inside the ' + esc(hostLabel)
+        + ' photo, placed where this box sits. Its prompt is with the ' + esc(hostLabel) + '.</div>';
     }
     function copyDirectionHtml(vi, ri, id) {
       return directionFieldHtml(vi, ri, id, 'Direction (what to say)',
@@ -2189,6 +2205,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function scenePromptFieldHtml(vi, rid) {
       var sp = beVariantScenePrompts[vi] || {};
       var label = (beVariantSceneRoles[vi] || {})[rid] || rid;
+      var covers = beVariantSceneCovers[vi] || {};
+      var within = Object.keys(covers).filter(function (c) { return covers[c] === String(rid); });
+      if (within.length) label += ' (with ' + within.join(', ') + ')';
       var pinned = !!(beVariantPromptEdited[vi] || {})[rid];
       return '<label class="be-field"><span class="be-label">Prompt sent to the image model: ' + esc(label) + '</span>'
         + '<textarea class="be-scene-prompt" id="' + scenePromptId(vi, rid) + '" data-be-edit="scene-prompt" '
@@ -2228,10 +2247,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      * every region): the direction is the newer instruction, so it unpins the affected
      * prompts. What it affects is then rebuilt so the boxes show what will generate. */
     function onDirectionChanged(regionId) {
-      beVariantPromptEdited.forEach(function (edited) {
+      beVariantPromptEdited.forEach(function (edited, vi) {
         if (!edited) return;
-        if (regionId == null) Object.keys(edited).forEach(function (k) { delete edited[k]; });
-        else delete edited[String(regionId)];
+        if (regionId == null) { Object.keys(edited).forEach(function (k) { delete edited[k]; }); return; }
+        delete edited[String(regionId)];
+        // A subject drawn inside another region's photo changes that photo's prompt.
+        var host = beSceneHost(vi, String(regionId));
+        if (host) delete edited[host];
       });
       return refreshFromDirection(regionId);
     }
@@ -2428,20 +2450,25 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         beVariantRegionCopy = [];
         beVariantScenePrompts = [];
         beVariantSceneRoles = [];
+        beVariantSceneCovers = [];
         beVariantPromptEdited = [];
         (Array.isArray(resp.variants) ? resp.variants : []).forEach(function (v, vi) {
           v = v || {};
           beVariantStructures[vi] = v.structure ? clone(v.structure) : null;
           beVariantRegionCopy[vi] = v.structure ? clone(v.region_copy || {}) : null;
-          var sp = {}, roles = {};
+          var sp = {}, roles = {}, covers = {};
           (Array.isArray(v.scene_prompts) ? v.scene_prompts : []).forEach(function (p) {
             if (p && p.region_id != null) {
               sp[String(p.region_id)] = String(p.prompt == null ? '' : p.prompt);
               roles[String(p.region_id)] = String(p.role == null ? '' : p.role);
+              (Array.isArray(p.covers) ? p.covers : []).forEach(function (c) {
+                covers[String(c)] = String(p.region_id);
+              });
             }
           });
           beVariantScenePrompts[vi] = sp;
           beVariantSceneRoles[vi] = roles;
+          beVariantSceneCovers[vi] = covers;
           beVariantPromptEdited[vi] = {};
         });
         // Inspiration source: the DETECTED structure needs confirming before the
@@ -2950,6 +2977,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         beRemainingCap = null; beJobId = null;
         beVariantStructures = []; beVariantRegionCopy = []; beRegionDirection = {};
         beVariantScenePrompts = []; beVariantSceneRoles = []; beVariantPromptEdited = [];
+        beVariantSceneCovers = [];
       },
     };
   })();
