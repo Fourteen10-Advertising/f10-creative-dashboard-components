@@ -394,8 +394,13 @@ function adSearchTokens(term){
  * '|', so a search word never matches across two names. The key holds only
  * letters, digits and '|', so it needs no attribute escaping. */
 function adNameAttr(name, ...more){
-  const v = [name].concat(more).map(normaliseSearchText).filter(Boolean).join('|');
-  return `data-adname="${v}"`;
+  return `data-adname="${adSearchKey(name, ...more)}"`;
+}
+
+/* The search key for one ad: the same string adNameAttr writes on table rows.
+ * Charts tag each mark with it so they match exactly like the tables. */
+function adSearchKey(name, ...more){
+  return [name].concat(more).map(normaliseSearchText).filter(Boolean).join('|');
 }
 
 /* True when a row key contains every word of the active search. */
@@ -431,7 +436,54 @@ function wireAdSearchInput(input, onApply){
       document.querySelectorAll('.ctrl-search').forEach(el => { if(el !== input) el.value = input.value; });
       if (typeof window !== 'undefined' && window.F10A) F10A.track('ad_search', { has_term: adSearchTerm.length > 0 });
       onApply();
+      refilterAdSearchCharts();
     }, 150);
+  });
+}
+
+/* ── Ad search on charts ──
+ * Charts that plot one mark per ad (Movement Map bubbles, Ad Production scatter
+ * points, Ad Power Law bars) follow the search too. After building a chart, call
+ * followAdSearch(slot, chart) for a chart whose points carry `_key`
+ * (adSearchKey), or followAdSearch(slot, chart, keys) for a category chart,
+ * where keys[i] belongs to labels[i] and to index i of every dataset. The full
+ * data is kept on the chart and each search change re-filters from it, so no
+ * re-query is needed. A redraw into the same slot replaces the old chart. */
+const _adSearchCharts = {};
+
+function followAdSearch(slot, chart, keys){
+  if(!chart || !chart.data) return;
+  chart._adSearch = {
+    keys: keys || null,
+    labels: (chart.data.labels || []).slice(),
+    data: chart.data.datasets.map(d => d.data.slice()),
+  };
+  _adSearchCharts[slot] = chart;
+  applyAdSearchToChart(chart);
+}
+
+function applyAdSearchToChart(chart){
+  const src = chart._adSearch;
+  const tokens = adSearchTokens(adSearchTerm);
+  const keep = key => !tokens.length || adSearchMatches(String(key || ''), tokens);
+  if(src.keys){
+    const idx = src.keys.map((k, i) => keep(k) ? i : -1).filter(i => i !== -1);
+    chart.data.labels = idx.map(i => src.labels[i]);
+    chart.data.datasets.forEach((d, j) => { d.data = idx.map(i => src.data[j][i]); });
+  } else {
+    chart.data.datasets.forEach((d, j) => { d.data = src.data[j].filter(p => keep(p && p._key)); });
+  }
+  chart.update();
+}
+
+/* Re-filter every live chart registered with followAdSearch. A destroyed or
+ * detached chart is dropped from the registry. */
+function refilterAdSearchCharts(){
+  Object.keys(_adSearchCharts).forEach(slot => {
+    const chart = _adSearchCharts[slot];
+    if(!chart || !chart.canvas || chart.canvas.isConnected === false){ delete _adSearchCharts[slot]; return; }
+    try { applyAdSearchToChart(chart); }
+    catch(err){ console.error('Ad search: could not filter chart "' + slot + '":', err); }
   });
 }
 

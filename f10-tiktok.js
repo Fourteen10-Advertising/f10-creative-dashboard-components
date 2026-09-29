@@ -395,7 +395,7 @@
     const m = c.metric;
     const pts = movers.filter((a) => a.improvePct != null && a.sCur > 0);
     const byState = {};
-    pts.forEach((a) => { (byState[a.state] = byState[a.state] || []).push({ x: a.sCur, y: a.improvePct * 100, r: 0, _spend: a.sCur, _name: a.ad_name, _state: a.state }); });
+    pts.forEach((a) => { (byState[a.state] = byState[a.state] || []).push({ x: a.sCur, y: a.improvePct * 100, r: 0, _spend: a.sCur, _name: a.ad_name, _state: a.state, _key: adSearchKey(a.ad_name, a.campaign_name) }); });
     const maxSpend = Math.max(1, ...pts.map((p) => p.sCur));
     const datasets = Object.entries(byState).map(([s, arr]) => ({
       label: stateLabel(s),
@@ -425,6 +425,7 @@
       },
       plugins: [{ id: 'zeroLine', afterDraw(chart){ const yA = chart.scales.y, xA = chart.scales.x; const y0 = yA.getPixelForValue(0); if (y0 >= yA.top && y0 <= yA.bottom){ const ctx2 = chart.ctx; ctx2.save(); ctx2.setLineDash([5, 4]); ctx2.strokeStyle = '#727272'; ctx2.lineWidth = 1.5; ctx2.beginPath(); ctx2.moveTo(xA.left, y0); ctx2.lineTo(xA.right, y0); ctx2.stroke(); ctx2.setLineDash([]); ctx2.fillStyle = '#727272'; ctx2.font = '10px Archivo'; ctx2.fillText('no change', xA.left + 4, y0 - 4); ctx2.restore(); } } }],
     });
+    followAdSearch('tt-map', ttCharts.map);
   }
 
   /* ── Ad Production (lifetime spend vs CPA classification) ── */
@@ -501,7 +502,7 @@
       /* Read the metric generically so a dir:'higher' ROAS plots correctly. A creative
        * with metric=0 but spend>0 (real spend, zero revenue in ROAS) is kept, not
        * dropped — it belongs at the bottom of a higher-is-better axis. */
-      scatterData.forEach((r) => { const mVal = Number(r[mCol]) || 0, spend = Number(r.lifetime_spend) || 0; if (mVal > 0 || spend > 0) { const cls = r.classification; if (!byClass[cls]) byClass[cls] = []; byClass[cls].push({ x: spend, y: mVal, label: r.ad_name }); } });
+      scatterData.forEach((r) => { const mVal = Number(r[mCol]) || 0, spend = Number(r.lifetime_spend) || 0; if (mVal > 0 || spend > 0) { const cls = r.classification; if (!byClass[cls]) byClass[cls] = []; byClass[cls].push({ x: spend, y: mVal, label: r.ad_name, _key: adSearchKey(r.ad_name, r.campaign_name, r.adgroup_name) }); } });
       const scatterDatasets = Object.entries(byClass).map(([cls, pts]) => { const col = CLASS_COLOR[cls] || '#b0b0b0'; return { label: cls, data: pts, backgroundColor: col + 'bb', borderColor: col, borderWidth: 1.5, pointRadius: 6, pointHoverRadius: 8 }; });
       hideEl('tt-scatter-loading'); showEl('tt-scatter-wrapper');
       if (ttCharts.scatter) ttCharts.scatter.destroy();
@@ -519,6 +520,7 @@
           plugins: { legend: { position: 'top', labels: { font: { size: 11 } } }, tooltip: { callbacks: { label: (ctx) => { const pt = ctx.raw; const mLine = isRoas ? `${targetMetricDef().label}: ${fmtMetricCell(pt.y)}` : `CPA: ${pt.y > 0 ? fmt$(pt.y) : 'N/A'}`; return [`${ctx.dataset.label}`, `Spend: ${fmt$(pt.x)}`, mLine]; } } } },
         },
       });
+      followAdSearch('tt-scatter', ttCharts.scatter);
 
       const months = monthlyData.map((r) => r.launch_month).reverse();
       const adsArr = monthlyData.map((r) => Number(r.ads_launched)).reverse();
@@ -596,6 +598,7 @@
           { type: 'line', label: '% Rolling Cumulative', data: rolling, borderColor: CHART_PRIMARY, backgroundColor: 'transparent', borderWidth: 2.5, pointRadius: 3, yAxisID: 'y2', tension: 0.2 } ] },
         options: { responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { font: { size: 10 } } }, y: { title: { display: true, text: '% of Spend', font: { size: 10 } }, ticks: { callback: (v) => v + '%' } }, y2: { position: 'right', min: 0, max: 100, title: { display: true, text: 'Cumulative %', font: { size: 10 } }, ticks: { callback: (v) => v + '%', font: { size: 10 } }, grid: { drawOnChartArea: false } } }, plugins: { legend: { position: 'top', labels: { font: { size: 11 } } } } },
       });
+      followAdSearch('tt-powerlaw', ttCharts.powerlaw, data.map((r) => adSearchKey(r.ad_name, r.campaign_name, r.adgroup_name)));
       renderPagedTable('tt-powerlaw-table-body', data.map((r) =>
         `<tr ${adNameAttr(r.ad_name, r.campaign_name, r.adgroup_name)}><td class="rank-num">${r.rank_num}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name || ''}">${r.campaign_name || '–'}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adgroup_name || ''}">${r.adgroup_name || '–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name || ''}">${r.ad_name || '–'}</td><td>${fmtDate(r.launch_date)}</td><td>${fmtDate(r.last_spend_date)}</td><td>${r.preview_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="tiktok" href="${r.preview_link}" target="_blank">Preview</a>` : '–'}</td><td>${fmt$(r.spend)}</td><td>${fmtPct(r.spend_pct, 2)}</td><td>${fmtPct(r.rolling_pct, 2)}</td><td>${Number(r[mCol]) > 0 ? fmtMetricCell(r[mCol]) : '–'}</td></tr>`));
       ttHide('tt-powerlaw-table-loading'); ttShow('tt-powerlaw-table');
