@@ -191,7 +191,8 @@ function onStateChange(e){
 }
 
 /* The ad-name search changed: re-render the weekly board (so floor-bypass
- * applies) and re-filter every already-rendered table — no re-query. */
+ * applies) and the Weekly Summary (its totals are summed in the browser from the
+ * loaded windows), and re-filter every already-rendered table. No re-query. */
 function applyAdSearch(){
   if(WIN) refreshWeeklyBoard();
   refilterAllTables();
@@ -234,7 +235,7 @@ function renderWeekly(){
   const movers     = classified.filter(a => a.qCur || a.qPri);
   const windowTxt  = `Current: ${fmtDate(WIN.curStart)} – ${fmtDate(WIN.curEnd)} vs Prior: ${fmtDate(WIN.priStart)} – ${fmtDate(WIN.priEnd)} · Metric: ${c.metric.label} · ${movers.length} ads cleared the floor`;
   ['summary-window-note','board-window-note','map-window-note'].forEach(id => document.getElementById(id).textContent = windowTxt);
-  renderSummary(classified, c, WIN);
+  renderSummary(adSearchFilter(classified, a => adSearchKey(a.ad_name, a.campaign_name)), c, WIN);
   /* When a search term is active, feed the board the full classified set so a
    * searched ad appears even if it sits below the noise floor (the name filter
    * in renderPagedTable then isolates it). The map stays floor-scoped; its
@@ -254,6 +255,7 @@ function refreshWeeklyBoard(opts){
   const classified = Object.values(WIN.ads).map(a => classify(a, c));
   const movers     = classified.filter(a => a.qCur || a.qPri);
   renderBoard(adSearchTerm ? classified : movers, c);
+  renderSummary(adSearchFilter(classified, a => adSearchKey(a.ad_name, a.campaign_name)), c, WIN);
   if(opts && opts.map) renderMap(movers, c);
 }
 
@@ -476,6 +478,7 @@ function wireControls(){
   wireAdSearchInput(document.getElementById('ctrl-adsearch'), applyAdSearch);
   document.getElementById('refresh-btn').addEventListener('click', () => {
     if (window.F10A) F10A.track('refresh_clicked', { tab: activeTab });
+    clearQueryCache();
     if(isWeekly(activeTab)) initWeekly(); else { delete loadedTabs[activeTab]; loadMonthlyTab(activeTab); }
   });
   document.querySelectorAll('.nav-link').forEach(link =>

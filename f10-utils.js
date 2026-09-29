@@ -437,6 +437,8 @@ function wireAdSearchInput(input, onApply){
       if (typeof window !== 'undefined' && window.F10A) F10A.track('ad_search', { has_term: adSearchTerm.length > 0 });
       onApply();
       refilterAdSearchCharts();
+      runAdSearchHooks();
+      scheduleAdSearchReload();
     }, 150);
   });
 }
@@ -485,6 +487,64 @@ function refilterAdSearchCharts(){
     try { applyAdSearchToChart(chart); }
     catch(err){ console.error('Ad search: could not filter chart "' + slot + '":', err); }
   });
+}
+
+/* Keep only the items whose search key matches the active search. keyFn returns
+ * the key for one item (see adSearchKey). With no search, returns items as is. */
+function adSearchFilter(items, keyFn){
+  const tokens = adSearchTokens(adSearchTerm);
+  if(!tokens.length) return items;
+  return items.filter(it => adSearchMatches(String(keyFn(it) || ''), tokens));
+}
+
+/* Views computed in the browser from rows already loaded (Weekly Summary, the
+ * Creative Effectiveness curve) register a redraw with onAdSearch(slot, fn). It
+ * runs on every search change, straight after the charts re-filter. */
+const _adSearchHooks = {};
+function onAdSearch(slot, fn){ _adSearchHooks[slot] = fn; }
+function runAdSearchHooks(){
+  Object.keys(_adSearchHooks).forEach(slot => {
+    try { _adSearchHooks[slot](); }
+    catch(err){ console.error('Ad search: could not redraw "' + slot + '":', err); }
+  });
+}
+
+/* Views whose totals are summed in SQL (Ad Decay, the Ad Age mix, Ads Launched
+ * by month) cannot be filtered in the browser, so their queries carry the search
+ * (adSearchWhere) and re-run when it changes. Each section registers a reloader
+ * with onAdSearchReload(slot, fn) that re-queries its active tab and marks the
+ * others stale. Reloads wait until typing pauses so each word is not a query. */
+const AD_SEARCH_RELOAD_MS = 450;
+const _adSearchReloaders = {};
+let _adSearchReloadTimer = null;
+function onAdSearchReload(slot, fn){ _adSearchReloaders[slot] = fn; }
+function scheduleAdSearchReload(){
+  clearTimeout(_adSearchReloadTimer);
+  _adSearchReloadTimer = setTimeout(() => {
+    Object.keys(_adSearchReloaders).forEach(slot => {
+      try { _adSearchReloaders[slot](); }
+      catch(err){ console.error('Ad search: could not reload "' + slot + '":', err); }
+    });
+  }, AD_SEARCH_RELOAD_MS);
+}
+
+/* SQL for the active search, matching exactly like adSearchKey: each name is
+ * lowercased and reduced to letters and digits, the names are joined with '|',
+ * and every search word must appear. groupCol is the ad set column ('adset_name'
+ * on Meta, 'adgroup_name' on TikTok and LinkedIn). Words hold only letters and
+ * digits, and are quoted anyway. Returns [] when there is no search. */
+function adSearchClauses(groupCol){
+  const tokens = adSearchTokens(adSearchTerm);
+  if(!tokens.length) return [];
+  const norm = col => `REGEXP_REPLACE(LOWER(IFNULL(CAST(${col} AS STRING), '')), r'[^\\p{L}\\p{N}]', '')`;
+  const key = `CONCAT(${['ad_name', 'campaign_name', groupCol || 'adset_name'].map(norm).join(", '|', ")})`;
+  return tokens.map(t => `STRPOS(${key}, ${sqlQuote(t)}) > 0`);
+}
+/* adSearchWhere('WHERE') starts a WHERE block; adSearchWhere() appends with AND. */
+function adSearchWhere(lead, groupCol){
+  const parts = adSearchClauses(groupCol);
+  if(!parts.length) return '';
+  return ' ' + (lead === 'WHERE' ? 'WHERE' : 'AND') + ' ' + parts.join(' AND ');
 }
 
 /* renderPagedTable(tbodyId, rowsHtml, pageSize=20, footerHtml='')
@@ -583,6 +643,13 @@ function statusClauses(){ return statusFilter === 'active' ? ['is_active'] : [];
  *   scopeWhere()        — append to an existing WHERE (leads with AND)
  * Returns '' when nothing is active. */
 function scopeClauses(){ return groupClauses().concat(statusClauses()); }
+/* scopeWhere plus the ad search, for queries that sum totals across ads. */
+function searchScopeWhere(lead){
+  const parts = scopeClauses().concat(adSearchClauses('adset_name'));
+  if(!parts.length) return '';
+  const prefix = lead === 'WHERE' ? 'WHERE' : 'AND';
+  return ' ' + prefix + ' ' + parts.join(' AND ');
+}
 function scopeWhere(lead){
   const parts = scopeClauses();
   if(!parts.length) return '';
@@ -757,7 +824,20 @@ function stateFilterOptionsHTML(){
 }
 
 /* ── BQ fetch — expects BQ_FUNCTION to be defined by the dashboard ── */
-async function runQuery(sql){ const r=await fetch(BQ_FUNCTION,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:sql})}); if(!r.ok) throw new Error(await r.text()); return r.json(); }
+/* Query results are kept for the session, keyed by the SQL text, so going back
+ * to an earlier search, filter or tab is instant. Refresh clears it. */
+const QUERY_CACHE_MAX = 100;
+const _queryCache = new Map();
+function clearQueryCache(){ _queryCache.clear(); }
+async function runQuery(sql){
+  if(_queryCache.has(sql)){ const hit = _queryCache.get(sql); _queryCache.delete(sql); _queryCache.set(sql, hit); return hit; }
+  const p = fetchQuery(sql);
+  _queryCache.set(sql, p);
+  if(_queryCache.size > QUERY_CACHE_MAX) _queryCache.delete(_queryCache.keys().next().value);
+  try { return await p; }
+  catch(err){ _queryCache.delete(sql); throw err; }
+}
+async function fetchQuery(sql){ const r=await fetch(BQ_FUNCTION,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:sql})}); if(!r.ok) throw new Error(await r.text()); return r.json(); }
 
 /* ── Aggregation helpers ── */
 /* `revenue` is the gated revenue field (sourced from REVENUE_EXPR, default the
