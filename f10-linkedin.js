@@ -569,7 +569,7 @@ ${list.join(',\n')}
      * while spend > 0 means the gated revenue column is missing/zeroed. Always false
      * in CPA mode, so CPA scorecards are unchanged. */
     const revBroken = (typeof applyRevenueGuard === 'function')
-      ? applyRevenueGuard('li-summary-revenue-guard', revenueSignalBroken(tot.cur.revenue, tot.cur.spend))
+      ? applyRevenueGuard('li-summary-revenue-guard', windowRevenueBroken(Object.values(LI_WIN.ads)))
       : false;
 
     const spendCard = { label: 'Spend',       val: fmt$(tot.cur.spend),         d: deltaHtml(tot.cur.spend, tot.pri.spend, false) };

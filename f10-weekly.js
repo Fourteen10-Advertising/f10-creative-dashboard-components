@@ -283,9 +283,11 @@ function renderSummary(all, c, w){
   /* Revenue-integrity guard (US-010): in ROAS mode, a window with blended
    * revenue 0 while spend > 0 means the gated revenue column is missing/zeroed —
    * show the warning banner and suppress the confident 0.0x on the blended tile
-   * rather than present an understated headline. Runs on the aggregates already
-   * summed above (no query). Always false in CPA mode, so CPA is unchanged. */
-  const revBroken = applyRevenueGuard('summary-revenue-guard', revenueSignalBroken(tot.cur.revenue, tot.cur.spend));
+   * rather than present an understated headline. Reads every ad in the window
+   * (windowRevenueBroken), not only the ones an ad search matches, so a search
+   * for ads with no revenue does not raise a false warning. No query. Always
+   * false in CPA mode, so CPA is unchanged. */
+  const revBroken = applyRevenueGuard('summary-revenue-guard', windowRevenueBroken(Object.values(w.ads)));
 
   /* `def` is the hover definition for the tile. The blended tile defines the
    * ACTIVE efficiency metric (CPA, ROAS, CPC, CPM, CTR), so it looks up by the
