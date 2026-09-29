@@ -22,7 +22,7 @@ const EXPORT = `
 this.__S = {
   adSearchClauses, adSearchWhere, searchScopeWhere, adSearchFilter, adSearchKey,
   onAdSearch, runAdSearchHooks, onAdSearchReload, scheduleAdSearchReload,
-  runQuery, clearQueryCache, groupSelections,
+  runQuery, clearQueryCache, groupSelections, windowRevenueBroken,
   setTerm: (v) => { adSearchTerm = v; },
   setStatus: (v) => { statusFilter = v; },
 };`;
@@ -32,6 +32,8 @@ function load(fetchImpl){
   const sandbox = {
     window: {}, document: { documentElement: {} }, console,
     GROUP_FILTERS: [{ col: 'product', label: 'Product' }],
+    /* f10-layout.js owns this; the stand-in flags spend with zero revenue. */
+    revenueSignalBroken: (revenue, spend) => spend > 0 && !(revenue > 0),
     BQ_FUNCTION: '/bq',
     fetch: fetchImpl || (async () => { throw new Error('no fetch'); }),
     setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
@@ -131,6 +133,17 @@ async function check(name, fn){ await fn(); passed++; console.log('  ok -', name
     await assert.rejects(Q.runQuery('SELECT 3'));
     fail = false;
     await Q.runQuery('SELECT 3'); assert.strictEqual(calls, 5, 'a failed query is retried, not served from cache');
+  });
+
+  await check('revenue warning reads the whole window, not the searched ads', () => {
+    const ads = [{ cur: { spend: 100, revenue: 900 } }, { cur: { spend: 40, revenue: 0 } }];
+    assert.strictEqual(S.windowRevenueBroken(ads), false, 'account has revenue');
+    assert.strictEqual(S.windowRevenueBroken([ads[1]]), true, 'the check itself still fires on zero revenue');
+    ['f10-weekly.js', 'f10-tiktok.js', 'f10-linkedin.js'].forEach((f) => {
+      const src = read(f);
+      assert.ok(/applyRevenueGuard\('(tt-|li-)?summary-revenue-guard', windowRevenueBroken\(Object\.values\((w|TT_WIN|LI_WIN)\.ads\)\)\)/.test(src), f);
+      assert.ok(!/summary-revenue-guard', revenueSignalBroken\(tot\./.test(src), `${f} must not read the searched totals`);
+    });
   });
 
   /* Wiring: summed queries carry the search; per-ad queries do not. */

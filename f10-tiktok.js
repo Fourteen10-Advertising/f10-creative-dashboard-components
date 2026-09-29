@@ -294,7 +294,7 @@
      * warning banner and suppress the confident 0.0x on the blended tile. Always
      * false in CPA mode, so CPA scorecards are byte-for-byte unchanged. */
     const revBroken = (typeof applyRevenueGuard === 'function')
-      ? applyRevenueGuard('tt-summary-revenue-guard', revenueSignalBroken(tot.cur.revenue, tot.cur.spend))
+      ? applyRevenueGuard('tt-summary-revenue-guard', windowRevenueBroken(Object.values(TT_WIN.ads)))
       : false;
 
     const spendCard = { label: 'Spend',       val: fmt$(tot.cur.spend),         d: deltaHtml(tot.cur.spend, tot.pri.spend, false) };

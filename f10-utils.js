@@ -489,6 +489,15 @@ function refilterAdSearchCharts(){
   });
 }
 
+/* The revenue-integrity check is about the account's revenue tracking, so it
+ * always reads every ad in the window. Summing only the ads an ad search matches
+ * would raise a false warning whenever the matches happen to have no revenue. */
+function windowRevenueBroken(ads){
+  let revenue = 0, spend = 0;
+  (ads || []).forEach(a => { revenue += (a.cur && a.cur.revenue) || 0; spend += (a.cur && a.cur.spend) || 0; });
+  return revenueSignalBroken(revenue, spend);
+}
+
 /* Keep only the items whose search key matches the active search. keyFn returns
  * the key for one item (see adSearchKey). With no search, returns items as is. */
 function adSearchFilter(items, keyFn){
