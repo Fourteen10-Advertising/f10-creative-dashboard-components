@@ -237,18 +237,17 @@ function renderWeekly(){
   renderSummary(classified, c, WIN);
   /* When a search term is active, feed the board the full classified set so a
    * searched ad appears even if it sits below the noise floor (the name filter
-   * in renderPagedTable then isolates it). The map stays floor-scoped. */
+   * in renderPagedTable then isolates it). The map stays floor-scoped; its
+   * bubbles follow the search through followAdSearch. */
   renderBoard(adSearchTerm ? classified : movers, c);
   renderMap(movers, c);
   document.getElementById('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString('en-AU');
 }
 
-/* Re-render only the Movement Board from the loaded window (no re-query, no
- * chart redraw) — used when the ad-name search changes so floor-bypass applies. */
-/* Re-render the weekly board from the windows already in memory. Pass
- * { map: true } to redraw the Movement Map too — the ad-name search deliberately
- * leaves the map alone (it is a board-level filter), but the zero-spend filter
- * has to move both or the two views disagree about which ads exist. */
+/* Re-render the weekly board from the windows already in memory (no re-query).
+ * Pass { map: true } to redraw the Movement Map too. The ad-name search does not
+ * need it: the map's bubbles re-filter in place through followAdSearch. The
+ * zero-spend filter does, or the two views disagree about which ads exist. */
 function refreshWeeklyBoard(opts){
   if(!WIN) return;
   const c          = getControls();
@@ -397,7 +396,7 @@ function renderMap(movers, c){
   const m   = c.metric;
   const pts = applyZeroSpendFilter(movers).filter(a => a.improvePct!=null && a.sCur>0);
   const byState = {};
-  pts.forEach(a => { (byState[a.state]=byState[a.state]||[]).push({ x:a.sCur, y:a.improvePct*100, r:0, _spend:a.sCur, _name:a.ad_name, _state:a.state }); });
+  pts.forEach(a => { (byState[a.state]=byState[a.state]||[]).push({ x:a.sCur, y:a.improvePct*100, r:0, _spend:a.sCur, _name:a.ad_name, _state:a.state, _key:adSearchKey(a.ad_name, a.campaign_name) }); });
   const maxSpend   = Math.max(1, ...pts.map(p => p.sCur));
   const datasets   = Object.entries(byState).map(([s,arr]) => ({
     label: stateLabel(s),
@@ -421,6 +420,7 @@ function renderMap(movers, c){
       },
       plugins:{ legend:{position:'top',labels:{font:{size:11}}}, tooltip:{ callbacks:{ label:ctx=>{ const p=ctx.raw; return [p._name||'', stateLabel(p._state), `Spend: $${p._spend.toLocaleString()}`, `${m.label} change: ${p.y>0?'+':''}${p.y.toFixed(1)}%`]; } } } } },
     plugins:[{ id:'zeroLine', afterDraw(chart){ const yA=chart.scales.y,xA=chart.scales.x; const y0=yA.getPixelForValue(0); if(y0>=yA.top&&y0<=yA.bottom){ const ctx2=chart.ctx; ctx2.save(); ctx2.setLineDash([5,4]); ctx2.strokeStyle='#727272'; ctx2.lineWidth=1.5; ctx2.beginPath(); ctx2.moveTo(xA.left,y0); ctx2.lineTo(xA.right,y0); ctx2.stroke(); ctx2.setLineDash([]); ctx2.fillStyle='#727272'; ctx2.font='10px Archivo'; ctx2.fillText('no change',xA.left+4,y0-4); ctx2.restore(); } } }] });
+  followAdSearch('map', charts.map);
 }
 
 /* ── Tab system ── */

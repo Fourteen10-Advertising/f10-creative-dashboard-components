@@ -9,7 +9,7 @@ A dashboard is now just a config block plus script tags: the markup, styling, an
 | File | Purpose |
 |---|---|
 | `f10-shared.css` | All shared styles: layout, sidebar, controls bar, scorecards, badges, tables, charts |
-| `f10-utils.js` | Formatters, constants (METRICS, STATE_META, thresholds), `classify()`, aggregation helpers, group/status filter helpers (`scopeWhere()`), ad search (`adNameAttr`, `filterRowsBySearch`, `refilterAllTables`, `wireAdSearchInput`), `scatterMaxSpend()` |
+| `f10-utils.js` | Formatters, constants (METRICS, STATE_META, thresholds), `classify()`, aggregation helpers, group/status filter helpers (`scopeWhere()`), ad search (`adNameAttr`, `adSearchKey`, `filterRowsBySearch`, `refilterAllTables`, `followAdSearch`, `refilterAdSearchCharts`, `wireAdSearchInput`), `scatterMaxSpend()` |
 | `f10-weekly.js` | Weekly engine: fetchWindows, renderSummary/Board/Map, tab system, group filters, wireControls, initWeekly |
 | `f10-monthly.js` | Monthly engine: loadPowerLaw/Production/Decay/Age/CreativeEffectiveness (video-only: static images excluded) + the `loadMonthlyTab()` dispatcher. All SQL is shared and config-driven |
 | `f10-layout.js` | `renderLayout()` — builds the sidebar, controls bar, and every tab panel into `<div id="app"></div>` (Meta's eight, plus TikTok's and LinkedIn's eight each when those channels are configured). Production benchmark copy is derived from the threshold constants |
@@ -873,6 +873,7 @@ Both controls live in the controls bar on **every Meta/monthly tab** and need no
 - **Ad status** (`All ads` / `Active only`) — server-side filter. `Active only` scopes every query to ads whose latest Meta delivery status is ACTIVE, via the `is_active` column on the `creative_reporting` mart. Composed with group filters through `scopeWhere()` (group + status predicates, correct WHERE/AND leading).
   - **Requires** the mart to expose `is_active` (and `effective_status`), added by the `f10-dataform` `stg_meta_ad_status` model. Pin a client to a framework tag that ships this control **only after** that column is live in the client's mart, or `Active only` queries will error.
 - **Search ad** — client-side filter over the ad name **plus the campaign and ad set names**, applied to the current view across all ad tables (Movement Board, Ad Age, Ad Production, Power Law, Creative Effectiveness) in every section: Meta, TikTok and LinkedIn. Instant, no re-query. Matching ignores case, spacing and punctuation: both sides are reduced to letters and digits, the typed text is split on spaces, and every word must appear (so `moving back in` finds `..._movingbackin_...` and `2% deposit` finds `2%deposit`). A word never matches across two names. The TikTok and LinkedIn control bars carry their own search box, visible on every tab of that section (the window/metric controls stay weekly-only); all search boxes share one term, so a search carries across sections. When a term is present the weekly board **bypasses the noise floor** so a searched ad always appears. Ad rows carry a normalised `data-adname` key (`adNameAttr(adName, campaignName, adsetName)`); `renderPagedTable`/`refilterAllTables` do the filtering and `wireAdSearchInput()` wires each box. Month-level summary rows have no `data-adname` and are never filtered.
+- **Search on charts** — charts that plot one mark per ad follow the same search: the Movement Map bubbles, the Ad Production scatter points and the Ad Power Law bars, in Meta, TikTok and LinkedIn. Each chart tags its marks with `adSearchKey()` (the same key `adNameAttr` writes on table rows) and registers with `followAdSearch(slot, chart[, keys])` after it is built; `refilterAdSearchCharts()` runs after every search change and re-filters from the full data, so no re-query. Power Law bars keep their overall rank label (`#17`) and spend share. Charts built from month-level or cohort aggregates (Weekly Summary, Ads Launched by month, Ad Decay, Ad Age, Creative Effectiveness curve) still show every ad.
 
 ## Ad state labels and hover definitions
 
@@ -968,10 +969,9 @@ Two things to know about how it works:
 - It is a **display** filter, applied after classification rather than in SQL.
   `Dropped Off` is derived client-side by comparing two windows and has no column
   to filter on. So switching it costs no query.
-- It moves the board **and** the map together. The ad-name search deliberately
-  leaves the map alone, because it is a board-level filter, but a zero-spend
-  selection that moved only one view would leave the two disagreeing about which
-  ads exist.
+- It moves the board **and** the map together, because a zero-spend selection
+  that moved only one view would leave the two disagreeing about which ads exist.
+  The ad-name search filters the map's bubbles in place (see below).
 
 The board title reports what was hidden (`Ad Movement — 128 ads (38 zero spend
 hidden)`), and if the filter empties the table the no-data copy says so rather
