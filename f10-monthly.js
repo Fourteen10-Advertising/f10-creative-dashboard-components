@@ -84,6 +84,16 @@ function loadMonthlyTab(tab){
   if(tab === 'creative')   loadCreativeEffectiveness();
 }
 
+/* Meta tabs whose totals are summed in SQL carry the ad search in their queries
+ * (searchScopeWhere). When the search changes, mark them stale and re-query the
+ * one on screen; the others re-query when next opened. */
+const AD_SEARCH_SQL_TABS = ['decay', 'age', 'production'];
+onAdSearchReload('meta', () => {
+  AD_SEARCH_SQL_TABS.forEach(t => { delete loadedTabs[t]; });
+  const panel = document.getElementById('tab-' + activeTab);
+  if(AD_SEARCH_SQL_TABS.includes(activeTab) && panel && panel.classList.contains('active')) loadMonthlyTab(activeTab);
+});
+
 /* ── Ad Decay ── */
 
 async function loadDecay(){
@@ -97,13 +107,15 @@ async function loadDecay(){
       ROUND(AVG(DATE_DIFF(COALESCE(max_date, CURRENT_DATE()), min_date, DAY)), 0) AS avg_days_running,
       ROUND(SUM(spend), 0) AS total_spend,
       ${decayMetricSQL} AS cpa
-    FROM \`${PROJECT}.${DATASET}.${TABLE}\`${scopeWhere('WHERE')} GROUP BY 1, 2 ORDER BY 2 DESC`;
+    FROM \`${PROJECT}.${DATASET}.${TABLE}\`${searchScopeWhere('WHERE')} GROUP BY 1, 2 ORDER BY 2 DESC`;
   const dailySQL = `
     SELECT FORMAT_DATE('%b %Y', min_date) AS launch_month, DATE_TRUNC(min_date, MONTH) AS launch_month_sort,
       date_start, ROUND(SUM(spend), 2) AS daily_spend
-    FROM \`${PROJECT}.${DATASET}.${TABLE}\`${scopeWhere('WHERE')} GROUP BY 1, 2, 3 ORDER BY 3, 2`;
+    FROM \`${PROJECT}.${DATASET}.${TABLE}\`${searchScopeWhere('WHERE')} GROUP BY 1, 2, 3 ORDER BY 3, 2`;
+  const term = adSearchTerm;
   try {
     const [summary, daily] = await Promise.all([runQuery(summarySQL), runQuery(dailySQL)]);
+    if(term !== adSearchTerm) return;  /* a newer search is already reloading this tab */
     let total_ads=0,total_spend=0;
     const decayRows=summary.map(r=>{ total_ads+=Number(r.ads_launched); total_spend+=Number(r.total_spend);
       return `<tr><td>${r.launch_month}</td><td>${fmtNum(r.ads_launched)}</td><td>${r.avg_days_running?r.avg_days_running+'d':'–'}</td><td>${fmt$(r.total_spend)}</td><td>${r.cpa&&Number(r.cpa)>0?fmtMetricCell(r.cpa):'–'}</td></tr>`; });
@@ -136,7 +148,7 @@ async function loadAge(){
            WHEN creative_age IN ('3. 15-30 Days','4. 31-60 Days','5. 61-90 Days','3. 15-60 Days','4. 31-90 Days') THEN '15–90 Days'
            ELSE '90+ Days' END AS age_bucket,
       ROUND(SUM(spend), 2) AS daily_spend
-    FROM \`${PROJECT}.${DATASET}.${TABLE}\`${scopeWhere('WHERE')} GROUP BY 1, 2 ORDER BY 1, 2`;
+    FROM \`${PROJECT}.${DATASET}.${TABLE}\`${searchScopeWhere('WHERE')} GROUP BY 1, 2 ORDER BY 1, 2`;
   const tableSQL = `
     SELECT ad_id, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(adset_name) AS adset_name, ANY_VALUE(ad_name) AS ad_name,
       MIN(min_date) AS launch_date, MAX(max_date) AS last_spend, ANY_VALUE(creative_link) AS preview_link,
@@ -144,8 +156,10 @@ async function loadAge(){
       ROUND(${lifetimeMetricSQL('ANY_VALUE(lifetime_spend)', `SUM(${CONV_EXPR})`)}, 2) AS lifetime_cpa,
       ROUND(SUM(${CONV_EXPR}), 0) AS total_conversions
     FROM \`${PROJECT}.${DATASET}.${TABLE}\`${scopeWhere('WHERE')} GROUP BY 1 ORDER BY lifetime_spend DESC`;
+  const term = adSearchTerm;
   try {
     const [ageData, tableData] = await Promise.all([runQuery(ageSQL), runQuery(tableSQL)]);
+    if(term !== adSearchTerm) return;  /* a newer search is already reloading this tab */
     const dates=[...new Set(ageData.map(r=>bqStr(r.date_start)))].sort();
     const buckets=['0–14 Days','15–90 Days','90+ Days'];
     const spendMap={}; ageData.forEach(r=>{ spendMap[bqStr(r.date_start)+'|'+r.age_bucket]=Number(r.daily_spend); });
@@ -226,14 +240,16 @@ async function loadProduction(){
     WITH unique_ads AS (
       SELECT ad_id, MIN(min_date) AS launch_date, ROUND(ANY_VALUE(lifetime_spend),2) AS lifetime_spend, ROUND(${lifetimeMetricSQL('ANY_VALUE(lifetime_spend)', `SUM(${CONV_EXPR})`)},2) AS ${rollupMetricCol},
         ROUND(SUM(spend),2) AS period_spend, ROUND(SUM(${CONV_EXPR}),0) AS total_conversions${rollupRevSel}${thresholdGroupSelect()}
-      FROM \`${PROJECT}.${DATASET}.${TABLE}\`${scopeWhere('WHERE')} GROUP BY 1 ),
+      FROM \`${PROJECT}.${DATASET}.${TABLE}\`${searchScopeWhere('WHERE')} GROUP BY 1 ),
     classified AS ( SELECT *, ${classificationCaseSQL('lifetime_spend', rollupMetricCol)} AS classification FROM unique_ads )
     SELECT FORMAT_DATE('%b %Y', launch_date) AS launch_month, DATE_TRUNC(launch_date, MONTH) AS launch_month_sort,
       COUNT(*) AS ads_launched, COUNTIF(classification='Home Run') AS home_runs, COUNTIF(classification='On Base') AS on_base, COUNTIF(classification='Strike Out') AS strike_outs,
       ROUND(SUM(period_spend),0) AS total_spend, ${rollupAvgSQL} AS avg_cpa, ROUND(SUM(total_conversions),0) AS total_conversions
     FROM classified GROUP BY 1, 2 ORDER BY 2 DESC`;
+  const term = adSearchTerm;
   try {
     const [scatterData, monthlyData] = await Promise.all([runQuery(scatterSQL), runQuery(monthlySQL)]);
+    if(term !== adSearchTerm) return;  /* a newer search is already reloading this tab */
     /* Revenue-integrity guard (US-010): in ROAS mode, if there is lifetime spend
      * but NOT ONE ad shows positive ROAS, blended revenue is 0 across the whole
      * account — the gated revenue column is missing/zeroed. (A single Strike Out
@@ -244,14 +260,15 @@ async function loadProduction(){
       && scatterData.some(r => (Number(r.lifetime_spend)||0) > 0)
       && !scatterData.some(r => (Number(r[guardMCol])||0) > 0);
     applyRevenueGuard('production-revenue-guard', revBroken);
-    const totals=scatterData.reduce((acc,r)=>{ acc.total++; if(r.classification==='Home Run')acc.hr++; if(r.classification==='On Base')acc.ob++; if(r.classification==='Strike Out')acc.so++; return acc; },{total:0,hr:0,ob:0,so:0});
+    /* Scorecards count the ads the search matches, like the table and chart. */
+    const totals=adSearchFilter(scatterData, r=>adSearchKey(r.ad_name, r.campaign_name, r.adset_name)).reduce((acc,r)=>{ acc.total++; if(r.classification==='Home Run')acc.hr++; if(r.classification==='On Base')acc.ob++; if(r.classification==='Strike Out')acc.so++; return acc; },{total:0,hr:0,ob:0,so:0});
     document.getElementById('sc-ads-produced').textContent=fmtNum(totals.total);
     document.getElementById('sc-home-runs').textContent=fmtNum(totals.hr);
-    document.getElementById('sc-hr-rate').textContent=fmtPct(totals.hr/totals.total*100);
+    document.getElementById('sc-hr-rate').textContent=totals.total?fmtPct(totals.hr/totals.total*100):'–';
     document.getElementById('sc-on-base').textContent=fmtNum(totals.ob);
-    document.getElementById('sc-ob-rate').textContent=fmtPct(totals.ob/totals.total*100);
+    document.getElementById('sc-ob-rate').textContent=totals.total?fmtPct(totals.ob/totals.total*100):'–';
     document.getElementById('sc-strike-outs').textContent=fmtNum(totals.so);
-    document.getElementById('sc-so-rate').textContent=fmtPct(totals.so/totals.total*100);
+    document.getElementById('sc-so-rate').textContent=totals.total?fmtPct(totals.so/totals.total*100):'–';
     hideEl('production-scorecards-loading'); showEl('production-scorecards');
     /* Buckets come from classificationTiers() so a tier the active CASE can
        emit always has somewhere to land. A row carrying an unexpected label
@@ -374,25 +391,33 @@ async function loadCreativeEffectiveness(){
     ) WHERE impressions > 0 AND video_plays > 0 ORDER BY spend DESC`;
   try {
     const data = await runQuery(sql);
-    let tImpr=0,t15=0,t25=0,t50=0,t75=0,t100=0;
     const rows = data.map(r=>{
       const ce = { impressions:Number(r.impressions)||0, clicks:Number(r.clicks)||0, video_15s:Number(r.video_15s)||0, video_p25:Number(r.video_p25)||0, video_p50:Number(r.video_p50)||0, video_p75:Number(r.video_p75)||0, video_p100:Number(r.video_p100)||0, video_plays:Number(r.video_plays)||0, outbound_clicks:Number(r.outbound_clicks)||0 };
       const cr = creativeRates(ce);
       registerAdMetrics(r.ad_id, ce, undefined, creativeScoreHover(r.creative_score, { spend:r.lifetime_spend, metric:r[lifetimeMetricCol()], hook:cr.hook, hold:cr.hold, ctr:cr.ctr, completion:cr.completion, hasVideo:cr.hasVideo, activeDays:r.active_days }, metaScoreOpts()));
-      tImpr+=ce.impressions; t15+=ce.video_15s; t25+=ce.video_p25; t50+=ce.video_p50; t75+=ce.video_p75; t100+=ce.video_p100;
       const pct = (v) => v!=null ? fmtPct(v,2) : '–';
       const pv = r.creative_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.creative_link}" target="_blank">Preview</a>` : '–';
       return `<tr ${adNameAttr(r.ad_name, r.campaign_name)}><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name||''}">${r.ad_name||'–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name||''}">${r.campaign_name||'–'}</td><td class="num">${fmt$(r.spend)}</td><td class="num">${fmtNum(ce.impressions)}</td><td class="num">${pct(cr.hold)}</td><td class="num">${pct(cr.completion)}</td><td class="num">${pct(cr.retention.p25)}</td><td class="num">${pct(cr.retention.p50)}</td><td class="num">${pct(cr.retention.p75)}</td><td class="num">${pct(cr.retention.p100)}</td><td class="num">${pct(cr.ctr)}</td><td class="num">${pct(cr.outboundCtr)}</td><td>${pv}</td><td>${creativeScoreBadge(r.creative_score)}</td></tr>`;
     });
     renderPagedTable('creative-table-body', rows);
     hideEl('creative-table-loading'); showEl('creative-table');
-    const curve = [ t25, t50, t75, t100 ].map(v => tImpr>0 ? +(v/tImpr*100).toFixed(2) : 0);
-    hideEl('creative-chart-loading'); showEl('creative-chart-wrapper');
-    if(creativeChart) creativeChart.destroy();
-    creativeChart = new Chart(document.getElementById('creative-chart'), { type:'line',
-      data:{ labels:['25%','50%','75%','100%'], datasets:[{ label:'% of impressions reaching', data:curve, borderColor:CHART_PRIMARY, backgroundColor:CHART_PRIMARY+'21', borderWidth:2.5, pointRadius:4, fill:true, tension:0.25 }] },
-      options:{ responsive:true, maintainAspectRatio:false,
-        plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:ctx=>`${ctx.label} watched: ${ctx.raw}% of impressions` } } },
-        scales:{ x:{ title:{display:true,text:'Video quartile watched',font:{size:11}} }, y:{ title:{display:true,text:'% of impressions',font:{size:11}}, ticks:{callback:v=>v+'%'} } } } });
+    /* The curve is summed here from the rows already loaded, so it follows the
+       ad search with no re-query: onAdSearch redraws it from the matching ads. */
+    const drawCurve = () => {
+      let tImpr=0,t25=0,t50=0,t75=0,t100=0;
+      adSearchFilter(data, r=>adSearchKey(r.ad_name, r.campaign_name)).forEach(r=>{
+        tImpr+=Number(r.impressions)||0; t25+=Number(r.video_p25)||0; t50+=Number(r.video_p50)||0; t75+=Number(r.video_p75)||0; t100+=Number(r.video_p100)||0;
+      });
+      const curve = [ t25, t50, t75, t100 ].map(v => tImpr>0 ? +(v/tImpr*100).toFixed(2) : 0);
+      hideEl('creative-chart-loading'); showEl('creative-chart-wrapper');
+      if(creativeChart) creativeChart.destroy();
+      creativeChart = new Chart(document.getElementById('creative-chart'), { type:'line',
+        data:{ labels:['25%','50%','75%','100%'], datasets:[{ label:'% of impressions reaching', data:curve, borderColor:CHART_PRIMARY, backgroundColor:CHART_PRIMARY+'21', borderWidth:2.5, pointRadius:4, fill:true, tension:0.25 }] },
+        options:{ responsive:true, maintainAspectRatio:false,
+          plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:ctx=>`${ctx.label} watched: ${ctx.raw}% of impressions` } } },
+          scales:{ x:{ title:{display:true,text:'Video quartile watched',font:{size:11}} }, y:{ title:{display:true,text:'% of impressions',font:{size:11}}, ticks:{callback:v=>v+'%'} } } } });
+    };
+    drawCurve();
+    onAdSearch('creative-curve', drawCurve);
   } catch(err){ console.error('Creative effectiveness error:',err); const el=document.getElementById('creative-table-loading'); if(el) el.innerHTML='Error loading data: '+err.message; }
 }

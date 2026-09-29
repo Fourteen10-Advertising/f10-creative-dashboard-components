@@ -534,8 +534,10 @@ ${list.join(',\n')}
     const movers = classified.filter((a) => a.qCur || a.qPri);
     const windowTxt = `Current: ${fmtDate(LI_WIN.curStart)} – ${fmtDate(LI_WIN.curEnd)} vs Prior: ${fmtDate(LI_WIN.priStart)} – ${fmtDate(LI_WIN.priEnd)} · Metric: ${c.metric.label} · ${movers.length} ads cleared the floor`;
     ['li-summary-window-note', 'li-board-window-note', 'li-map-window-note'].forEach((id) => { const el = document.getElementById(id); if (el) el.textContent = windowTxt; });
-    liRenderSummary(classified, c);
-    liRenderBoard(movers, c);
+    liRenderSummary(adSearchFilter(classified, (a) => adSearchKey(a.ad_name, a.campaign_name)), c);
+    /* With a search, the board takes every ad so a match below the noise floor
+     * still shows (matches the Meta board). */
+    liRenderBoard(adSearchTerm ? classified : movers, c);
     /* The Map reads the SAME movers array the Board just rendered — one window
      * fetch feeds all three weekly tabs, exactly as the Meta engine does. */
     liRenderMap(movers, c);
@@ -737,7 +739,7 @@ ${list.join(',\n')}
         SELECT ad_id, MIN(min_date) AS launch_date, ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend,
           ROUND(${perAdMetricSQL}, 2) AS ${mCol},
           ROUND(SUM(spend), 2) AS period_spend, ROUND(SUM(${liConv()}), 0) AS total_conversions${rollupRevSel}
-        FROM ${liTable()} GROUP BY 1 ),
+        FROM ${liTable()}${adSearchWhere('WHERE', 'adgroup_name')} GROUP BY 1 ),
       classified AS ( SELECT *, ${liClassificationCaseSQL('lifetime_spend', mCol)} AS classification FROM unique_ads )
       SELECT FORMAT_DATE('%b %Y', launch_date) AS launch_month, DATE_TRUNC(launch_date, MONTH) AS launch_month_sort,
         COUNT(*) AS ads_launched, COUNTIF(classification='Home Run') AS home_runs, COUNTIF(classification='On Base') AS on_base, COUNTIF(classification='Strike Out') AS strike_outs,
@@ -748,13 +750,16 @@ ${list.join(',\n')}
 
   async function liLoadProduction() {
     const { scatterSQL, monthlySQL, mCol, isRoas } = liProductionSQL();
+    const term = adSearchTerm;
     try {
       const [scatterData, monthlyData] = await Promise.all([runQuery(scatterSQL), runQuery(monthlySQL)]);
+      if (term !== adSearchTerm) return;  /* a newer search is already reloading this tab */
       const revBroken = isRoas
         && scatterData.some((r) => (Number(r.lifetime_spend) || 0) > 0)
         && !scatterData.some((r) => (Number(r[mCol]) || 0) > 0);
       if (typeof applyRevenueGuard === 'function') applyRevenueGuard('li-production-revenue-guard', revBroken);
-      const totals = scatterData.reduce((acc, r) => { acc.total++; if (r.classification === 'Home Run') acc.hr++; if (r.classification === 'On Base') acc.ob++; if (r.classification === 'Strike Out') acc.so++; return acc; }, { total: 0, hr: 0, ob: 0, so: 0 });
+      /* Scorecards count the ads the search matches, like the table and chart. */
+      const totals = adSearchFilter(scatterData, (r) => adSearchKey(r.ad_name, r.campaign_name, r.adgroup_name)).reduce((acc, r) => { acc.total++; if (r.classification === 'Home Run') acc.hr++; if (r.classification === 'On Base') acc.ob++; if (r.classification === 'Strike Out') acc.so++; return acc; }, { total: 0, hr: 0, ob: 0, so: 0 });
       const setTxt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
       setTxt('li-sc-ads-produced', fmtNum(totals.total));
       setTxt('li-sc-home-runs', fmtNum(totals.hr));
@@ -894,7 +899,7 @@ ${list.join(',\n')}
       WITH per_ad AS (
         SELECT ad_id, MIN(min_date) AS launch_date, MAX(date_start) AS last_active_date,
           SUM(spend) AS ad_spend, SUM(${liConv()}) AS ad_conversions${revSel}
-        FROM ${liTable()} GROUP BY 1 )
+        FROM ${liTable()}${adSearchWhere('WHERE', 'adgroup_name')} GROUP BY 1 )
       SELECT FORMAT_DATE('%b %Y', launch_date) AS launch_month, DATE_TRUNC(launch_date, MONTH) AS launch_month_sort,
         COUNT(DISTINCT ad_id) AS ads_launched,
         ROUND(AVG(DATE_DIFF(COALESCE(last_active_date, CURRENT_DATE()), launch_date, DAY)), 0) AS avg_days_running,
@@ -904,14 +909,16 @@ ${list.join(',\n')}
     const dailySQL = `
       SELECT FORMAT_DATE('%b %Y', min_date) AS launch_month, DATE_TRUNC(min_date, MONTH) AS launch_month_sort,
         date_start, ROUND(SUM(spend), 2) AS daily_spend
-      FROM ${liTable()} GROUP BY 1, 2, 3 ORDER BY 3, 2`;
+      FROM ${liTable()}${adSearchWhere('WHERE', 'adgroup_name')} GROUP BY 1, 2, 3 ORDER BY 3, 2`;
     return { summarySQL, dailySQL };
   }
 
   async function liLoadDecay() {
     const { summarySQL, dailySQL } = liDecaySQL();
+    const term = adSearchTerm;
     try {
       const [summary, daily] = await Promise.all([runQuery(summarySQL), runQuery(dailySQL)]);
+      if (term !== adSearchTerm) return;  /* a newer search is already reloading this tab */
       let totalAds = 0, totalSpend = 0;
       const rows = summary.map((r) => {
         totalAds += Number(r.ads_launched) || 0; totalSpend += Number(r.total_spend) || 0;
@@ -950,7 +957,7 @@ ${list.join(',\n')}
     const mCol = liLifetimeMetricCol();
     const ageSQL = `
       SELECT date_start, ${liAgeBucketSQL()} AS age_bucket, ROUND(SUM(spend), 2) AS daily_spend
-      FROM ${liTable()} GROUP BY 1, 2 ORDER BY 1, 2`;
+      FROM ${liTable()}${adSearchWhere('WHERE', 'adgroup_name')} GROUP BY 1, 2 ORDER BY 1, 2`;
     const tableSQL = `
       SELECT ad_id, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(adgroup_name) AS adgroup_name, ANY_VALUE(ad_name) AS ad_name,
         MIN(min_date) AS launch_date, MAX(date_start) AS last_spend, ANY_VALUE(creative_link) AS preview_link,
@@ -964,8 +971,10 @@ ${list.join(',\n')}
   async function liLoadAge() {
     const { ageSQL, tableSQL } = liAgeSQL();
     const mCol = liLifetimeMetricCol();
+    const term = adSearchTerm;
     try {
       const [ageData, tableData] = await Promise.all([runQuery(ageSQL), runQuery(tableSQL)]);
+      if (term !== adSearchTerm) return;  /* a newer search is already reloading this tab */
       const dates = [...new Set(ageData.map((r) => bqStr(r.date_start)))].sort();
       const spendMap = {}; ageData.forEach((r) => { spendMap[bqStr(r.date_start) + '|' + r.age_bucket] = Number(r.daily_spend) || 0; });
       const dayTotals = dates.map((d) => LI_AGE_BUCKETS.reduce((s, bk) => s + (spendMap[d + '|' + bk] || 0), 0));
@@ -1015,31 +1024,39 @@ ${list.join(',\n')}
   async function liLoadCreative() {
     try {
       const data = await runQuery(liCreativeSQL());
-      let tImpr = 0, tViews = 0, tHold = 0, t25 = 0, t50 = 0, t75 = 0, t100 = 0;
+      const rowCe = [];
       const rows = data.map((r) => {
         const ce = { impressions: Number(r.impressions) || 0, clicks: Number(r.clicks) || 0, landing_page_clicks: Number(r.landing_page_clicks) || 0, video_starts: Number(r.video_starts) || 0, video_views: Number(r.video_views) || 0, video_p25: Number(r.video_p25) || 0, video_p50: Number(r.video_p50) || 0, video_p75: Number(r.video_p75) || 0, video_p100: Number(r.video_p100) || 0 };
         const cr = creativeRates(ce, PROFILE);
         registerAdMetrics(r.ad_id, ce, PROFILE, creativeScoreHover(r.creative_score, { spend: r.lifetime_spend, metric: r[liLifetimeMetricCol()], hook: cr.hook, hold: cr.hold, ctr: cr.outboundCtr, completion: cr.completion, hasVideo: cr.hasVideo, activeDays: r.active_days }, liScoreOpts()));
-        tImpr += ce.impressions; tViews += ce.video_views; tHold += ce.video_p50; t25 += ce.video_p25; t50 += ce.video_p50; t75 += ce.video_p75; t100 += ce.video_p100;
+        rowCe.push({ r, ce });
         const pct = (v) => v != null ? fmtPct(v, 2) : '–';
         const pv = r.creative_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="linkedin" href="${r.creative_link}" target="_blank">Preview</a>` : '–';
         return `<tr ${adNameAttr(r.ad_name, r.campaign_name)}><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name || ''}">${r.ad_name || '–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name || ''}">${r.campaign_name || '–'}</td><td class="num">${fmt$(r.spend)}</td><td class="num">${fmtNum(ce.impressions)}</td><td class="num">${pct(cr.hook)}</td><td class="num">${pct(cr.hold)}</td><td class="num">${pct(cr.completion)}</td><td class="num">${pct(cr.retention.p25)}</td><td class="num">${pct(cr.retention.p50)}</td><td class="num">${pct(cr.retention.p75)}</td><td class="num">${pct(cr.retention.p100)}</td><td class="num">${pct(cr.ctr)}</td><td class="num">${cr.outboundCtr != null ? fmtPct(cr.outboundCtr, 3) : '–'}</td><td>${pv}</td><td>${creativeScoreBadge(r.creative_score)}</td></tr>`;
       });
       renderPagedTable('li-creative-table-body', rows);
       hideEl('li-creative-table-loading'); showEl('li-creative-table');
-      const viewAvg = tImpr > 0 ? +(tViews / tImpr * 100).toFixed(2) : 0;
-      const holdAvg = tImpr > 0 ? +(tHold / tImpr * 100).toFixed(2) : 0;
-      const setTxt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-      setTxt('li-creative-hook', fmtPct(viewAvg, 2));
-      setTxt('li-creative-hold', fmtPct(holdAvg, 2));
-      const curve = [t25, t50, t75, t100].map((v) => tImpr > 0 ? +(v / tImpr * 100).toFixed(2) : 0);
-      hideEl('li-creative-chart-loading'); showEl('li-creative-chart-wrapper');
-      if (liCharts.creative) liCharts.creative.destroy();
-      liCharts.creative = new Chart(document.getElementById('li-creative-chart'), {
-        type: 'line',
-        data: { labels: ['25%', '50%', '75%', '100%'], datasets: [{ label: '% of impressions reaching', data: curve, borderColor: CHART_PRIMARY, backgroundColor: CHART_PRIMARY+'21', borderWidth: 2.5, pointRadius: 4, fill: true, tension: 0.25 }] },
-        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx) => `${ctx.label} watched: ${ctx.raw}% of impressions` } } }, scales: { x: { title: { display: true, text: 'Video quartile watched', font: { size: 11 } } }, y: { title: { display: true, text: '% of impressions', font: { size: 11 } }, ticks: { callback: (v) => v + '%' } } } },
-      });
+      /* Tiles and curve are summed here from the rows already loaded, so they
+       * follow the ad search with no re-query. */
+      const drawCurve = () => {
+        let tImpr = 0, tViews = 0, tHold = 0, t25 = 0, t50 = 0, t75 = 0, t100 = 0;
+        adSearchFilter(rowCe, (x) => adSearchKey(x.r.ad_name, x.r.campaign_name)).forEach(({ ce }) => { tImpr += ce.impressions; tViews += ce.video_views; tHold += ce.video_p50; t25 += ce.video_p25; t50 += ce.video_p50; t75 += ce.video_p75; t100 += ce.video_p100; });
+        const viewAvg = tImpr > 0 ? +(tViews / tImpr * 100).toFixed(2) : 0;
+        const holdAvg = tImpr > 0 ? +(tHold / tImpr * 100).toFixed(2) : 0;
+        const setTxt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+        setTxt('li-creative-hook', fmtPct(viewAvg, 2));
+        setTxt('li-creative-hold', fmtPct(holdAvg, 2));
+        const curve = [t25, t50, t75, t100].map((v) => tImpr > 0 ? +(v / tImpr * 100).toFixed(2) : 0);
+        hideEl('li-creative-chart-loading'); showEl('li-creative-chart-wrapper');
+        if (liCharts.creative) liCharts.creative.destroy();
+        liCharts.creative = new Chart(document.getElementById('li-creative-chart'), {
+          type: 'line',
+          data: { labels: ['25%', '50%', '75%', '100%'], datasets: [{ label: '% of impressions reaching', data: curve, borderColor: CHART_PRIMARY, backgroundColor: CHART_PRIMARY+'21', borderWidth: 2.5, pointRadius: 4, fill: true, tension: 0.25 }] },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx) => `${ctx.label} watched: ${ctx.raw}% of impressions` } } }, scales: { x: { title: { display: true, text: 'Video quartile watched', font: { size: 11 } } }, y: { title: { display: true, text: '% of impressions', font: { size: 11 } }, ticks: { callback: (v) => v + '%' } } } },
+        });
+      };
+      drawCurve();
+      onAdSearch('li-creative-curve', drawCurve);
     } catch (err) { console.error('LinkedIn creative error:', err); const el = document.getElementById('li-creative-table-loading'); if (el) el.innerHTML = 'Error loading data: ' + err.message; }
   }
 
@@ -1087,6 +1104,14 @@ ${list.join(',\n')}
   }
 
   function liWireControls() {
+    /* Weekly Summary and board follow the search from the loaded windows (no
+     * re-query). Decay, Age and Production sum totals in SQL, so they are marked
+     * stale and the one on screen re-queries (see onAdSearchReload). */
+    onAdSearch('li-weekly', () => { if (LI_WIN) liRenderWeekly(); });
+    onAdSearchReload('li', () => {
+      ['li-decay', 'li-age', 'li-production'].forEach((t) => { delete liLoaded[t]; });
+      if (['li-decay', 'li-age', 'li-production'].includes(liActive)) liLoadTab(liActive);
+    });
     /* Ad search shares the Meta box's term (see wireAdSearchInput): the tables here
      * re-filter in place, and the Meta board re-renders if it is loaded. */
     wireAdSearchInput(document.getElementById('li-ctrl-adsearch'), () => {

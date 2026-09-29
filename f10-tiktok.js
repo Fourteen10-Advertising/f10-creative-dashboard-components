@@ -259,8 +259,10 @@
     const movers = classified.filter((a) => a.qCur || a.qPri);
     const windowTxt = `Current: ${fmtDate(TT_WIN.curStart)} – ${fmtDate(TT_WIN.curEnd)} vs Prior: ${fmtDate(TT_WIN.priStart)} – ${fmtDate(TT_WIN.priEnd)} · Metric: ${c.metric.label} · ${movers.length} ads cleared the floor`;
     ['tt-summary-window-note', 'tt-board-window-note', 'tt-map-window-note'].forEach((id) => { const el = document.getElementById(id); if (el) el.textContent = windowTxt; });
-    ttRenderSummary(classified, c);
-    ttRenderBoard(movers, c);
+    ttRenderSummary(adSearchFilter(classified, (a) => adSearchKey(a.ad_name, a.campaign_name)), c);
+    /* With a search, the board takes every ad so a match below the noise floor
+     * still shows (matches the Meta board). */
+    ttRenderBoard(adSearchTerm ? classified : movers, c);
     /* The Map reads the SAME movers array the Board just rendered — one window
      * fetch feeds all three weekly tabs, exactly as the Meta engine does. */
     ttRenderMap(movers, c);
@@ -467,7 +469,7 @@
         SELECT ad_id, MIN(min_date) AS launch_date, ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend,
           ROUND(${perAdMetricSQL}, 2) AS ${mCol},
           ROUND(SUM(spend), 2) AS period_spend, ROUND(SUM(${ttConv()}), 0) AS total_conversions${rollupRevSel}
-        FROM ${ttTable()} GROUP BY 1 ),
+        FROM ${ttTable()}${adSearchWhere('WHERE', 'adgroup_name')} GROUP BY 1 ),
       classified AS ( SELECT *, ${ttClassificationCaseSQL('lifetime_spend', mCol)} AS classification FROM unique_ads )
       SELECT FORMAT_DATE('%b %Y', launch_date) AS launch_month, DATE_TRUNC(launch_date, MONTH) AS launch_month_sort,
         COUNT(*) AS ads_launched, COUNTIF(classification='Home Run') AS home_runs, COUNTIF(classification='On Base') AS on_base, COUNTIF(classification='Strike Out') AS strike_outs,
@@ -478,8 +480,10 @@
 
   async function ttLoadProduction() {
     const { scatterSQL, monthlySQL, mCol, isRoas } = ttProductionSQL();
+    const term = adSearchTerm;
     try {
       const [scatterData, monthlyData] = await Promise.all([runQuery(scatterSQL), runQuery(monthlySQL)]);
+      if (term !== adSearchTerm) return;  /* a newer search is already reloading this tab */
       /* Revenue-integrity guard (US-010): in ROAS mode, spend present but not one ad
        * with positive ROAS means the gated revenue column is missing/zeroed. Derived
        * from the scatter rows already fetched (no extra query). Never fires in CPA. */
@@ -487,7 +491,8 @@
         && scatterData.some((r) => (Number(r.lifetime_spend) || 0) > 0)
         && !scatterData.some((r) => (Number(r[mCol]) || 0) > 0);
       if (typeof applyRevenueGuard === 'function') applyRevenueGuard('tt-production-revenue-guard', revBroken);
-      const totals = scatterData.reduce((acc, r) => { acc.total++; if (r.classification === 'Home Run') acc.hr++; if (r.classification === 'On Base') acc.ob++; if (r.classification === 'Strike Out') acc.so++; return acc; }, { total: 0, hr: 0, ob: 0, so: 0 });
+      /* Scorecards count the ads the search matches, like the table and chart. */
+      const totals = adSearchFilter(scatterData, (r) => adSearchKey(r.ad_name, r.campaign_name, r.adgroup_name)).reduce((acc, r) => { acc.total++; if (r.classification === 'Home Run') acc.hr++; if (r.classification === 'On Base') acc.ob++; if (r.classification === 'Strike Out') acc.so++; return acc; }, { total: 0, hr: 0, ob: 0, so: 0 });
       const setTxt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
       setTxt('tt-sc-ads-produced', fmtNum(totals.total));
       setTxt('tt-sc-home-runs', fmtNum(totals.hr));
@@ -626,7 +631,7 @@
       WITH per_ad AS (
         SELECT ad_id, MIN(min_date) AS launch_date, MAX(date_start) AS last_active_date,
           SUM(spend) AS ad_spend, SUM(${ttConv()}) AS ad_conversions${revSel}
-        FROM ${ttTable()} GROUP BY 1 )
+        FROM ${ttTable()}${adSearchWhere('WHERE', 'adgroup_name')} GROUP BY 1 )
       SELECT FORMAT_DATE('%b %Y', launch_date) AS launch_month, DATE_TRUNC(launch_date, MONTH) AS launch_month_sort,
         COUNT(DISTINCT ad_id) AS ads_launched,
         ROUND(AVG(DATE_DIFF(COALESCE(last_active_date, CURRENT_DATE()), launch_date, DAY)), 0) AS avg_days_running,
@@ -636,14 +641,16 @@
     const dailySQL = `
       SELECT FORMAT_DATE('%b %Y', min_date) AS launch_month, DATE_TRUNC(min_date, MONTH) AS launch_month_sort,
         date_start, ROUND(SUM(spend), 2) AS daily_spend
-      FROM ${ttTable()} GROUP BY 1, 2, 3 ORDER BY 3, 2`;
+      FROM ${ttTable()}${adSearchWhere('WHERE', 'adgroup_name')} GROUP BY 1, 2, 3 ORDER BY 3, 2`;
     return { summarySQL, dailySQL };
   }
 
   async function ttLoadDecay() {
     const { summarySQL, dailySQL } = ttDecaySQL();
+    const term = adSearchTerm;
     try {
       const [summary, daily] = await Promise.all([runQuery(summarySQL), runQuery(dailySQL)]);
+      if (term !== adSearchTerm) return;  /* a newer search is already reloading this tab */
       let totalAds = 0, totalSpend = 0;
       const rows = summary.map((r) => {
         totalAds += Number(r.ads_launched) || 0; totalSpend += Number(r.total_spend) || 0;
@@ -682,7 +689,7 @@
     const mCol = ttLifetimeMetricCol();
     const ageSQL = `
       SELECT date_start, ${ttAgeBucketSQL()} AS age_bucket, ROUND(SUM(spend), 2) AS daily_spend
-      FROM ${ttTable()} GROUP BY 1, 2 ORDER BY 1, 2`;
+      FROM ${ttTable()}${adSearchWhere('WHERE', 'adgroup_name')} GROUP BY 1, 2 ORDER BY 1, 2`;
     const tableSQL = `
       SELECT ad_id, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(adgroup_name) AS adgroup_name, ANY_VALUE(ad_name) AS ad_name,
         MIN(min_date) AS launch_date, MAX(date_start) AS last_spend, ANY_VALUE(creative_link) AS preview_link,
@@ -696,8 +703,10 @@
   async function ttLoadAge() {
     const { ageSQL, tableSQL } = ttAgeSQL();
     const mCol = ttLifetimeMetricCol();
+    const term = adSearchTerm;
     try {
       const [ageData, tableData] = await Promise.all([runQuery(ageSQL), runQuery(tableSQL)]);
+      if (term !== adSearchTerm) return;  /* a newer search is already reloading this tab */
       const dates = [...new Set(ageData.map((r) => bqStr(r.date_start)))].sort();
       const spendMap = {}; ageData.forEach((r) => { spendMap[bqStr(r.date_start) + '|' + r.age_bucket] = Number(r.daily_spend) || 0; });
       const dayTotals = dates.map((d) => TT_AGE_BUCKETS.reduce((s, bk) => s + (spendMap[d + '|' + bk] || 0), 0));
@@ -747,31 +756,39 @@
   async function ttLoadCreative() {
     try {
       const data = await runQuery(ttCreativeSQL());
-      let tImpr = 0, t2 = 0, t6 = 0, t25 = 0, t50 = 0, t75 = 0, t100 = 0;
+      const rowCe = [];
       const rows = data.map((r) => {
         const ce = { impressions: Number(r.impressions) || 0, clicks: Number(r.clicks) || 0, video_play_actions: Number(r.video_play_actions) || 0, video_watched_2s: Number(r.video_watched_2s) || 0, video_watched_6s: Number(r.video_watched_6s) || 0, video_views_p25: Number(r.video_views_p25) || 0, video_views_p50: Number(r.video_views_p50) || 0, video_views_p75: Number(r.video_views_p75) || 0, video_views_p100: Number(r.video_views_p100) || 0 };
         const cr = creativeRates(ce, PROFILE);
         registerAdMetrics(r.ad_id, ce, PROFILE, creativeScoreHover(r.creative_score, { spend: r.lifetime_spend, metric: r[ttLifetimeMetricCol()], hook: cr.hook, hold: cr.hold, ctr: cr.ctr, completion: cr.completion, hasVideo: cr.hasVideo, activeDays: r.active_days }, ttScoreOpts()));
-        tImpr += ce.impressions; t2 += ce.video_watched_2s; t6 += ce.video_watched_6s; t25 += ce.video_views_p25; t50 += ce.video_views_p50; t75 += ce.video_views_p75; t100 += ce.video_views_p100;
+        rowCe.push({ r, ce });
         const pct = (v) => v != null ? fmtPct(v, 2) : '–';
         const pv = r.creative_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="tiktok" href="${r.creative_link}" target="_blank">Preview</a>` : '–';
         return `<tr ${adNameAttr(r.ad_name, r.campaign_name)}><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name || ''}">${r.ad_name || '–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name || ''}">${r.campaign_name || '–'}</td><td class="num">${fmt$(r.spend)}</td><td class="num">${fmtNum(ce.impressions)}</td><td class="num">${pct(cr.hook)}</td><td class="num">${pct(cr.hold)}</td><td class="num">${pct(cr.completion)}</td><td class="num">${pct(cr.retention.p25)}</td><td class="num">${pct(cr.retention.p50)}</td><td class="num">${pct(cr.retention.p75)}</td><td class="num">${pct(cr.retention.p100)}</td><td class="num">${pct(cr.ctr)}</td><td>${pv}</td><td>${creativeScoreBadge(r.creative_score)}</td></tr>`;
       });
       renderPagedTable('tt-creative-table-body', rows);
       hideEl('tt-creative-table-loading'); showEl('tt-creative-table');
-      const hookAvg = tImpr > 0 ? +(t2 / tImpr * 100).toFixed(2) : 0;
-      const holdAvg = tImpr > 0 ? +(t6 / tImpr * 100).toFixed(2) : 0;
-      const setTxt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-      setTxt('tt-creative-hook', fmtPct(hookAvg, 2));
-      setTxt('tt-creative-hold', fmtPct(holdAvg, 2));
-      const curve = [t25, t50, t75, t100].map((v) => tImpr > 0 ? +(v / tImpr * 100).toFixed(2) : 0);
-      hideEl('tt-creative-chart-loading'); showEl('tt-creative-chart-wrapper');
-      if (ttCharts.creative) ttCharts.creative.destroy();
-      ttCharts.creative = new Chart(document.getElementById('tt-creative-chart'), {
-        type: 'line',
-        data: { labels: ['25%', '50%', '75%', '100%'], datasets: [{ label: '% of impressions reaching', data: curve, borderColor: CHART_PRIMARY, backgroundColor: CHART_PRIMARY+'21', borderWidth: 2.5, pointRadius: 4, fill: true, tension: 0.25 }] },
-        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx) => `${ctx.label} watched: ${ctx.raw}% of impressions` } } }, scales: { x: { title: { display: true, text: 'Video quartile watched', font: { size: 11 } } }, y: { title: { display: true, text: '% of impressions', font: { size: 11 } }, ticks: { callback: (v) => v + '%' } } } },
-      });
+      /* Tiles and curve are summed here from the rows already loaded, so they
+       * follow the ad search with no re-query. */
+      const drawCurve = () => {
+        let tImpr = 0, t2 = 0, t6 = 0, t25 = 0, t50 = 0, t75 = 0, t100 = 0;
+        adSearchFilter(rowCe, (x) => adSearchKey(x.r.ad_name, x.r.campaign_name)).forEach(({ ce }) => { tImpr += ce.impressions; t2 += ce.video_watched_2s; t6 += ce.video_watched_6s; t25 += ce.video_views_p25; t50 += ce.video_views_p50; t75 += ce.video_views_p75; t100 += ce.video_views_p100; });
+        const hookAvg = tImpr > 0 ? +(t2 / tImpr * 100).toFixed(2) : 0;
+        const holdAvg = tImpr > 0 ? +(t6 / tImpr * 100).toFixed(2) : 0;
+        const setTxt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+        setTxt('tt-creative-hook', fmtPct(hookAvg, 2));
+        setTxt('tt-creative-hold', fmtPct(holdAvg, 2));
+        const curve = [t25, t50, t75, t100].map((v) => tImpr > 0 ? +(v / tImpr * 100).toFixed(2) : 0);
+        hideEl('tt-creative-chart-loading'); showEl('tt-creative-chart-wrapper');
+        if (ttCharts.creative) ttCharts.creative.destroy();
+        ttCharts.creative = new Chart(document.getElementById('tt-creative-chart'), {
+          type: 'line',
+          data: { labels: ['25%', '50%', '75%', '100%'], datasets: [{ label: '% of impressions reaching', data: curve, borderColor: CHART_PRIMARY, backgroundColor: CHART_PRIMARY+'21', borderWidth: 2.5, pointRadius: 4, fill: true, tension: 0.25 }] },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx) => `${ctx.label} watched: ${ctx.raw}% of impressions` } } }, scales: { x: { title: { display: true, text: 'Video quartile watched', font: { size: 11 } } }, y: { title: { display: true, text: '% of impressions', font: { size: 11 } }, ticks: { callback: (v) => v + '%' } } } },
+        });
+      };
+      drawCurve();
+      onAdSearch('tt-creative-curve', drawCurve);
     } catch (err) { console.error('TikTok creative error:', err); const el = document.getElementById('tt-creative-table-loading'); if (el) el.innerHTML = 'Error loading data: ' + err.message; }
   }
 
@@ -815,6 +832,14 @@
   }
 
   function ttWireControls() {
+    /* Weekly Summary and board follow the search from the loaded windows (no
+     * re-query). Decay, Age and Production sum totals in SQL, so they are marked
+     * stale and the one on screen re-queries (see onAdSearchReload). */
+    onAdSearch('tt-weekly', () => { if (TT_WIN) ttRenderWeekly(); });
+    onAdSearchReload('tt', () => {
+      ['tt-decay', 'tt-age', 'tt-production'].forEach((t) => { delete ttLoaded[t]; });
+      if (['tt-decay', 'tt-age', 'tt-production'].includes(ttActive)) ttLoadTab(ttActive);
+    });
     /* Ad search shares the Meta box's term (see wireAdSearchInput): the tables here
      * re-filter in place, and the Meta board re-renders if it is loaded. */
     wireAdSearchInput(document.getElementById('tt-ctrl-adsearch'), () => {
