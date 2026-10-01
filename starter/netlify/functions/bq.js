@@ -237,14 +237,13 @@ exports.handler = async function (event) {
 
 /* Resolve ad_ids to signed preview URLs.
  *
- * An ad maps to its stored asset through two shared (cross-client) tables:
- *   meta_creative_links  ad_id -> video_id / image_hash (the asset id)
- *   creative_manifest    asset id -> gcs_uri + fetch_status (was it stored?)
- * We take the latest creative per ad (matching how creative_link is built),
- * then mint a short-TTL V4 signed read URL for any asset actually in the
- * bucket. The bucket stays private; only the time-limited URL reaches the
- * browser. Assets that were never fetched return url:null so the UI keeps the
- * Facebook fallback link. */
+ * An ad's preview assets come from the dataform creative_media mart
+ * ({client}_marts.creative_media, else all_clients.creative_media): one row per
+ * asset with its gcs_uri, fetch_status and card_index. We mint a short-TTL V4
+ * signed read URL for every asset actually in the bucket, in card order. The
+ * bucket stays private; only the time-limited URL reaches the browser. Assets
+ * that were never fetched return url:null so the UI keeps the Facebook fallback
+ * link. */
 async function resolveMedia(body, credentials, cors) {
   const json = (statusCode, payload) => ({
     statusCode,
@@ -264,111 +263,29 @@ async function resolveMedia(body, credentials, cors) {
       location: 'australia-southeast1',
     });
 
-    // Platform-aware creative -> asset resolution. Meta maps ad_id via the shared
-    // meta_creative_links table; TikTok maps ad_id -> video_id (its manifest asset_id)
-    // straight from the raw ads table. Both land in the shared creative_manifest,
-    // filtered by platform, so a signed GCS URL is only minted for stored assets.
+    // Ad -> preview assets come from the dataform creative_media mart (f10-dataform
+    // docs/creative-media-mart.md): one row per (platform, ad_id, asset_id), joined
+    // live to the asset ledger, with card_index giving the card order (1 = the
+    // representative pick: most-delivered asset, then the newest asset in a dynamic
+    // creative feed, then one stored in the bucket, then newest). The client's own
+    // {client}_marts.creative_media scopes the lookup to that client's ads; requests
+    // without a client (dashboard frontends older than v1.31.0) read the
+    // cross-client all_clients.creative_media.
     const platform = body.platform === 'tiktok' ? 'tiktok' : 'meta';
-    const sql = platform === 'tiktok'
-      ? `
-      SELECT l.ad_id, m.asset_type, m.gcs_uri, m.fetch_status
-      FROM (
-        SELECT CAST(ad_id AS STRING) AS ad_id,
-               COALESCE(NULLIF(video_id, ''), JSON_VALUE(image_ids, '$[0]')) AS asset_id,
-               modify_time AS created_time
-        FROM \`mcc-poc-477801.all_clients_tiktok.ads\`
-      ) l
-      LEFT JOIN \`mcc-poc-477801.all_clients.creative_manifest\` m
-        ON m.asset_id = l.asset_id AND m.platform = 'tiktok'
-      WHERE l.ad_id IN UNNEST(@adIds)
-      QUALIFY ROW_NUMBER() OVER (PARTITION BY l.ad_id ORDER BY l.created_time DESC) = 1`
-      : `
-      -- Representative asset per ad, matching the creative-audit pick order
-      -- (audit.py / sql/creative_band_mining.sql): the asset actually DELIVERING
-      -- the most impressions ("dominant in asset insights") wins first, then the
-      -- most recently created asset, then one already stored in the bucket, then
-      -- newest by created_time. Ads with no per-asset delivery data (the
-      -- image/video_asset_insights feeds re-synced 2026-07-07, history still
-      -- accruing) fall back to recency through the LEFT JOINs.
-      WITH asset_delivery AS (
-        SELECT ad_id, asset_id AS top_delivered_asset_id
-        FROM (
-          SELECT ad_id, asset_id, SUM(impressions) AS impr,
-                 ROW_NUMBER() OVER (PARTITION BY ad_id ORDER BY SUM(impressions) DESC, asset_id) AS rn
-          FROM (
-            SELECT CAST(vi.ad_id AS STRING) AS ad_id, vi.video_asset_video_id AS asset_id,
-                   SAFE_CAST(vi.impressions AS INT64) AS impressions
-            FROM \`mcc-poc-477801.all_clients_meta.video_asset_insights\` vi
-            WHERE CAST(vi.ad_id AS STRING) IN UNNEST(@adIds)
-              AND vi.video_asset_video_id IS NOT NULL AND vi.video_asset_video_id != ''
-            UNION ALL
-            SELECT CAST(ii.ad_id AS STRING) AS ad_id, ii.image_asset_hash AS asset_id,
-                   SAFE_CAST(ii.impressions AS INT64) AS impressions
-            FROM \`mcc-poc-477801.all_clients_meta.image_asset_insights\` ii
-            WHERE CAST(ii.ad_id AS STRING) IN UNNEST(@adIds)
-              AND ii.image_asset_hash IS NOT NULL AND ii.image_asset_hash != ''
-          )
-          GROUP BY ad_id, asset_id
-        )
-        WHERE rn = 1 AND impr >= 100
-      ),
-      feed_recency AS (
-        SELECT ad_id, asset_id, MAX(recency_ms) AS recency_ms
-        FROM (
-          SELECT ac.ad_id, JSON_VALUE(img, '$.hash') AS asset_id,
-                 SAFE_CAST(REGEXP_EXTRACT(JSON_VALUE(al, '$.name'), r'_(\\d{13})$') AS INT64) AS recency_ms
-          FROM (SELECT DISTINCT ad_id, creative_id FROM \`mcc-poc-477801.all_clients.meta_creative_links\`
-                WHERE ad_id IN UNNEST(@adIds) AND creative_id IS NOT NULL) ac
-          JOIN \`mcc-poc-477801.all_clients_meta.ad_creatives_from_ads\` cr ON cr.id = ac.creative_id,
-               UNNEST(JSON_QUERY_ARRAY(cr.asset_feed_spec, '$.images')) img,
-               UNNEST(JSON_QUERY_ARRAY(img, '$.adlabels')) al
-          UNION ALL
-          SELECT ac.ad_id, JSON_VALUE(vid, '$.video_id') AS asset_id,
-                 SAFE_CAST(REGEXP_EXTRACT(JSON_VALUE(al, '$.name'), r'_(\\d{13})$') AS INT64) AS recency_ms
-          FROM (SELECT DISTINCT ad_id, creative_id FROM \`mcc-poc-477801.all_clients.meta_creative_links\`
-                WHERE ad_id IN UNNEST(@adIds) AND creative_id IS NOT NULL) ac
-          JOIN \`mcc-poc-477801.all_clients_meta.ad_creatives_from_ads\` cr ON cr.id = ac.creative_id,
-               UNNEST(JSON_QUERY_ARRAY(cr.asset_feed_spec, '$.videos')) vid,
-               UNNEST(JSON_QUERY_ARRAY(vid, '$.adlabels')) al
-        )
-        WHERE asset_id IS NOT NULL AND recency_ms IS NOT NULL
-        GROUP BY ad_id, asset_id
-      ),
-      asset_pref AS (
-        SELECT ad_id, ARRAY_AGG(asset_id ORDER BY recency_ms DESC, asset_id)[OFFSET(0)] AS pref_asset_id
-        FROM feed_recency GROUP BY ad_id
-      )
-      -- Return EVERY stored asset per ad (carousel cards), not just the top one,
-      -- deduped to one row per (ad, asset). Card 0 stays the same representative
-      -- asset the single-preview always picked (top-delivered -> preferred ->
-      -- stored -> newest), so single-asset ads are unchanged; ads with more than
-      -- one card drive the swipeable carousel in f10-preview.js.
+    const client = winningClientKey(body.client);
+    const mediaTable = client
+      ? `mcc-poc-477801.${client}_marts.creative_media`
+      : 'mcc-poc-477801.all_clients.creative_media';
+    const sql = `
       SELECT ad_id, asset_type, gcs_uri, fetch_status
-      FROM (
-        SELECT l.ad_id, m.asset_type, m.gcs_uri, m.fetch_status,
-               COALESCE(l.video_id, l.image_hash) AS asset_key,
-               IF(COALESCE(l.video_id, l.image_hash) = d.top_delivered_asset_id, 0, 1) AS r_top,
-               IF(COALESCE(l.video_id, l.image_hash) = h.pref_asset_id, 0, 1) AS r_pref,
-               IF(m.gcs_uri IS NOT NULL, 0, 1) AS r_uri,
-               l.created_time AS created_time
-        FROM \`mcc-poc-477801.all_clients.meta_creative_links\` l
-        LEFT JOIN \`mcc-poc-477801.all_clients.creative_manifest\` m
-          ON m.asset_id = COALESCE(l.video_id, l.image_hash) AND m.platform = 'meta'
-        LEFT JOIN asset_pref h ON h.ad_id = l.ad_id
-        LEFT JOIN asset_delivery d ON d.ad_id = l.ad_id
-        WHERE l.ad_id IN UNNEST(@adIds)
-        -- one row per (ad, asset): prefer the stored/fetched copy of each card
-        QUALIFY ROW_NUMBER() OVER (
-          PARTITION BY l.ad_id, COALESCE(l.video_id, l.image_hash)
-          ORDER BY IF(m.gcs_uri IS NOT NULL, 0, 1), l.created_time DESC
-        ) = 1
-      )
-      ORDER BY ad_id, r_top, r_pref, r_uri, created_time DESC, asset_key`;
+      FROM \`${mediaTable}\`
+      WHERE platform = @platform AND ad_id IN UNNEST(@adIds)
+      ORDER BY ad_id, card_index`;
 
     const [rows] = await bq.query({
       query: sql,
-      params: { adIds },
-      types: { adIds: ['STRING'] },
+      params: { adIds, platform },
+      types: { adIds: ['STRING'], platform: 'STRING' },
       location: 'australia-southeast1',
       useLegacySql: false,
       maximumBytesBilled: MAX_BYTES_BILLED,
@@ -1620,31 +1537,29 @@ function normalizeBundle(b) {
 }
 
 /* Resolve ONE signed preview image per winning ad, keyed by THIS client's own
- * winner ad_ids, from the shared asset store (all_clients.meta_creative_links →
- * all_clients.creative_manifest), the same seam the `media` action uses. This is
- * the client's own delivered ads' assets, not another client's performance data,
- * so it does not breach the strict per-client scope. Best-effort: images are an
+ * winner ad_ids, from the client's own creative_media mart
+ * ({client}_marts.creative_media), the same seam the `media` action uses. The
+ * stored asset with the lowest card_index wins, so the image matches the
+ * dashboard's hover preview where one is stored. Best-effort: images are an
  * enrichment, so a missing/failed asset store logs and yields null URLs (the UI
  * falls back to the ad's creative_link) rather than sinking the winners payload.
  * Signing uses the object-viewer SA path (US-005), never the BigQuery job SA. */
-async function resolveWinnerImages(bq, credentials, adIds) {
+async function resolveWinnerImages(bq, credentials, client, adIds) {
   const out = new Map();
   const ids = Array.isArray(adIds)
     ? adIds.filter((x) => typeof x === 'string' && x).slice(0, 60)
     : [];
-  if (!ids.length) return out;
+  if (!ids.length || !client) return out;
   const PROJECT = 'mcc-poc-477801';
   try {
     const [rows] = await bq.query({
       query: `
-        SELECT l.ad_id, m.asset_type, m.gcs_uri, m.fetch_status
-        FROM \`${PROJECT}.all_clients.meta_creative_links\` l
-        LEFT JOIN \`${PROJECT}.all_clients.creative_manifest\` m
-          ON m.asset_id = COALESCE(l.video_id, l.image_hash) AND m.platform = 'meta'
-        WHERE l.ad_id IN UNNEST(@adIds)
+        SELECT ad_id, asset_type, gcs_uri, fetch_status
+        FROM \`${PROJECT}.${client}_marts.creative_media\`
+        WHERE platform = 'meta' AND ad_id IN UNNEST(@adIds)
         QUALIFY ROW_NUMBER() OVER (
-          PARTITION BY l.ad_id
-          ORDER BY IF(m.gcs_uri IS NOT NULL, 0, 1), l.created_time DESC
+          PARTITION BY ad_id
+          ORDER BY IF(gcs_uri IS NOT NULL, 0, 1), card_index
         ) = 1`,
       params: { adIds: ids },
       types: { adIds: ['STRING'] },
@@ -1846,7 +1761,7 @@ async function queryWinningHistorical(body, credentials, cors) {
 
     // Sign one preview image per winning ad, by this client's own winner ad_ids.
     const adIds = winnerRows.map((r) => String(r.ad_id)).filter(Boolean);
-    const imageByAd = await resolveWinnerImages(bq, credentials, adIds);
+    const imageByAd = await resolveWinnerImages(bq, credentials, client, adIds);
 
     const winners = winnerRows.map((r) => {
       const w = {

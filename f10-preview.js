@@ -6,7 +6,7 @@
  * they never leave the dashboard.
  *
  * The media comes from F10's private creative-asset bucket, resolved on demand
- * through the dashboard's own bq function (`{ action: 'media', adIds: [...] }`),
+ * through the dashboard's own bq function (`{ action: 'media', adIds: [...], client }`),
  * which returns short-lived signed URLs. When an ad has no stored asset (e.g. a
  * video that hasn't been fetched yet) the card shows a small "Opens on Facebook"
  * hint and the existing click-through link still works.
@@ -305,13 +305,26 @@
     }
   }
 
+  /* The media request body. `client` (the DATASET global minus its _marts/_clean
+   * suffix, e.g. mosh_marts -> mosh) lets the bq function read this client's own
+   * {client}_marts.creative_media; it is omitted when DATASET is unset. */
+  function mediaRequestBody(adId, platform) {
+    var body = { action: 'media', adIds: [adId], platform: platform || 'meta' };
+    var client = (typeof DATASET !== 'undefined' && DATASET)
+      ? String(DATASET).replace(/_(marts|clean)$/, '').replace(/[^a-z0-9_]/gi, '').toLowerCase()
+      : '';
+    if (client) body.client = client;
+    return body;
+  }
+  window.f10MediaRequestBody = mediaRequestBody;
+
   function resolve(adId, platform) {
     var key = adId + '|' + (platform || 'meta');
     if (cache.has(key)) return Promise.resolve(cache.get(key));
     var p = fetch(BQ_FUNCTION, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'media', adIds: [adId], platform: platform || 'meta' }),
+      body: JSON.stringify(mediaRequestBody(adId, platform)),
     })
       .then(function (r) {
         return r.ok ? r.json() : {};

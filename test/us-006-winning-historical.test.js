@@ -140,7 +140,7 @@ function makeRouter({ winners = [], components = [], images = [], existsData } =
     }
     if (/creative_reporting/.test(sql)) return winners;
     if (/component_performance/.test(sql)) return components;
-    if (/meta_creative_links|creative_manifest/.test(sql)) return images;
+    if (/creative_media/.test(sql)) return images;
     return [];
   };
 }
@@ -202,6 +202,7 @@ function imageRows(ids) {
     const refs = backtickRefs(queries).join(' | ');
     assert.ok(/mosh_reporting\.creative_reporting/.test(refs), 'winners read mosh_reporting.creative_reporting');
     assert.ok(/mosh_marts\.component_performance/.test(refs), 'components read mosh_marts.component_performance');
+    assert.ok(/mosh_marts\.creative_media/.test(refs), 'images read mosh_marts.creative_media');
     assert.ok(signCalls.length >= 1, 'images were signed');
     assertGuardrails(queries);
   });
@@ -218,9 +219,9 @@ function imageRows(ids) {
     for (const foreign of ['pharmx', 'fastcover', 'bridgit', 'matilda', 'stake']) {
       assert.ok(!datasets.has(`${foreign}_marts`) && !datasets.has(`${foreign}_reporting`), `no ${foreign} dataset leaks into a mosh query`);
     }
-    // Every backtick table ref is either this client's dataset or the shared asset store.
+    // Every backtick table ref is this client's own dataset (images included).
     for (const ref of backtickRefs(queries)) {
-      assert.ok(/^mcc-poc-477801\.(mosh_marts|mosh_reporting|all_clients)\./.test(ref), `unexpected table ref: ${ref}`);
+      assert.ok(/^mcc-poc-477801\.(mosh_marts|mosh_reporting)\./.test(ref), `unexpected table ref: ${ref}`);
     }
   });
 
