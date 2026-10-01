@@ -91,15 +91,21 @@ dashboard's service account needs `roles/storage.objectViewer` on
 
 When an ad has more than one asset (a carousel, dynamic creative, or a rebrand
 mid-flight), the `media` action returns **every** stored asset for the ad as an
-ordered `cards` array — `{ [ad_id]: { type, url, cards: [{type,url}, …] } }`. Card 0
-is the representative asset picked the same way the creative audit does
-(`audit.py` / `sql/creative_band_mining.sql`): the asset delivering the most
-impressions (dominant in the per-asset `image_asset_insights` / `video_asset_insights`
-feeds) wins first, then the most recently created asset, then one already stored in
-the bucket, then newest by created time. Ads with no per-asset delivery data fall
-back to recency, so previews degrade gracefully as that feed's history accrues. The
+ordered `cards` array — `{ [ad_id]: { type, url, cards: [{type,url}, …] } }`. The
 top-level `type`/`url` mirror card 0, so any older caller reading a single asset is
 unchanged.
+
+The cards and their order come from the f10-dataform `creative_media` mart
+(`docs/creative-media-mart.md` in f10-dataform), not from the raw ad-platform
+datasets. Since v1.31.0 `f10-preview.js` sends `client` (the `DATASET` global minus
+its `_marts` suffix), and the `media` action reads that client's own
+`{client}_marts.creative_media`, so a dashboard only resolves its own client's ads.
+A request without `client` (an older frontend) reads the cross-client
+`all_clients.creative_media`. Card 1 is the representative asset, picked the same
+way the creative audit does: the asset that delivered the most impressions
+(lifetime, at least 100), then the newest asset in a dynamic creative's feed, then
+one already stored in the bucket, then the newest by created time. The
+`winning-historical` action signs its winner images from the same client view.
 
 When `cards` has more than one entry the hover box becomes a **swipeable carousel**:
 it pins in place (so it stops following the cursor), turns on pointer events, and

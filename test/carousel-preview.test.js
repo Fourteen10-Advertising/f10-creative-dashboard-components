@@ -7,8 +7,9 @@
  *    resolver used to collapse each ad to a single representative asset
  *    (`QUALIFY ROW_NUMBER() ... = 1`), so a carousel ad's other cards were never
  *    returned. It now returns EVERY stored card per ad as an ordered `cards`
- *    array — card 0 stays the old representative pick, so `type`/`url` are
- *    unchanged (backward compatible). Unfetched cards are dropped; an ad with no
+ *    array, read from the client's {client}_marts.creative_media in card_index
+ *    order (all_clients.creative_media when no client is sent). Card 0 stays the
+ *    representative pick, so `type`/`url` are unchanged (backward compatible). Unfetched cards are dropped; an ad with no
  *    stored asset still returns `url:null` for the Facebook fallback.
  *
  * 2. Frontend (`f10-preview.js`). `f10PreviewCards` normalises the response into
@@ -110,11 +111,10 @@ function check(name, fn) {
     // Rows come back in the query's ORDER BY order (representative card first).
     // The unfetched middle row must be dropped from the carousel, not left as a gap.
     const router = (opts) => {
-      assert.ok(/meta_creative_links/.test(opts.query), 'meta media query hits meta_creative_links');
-      // No longer collapses to one row per ad; dedup is per (ad, asset).
-      assert.ok(/PARTITION BY l\.ad_id, COALESCE\(l\.video_id, l\.image_hash\)/.test(opts.query),
-        'dedup partitions by (ad, asset), not by ad alone');
-      assert.ok(/ORDER BY ad_id/.test(opts.query), 'rows ordered so cards group per ad');
+      // Cards come from the dataform creative_media mart, in card_index order.
+      assert.ok(/creative_media/.test(opts.query), 'media query reads creative_media');
+      assert.ok(!/QUALIFY/.test(opts.query), 'every card is returned, not one per ad');
+      assert.ok(/ORDER BY ad_id, card_index/.test(opts.query), 'rows ordered so cards group per ad, in card order');
       return [
         { ad_id: 'CAR', asset_type: 'image', gcs_uri: 'gs://b/car-0.jpg', fetch_status: 'fetched' },
         { ad_id: 'CAR', asset_type: 'video', gcs_uri: 'gs://b/car-1.mp4', fetch_status: 'fetched' },
@@ -170,6 +170,49 @@ function check(name, fn) {
     assert.strictEqual(out.NONE.type, 'video', 'advertised type carried for the fallback');
   });
 
+  /* ─────────────── Backend: which creative_media view is read ─────────────── */
+
+  function tableOf(q) {
+    const m = /FROM `([^`]+)`/.exec(q.query);
+    return m ? m[1] : null;
+  }
+
+  await check('with a client, media reads that client\'s own {client}_marts.creative_media', async () => {
+    const { FakeBigQuery, queries } = makeFakeBigQuery(() => []);
+    const handler = loadHandler(FakeBigQuery, makeFakeStorage());
+    await handler(makeEvent({ action: 'media', adIds: ['A'], platform: 'meta', client: 'mosh' }));
+    assert.strictEqual(queries.length, 1);
+    assert.strictEqual(tableOf(queries[0]), 'mcc-poc-477801.mosh_marts.creative_media');
+    assert.deepStrictEqual(queries[0].params, { adIds: ['A'], platform: 'meta' }, 'ad ids and platform are bound parameters');
+    assert.ok(!/all_clients_meta|all_clients_tiktok/.test(queries[0].query), 'no raw Airbyte dataset is read');
+  });
+
+  await check('without a client (older frontends), media falls back to all_clients.creative_media', async () => {
+    const { FakeBigQuery, queries } = makeFakeBigQuery(() => []);
+    const handler = loadHandler(FakeBigQuery, makeFakeStorage());
+    await handler(makeEvent({ action: 'media', adIds: ['A'] }));
+    assert.strictEqual(tableOf(queries[0]), 'mcc-poc-477801.all_clients.creative_media');
+    assert.strictEqual(queries[0].params.platform, 'meta', 'platform defaults to meta');
+  });
+
+  await check('tiktok platform is passed through; unknown platforms read as meta', async () => {
+    const { FakeBigQuery, queries } = makeFakeBigQuery(() => []);
+    const handler = loadHandler(FakeBigQuery, makeFakeStorage());
+    await handler(makeEvent({ action: 'media', adIds: ['T'], platform: 'tiktok', client: 'fastcover' }));
+    await handler(makeEvent({ action: 'media', adIds: ['X'], platform: 'snapchat', client: 'fastcover' }));
+    assert.strictEqual(queries[0].params.platform, 'tiktok');
+    assert.strictEqual(queries[1].params.platform, 'meta');
+    assert.strictEqual(tableOf(queries[0]), 'mcc-poc-477801.fastcover_marts.creative_media');
+  });
+
+  await check('a hostile client value is reduced to the dataset charset before it is inlined', async () => {
+    const { FakeBigQuery, queries } = makeFakeBigQuery(() => []);
+    const handler = loadHandler(FakeBigQuery, makeFakeStorage());
+    await handler(makeEvent({ action: 'media', adIds: ['A'], client: 'mosh`; DROP TABLE x; --' }));
+    assert.strictEqual(tableOf(queries[0]), 'mcc-poc-477801.moshdroptablex_marts.creative_media');
+    assert.strictEqual((queries[0].query.match(/`/g) || []).length, 2, 'no backtick breaks out of the identifier');
+  });
+
   /* ───────────────────────── Frontend: preview builders ───────────────────────── */
 
   const win = loadPreview();
@@ -194,6 +237,20 @@ function check(name, fn) {
     assert.ok(/2\/3/.test(html), 'counter shows card 2 of 3');
     assert.ok(/https:\/\/x\/1\.mp4/.test(html) && /<video/.test(html), 'frame shows the active (video) card');
     assert.ok(!/https:\/\/x\/0\.jpg/.test(html), 'only the active card is in the frame');
+  });
+
+  await check('f10MediaRequestBody sends the client derived from DATASET', () => {
+    const body = win.f10MediaRequestBody('123', 'tiktok');
+    assert.strictEqual(body.action, 'media');
+    assert.deepStrictEqual(Array.from(body.adIds), ['123']);
+    assert.strictEqual(body.platform, 'tiktok');
+    assert.strictEqual(body.client, undefined, 'no DATASET -> no client sent');
+    const sandbox = { window: {}, document: {}, console, setTimeout, clearTimeout, DATASET: 'beyond_bank_marts' };
+    vm.createContext(sandbox);
+    vm.runInContext(PREVIEW_SRC, sandbox, { filename: 'f10-preview.js' });
+    const withClient = sandbox.window.f10MediaRequestBody('9');
+    assert.strictEqual(withClient.client, 'beyond_bank', 'mosh_marts-style DATASET loses its suffix');
+    assert.strictEqual(withClient.platform, 'meta', 'platform defaults to meta');
   });
 
   console.log(`\n${passed} checks passed.`);
