@@ -1354,3 +1354,17 @@ Three refinements to the consolidated Competitor Intelligence tab:
 - Ad-age chart: rendered full width at the dashboard scale (wider viewBox, thin
   lines, standard axis label size) instead of a small capped box, with hover
   tooltips showing the competitor name and value.
+
+### Competitor data source
+
+Since 2026-10-02 the competitor actions in `netlify/functions/bq.js` read the
+client's own marts, `{client}_marts.adlib_<table>` (for example
+`wamo_marts.adlib_ad_registry`), built by f10-dataform from the shared
+`all_clients_adlib` capture (`docs/competitor-client-marts.md` in f10-dataform).
+The dashboard runs on the client-scoped `dash-<client>` service account, which
+cannot read `all_clients_adlib`. The `client` key (derived from `DATASET`) is
+reduced to `[a-z0-9_]` before it names a dataset, so a request cannot reach
+another client's tables. The tables are rebuilt by the daily dataform run, so the
+tab can be up to a day behind the capture. A client's competitor tab works once
+f10-dataform copies its tables (`COMPETITOR_CLIENTS` in
+`definitions/marts/competitor_client_marts.js`).

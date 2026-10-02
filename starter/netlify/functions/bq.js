@@ -535,7 +535,7 @@ async function queryCompetitor(body, credentials, cors) {
   if (!client) return json(400, { error: 'Missing "client" field for competitor action.' });
 
   const PROJECT = 'mcc-poc-477801';
-  const DATASET = 'all_clients_adlib';
+  const DATASET = adlibMartsDataset(client);
 
   try {
     const bq = new BigQuery({
@@ -563,7 +563,7 @@ async function queryCompetitor(body, credentials, cors) {
     if (body.probe) {
       const [rows] = await runQuery(
         `SELECT EXISTS(
-           SELECT 1 FROM \`${PROJECT}.${DATASET}.ad_registry\`
+           SELECT 1 FROM \`${PROJECT}.${DATASET}.adlib_ad_registry\`
            WHERE f10_client = @client
          ) AS has_data`
       );
@@ -591,14 +591,14 @@ async function queryCompetitor(body, credentials, cors) {
                  ad_creative_bodies, link_url, snapshot_url, is_active,
                  ad_delivery_start_time, ad_delivery_stop_time,
                  ROW_NUMBER() OVER (PARTITION BY ad_archive_id ORDER BY run_date DESC) rn
-          FROM \`${PROJECT}.${DATASET}.ad_snapshots\`
+          FROM \`${PROJECT}.${DATASET}.adlib_ad_snapshots\`
           WHERE f10_client = @client ${dateFilter}
         )
         WHERE rn = 1
       )
       SELECT l.*, r.still_active
       FROM latest l
-      LEFT JOIN \`${PROJECT}.${DATASET}.ad_registry\` r USING (ad_archive_id)
+      LEFT JOIN \`${PROJECT}.${DATASET}.adlib_ad_registry\` r USING (ad_archive_id)
       ORDER BY l.page_name, l.ad_delivery_start_time ASC, l.ad_archive_id
     `, adsParams, adsTypes);
 
@@ -612,7 +612,7 @@ async function queryCompetitor(body, credentials, cors) {
     const clientAgeP = runQuery(`
         SELECT f10_client, ads_tracked, ads_live, avg_age_live_days,
                live_lt_7d, live_7_30d, live_30_90d, live_90d_plus, last_refreshed
-        FROM \`${PROJECT}.${DATASET}.competitor_age_by_client\`
+        FROM \`${PROJECT}.${DATASET}.adlib_competitor_age_by_client\`
         WHERE f10_client = @client
       `).then(([clientAgeRows]) => {
         ageMetrics.client = clientAgeRows.length ? clientAgeRows[0] : null;
@@ -624,7 +624,7 @@ async function queryCompetitor(body, credentials, cors) {
     const pageAgeP = runQuery(`
         SELECT f10_client, page_id, page_name, ads_tracked, ads_live, avg_age_live_days,
                live_lt_7d, live_7_30d, live_30_90d, live_90d_plus, last_refreshed
-        FROM \`${PROJECT}.${DATASET}.competitor_age_by_page\`
+        FROM \`${PROJECT}.${DATASET}.adlib_competitor_age_by_page\`
         WHERE f10_client = @client
       `).then(([pageAgeRows]) => {
         // Key by page_name to match how the frontend groups competitor sections.
@@ -682,7 +682,7 @@ async function queryCompetitorCreatives(body, credentials, cors) {
   if (!adIds.length) return json(400, { error: 'competitor-creatives requires a non-empty "adIds" array.' });
 
   const PROJECT = 'mcc-poc-477801';
-  const DATASET = 'all_clients_adlib';
+  const DATASET = adlibMartsDataset(client);
 
   try {
     const bq = new BigQuery({
@@ -696,7 +696,7 @@ async function queryCompetitorCreatives(body, credentials, cors) {
     const [creativeRows] = await bq.query({
       query: `
         SELECT ad_archive_id, media_type, idx, gcs_uri
-        FROM \`${PROJECT}.${DATASET}.creative_manifest\`
+        FROM \`${PROJECT}.${DATASET}.adlib_creative_manifest\`
         WHERE f10_client = @client AND fetch_status = 'fetched'
           AND ad_archive_id IN UNNEST(@adIds)
         QUALIFY ROW_NUMBER() OVER (PARTITION BY ad_archive_id, idx ORDER BY fetched_at DESC) = 1
@@ -779,7 +779,7 @@ async function queryCompetitorSearch(body, credentials, cors) {
   if (!client) return json(400, { error: 'Missing "client" field for competitor-search action.' });
 
   const PROJECT = 'mcc-poc-477801';
-  const DATASET = 'all_clients_adlib';
+  const DATASET = adlibMartsDataset(client);
   // Terms shorter than this never hit BigQuery — a 1-char substring matches most
   // ads and would force a full scan for no real signal.
   const MIN_TERM_LEN = 2;
@@ -810,7 +810,7 @@ async function queryCompetitorSearch(body, credentials, cors) {
     if (body.probe) {
       const [rows] = await runQuery(
         `SELECT EXISTS(
-           SELECT 1 FROM \`${PROJECT}.${DATASET}.ad_registry\`
+           SELECT 1 FROM \`${PROJECT}.${DATASET}.adlib_ad_registry\`
            WHERE f10_client = @client
          ) AS has_data`
       );
@@ -832,14 +832,14 @@ async function queryCompetitorSearch(body, credentials, cors) {
                  ad_creative_bodies, ad_creative_link_titles, link_url,
                  snapshot_url, is_active, ad_delivery_start_time,
                  ROW_NUMBER() OVER (PARTITION BY ad_archive_id ORDER BY run_date DESC) rn
-          FROM \`${PROJECT}.${DATASET}.ad_snapshots\`
+          FROM \`${PROJECT}.${DATASET}.adlib_ad_snapshots\`
           WHERE f10_client = @client
         )
         WHERE rn = 1
       ),
       vision AS (
         SELECT ad_archive_id, STRING_AGG(on_screen_text, ' ') AS on_screen_text
-        FROM \`${PROJECT}.${DATASET}.competitor_vision_attributes\`
+        FROM \`${PROJECT}.${DATASET}.adlib_competitor_vision_attributes\`
         WHERE f10_client = @client
         GROUP BY ad_archive_id
       ),
@@ -865,7 +865,7 @@ async function queryCompetitorSearch(body, credentials, cors) {
           ]) f WHERE f IS NOT NULL
         ) AS matched_fields
       FROM joined j
-      LEFT JOIN \`${PROJECT}.${DATASET}.ad_registry\` r USING (ad_archive_id)
+      LEFT JOIN \`${PROJECT}.${DATASET}.adlib_ad_registry\` r USING (ad_archive_id)
       WHERE CONTAINS_SUBSTR(j._bodies_txt, @term)
          OR CONTAINS_SUBSTR(j._titles_txt, @term)
          OR CONTAINS_SUBSTR(j.page_name, @term)
@@ -906,8 +906,17 @@ async function queryCompetitorSearch(body, credentials, cors) {
  * the frontend calls by action name only.
  */
 const ADLIB_PROJECT = 'mcc-poc-477801';
-const ADLIB_DATASET = 'all_clients_adlib';
 const ADLIB_LOCATION = 'australia-southeast1';
+
+// Competitor data is read from the client's OWN marts dataset, as adlib_<table>
+// ({client}_marts.adlib_ad_registry, ...), built from the shared all_clients_adlib
+// capture by f10-dataform (docs/competitor-client-marts.md). The dashboard runs on a
+// client-scoped service account that can read only {client}_marts / {client}_reporting,
+// so it cannot, and must not, read all_clients_adlib. The client key becomes a dataset
+// identifier, so it is reduced to [a-z0-9_] first: it cannot name another dataset.
+function adlibMartsDataset(client) {
+  return String(client == null ? '' : client).trim().toLowerCase().replace(/[^a-z0-9_]/g, '') + '_marts';
+}
 
 // A BigQuery error meaning "this mart/table isn't there yet" (fail-closed / absent),
 // as opposed to a real failure that must surface. Same shape as the age-metrics
@@ -957,7 +966,7 @@ function martContext(body, credentials, cors, action) {
       maximumBytesBilled: MAX_BYTES_BILLED,
       jobTimeoutMs: TIMEOUT_MS,
     });
-  return { json, client, runQuery };
+  return { json, client, runQuery, dataset: adlibMartsDataset(client) };
 }
 
 /* themes — per-competitor named-theme summaries (US-001 rollup).
@@ -971,8 +980,8 @@ function martContext(body, credentials, cors, action) {
 async function queryThemes(body, credentials, cors) {
   const cx = martContext(body, credentials, cors, 'themes');
   if (cx.badRequest) return cx.badRequest;
-  const { json, runQuery } = cx;
-  const TABLE = `\`${ADLIB_PROJECT}.${ADLIB_DATASET}.competitor_theme_summary\``;
+  const { json, runQuery, dataset } = cx;
+  const TABLE = `\`${ADLIB_PROJECT}.${dataset}.adlib_competitor_theme_summary\``;
   try {
     if (body.probe) {
       const [rows] = await runQuery(
@@ -987,7 +996,7 @@ async function queryThemes(body, credentials, cors) {
     // This is the recurring cross-repo drift fix (competitor-intel-rollup US-008):
     // the frontend receives page_name, not just page_id. Absent-safe: a page with no
     // snapshot name falls through as NULL and the frontend still shows the id.
-    const SNAPSHOTS = `\`${ADLIB_PROJECT}.${ADLIB_DATASET}.ad_snapshots\``;
+    const SNAPSHOTS = `\`${ADLIB_PROJECT}.${dataset}.adlib_ad_snapshots\``;
     const [rows] = await runQuery(`
       WITH names AS (
         SELECT page_id, ANY_VALUE(page_name) AS page_name
@@ -1035,8 +1044,8 @@ async function queryThemes(body, credentials, cors) {
 async function queryAgeTimeseries(body, credentials, cors) {
   const cx = martContext(body, credentials, cors, 'age-timeseries');
   if (cx.badRequest) return cx.badRequest;
-  const { json, runQuery } = cx;
-  const TABLE = `\`${ADLIB_PROJECT}.${ADLIB_DATASET}.competitor_age_over_time\``;
+  const { json, runQuery, dataset } = cx;
+  const TABLE = `\`${ADLIB_PROJECT}.${dataset}.adlib_competitor_age_over_time\``;
   try {
     if (body.probe) {
       const [rows] = await runQuery(
@@ -1091,8 +1100,8 @@ async function queryAgeTimeseries(body, credentials, cors) {
 async function queryMaturity(body, credentials, cors) {
   const cx = martContext(body, credentials, cors, 'maturity');
   if (cx.badRequest) return cx.badRequest;
-  const { json, runQuery } = cx;
-  const TABLE = `\`${ADLIB_PROJECT}.${ADLIB_DATASET}.competitor_meta_maturity\``;
+  const { json, runQuery, dataset } = cx;
+  const TABLE = `\`${ADLIB_PROJECT}.${dataset}.adlib_competitor_meta_maturity\``;
   try {
     if (body.probe) {
       const [rows] = await runQuery(
@@ -1164,9 +1173,9 @@ async function queryMaturity(body, credentials, cors) {
 async function queryLeaderboard(body, credentials, cors) {
   const cx = martContext(body, credentials, cors, 'leaderboard');
   if (cx.badRequest) return cx.badRequest;
-  const { json, client, runQuery } = cx;
-  const REGISTRY = `\`${ADLIB_PROJECT}.${ADLIB_DATASET}.ad_registry\``;
-  const SNAPSHOTS = `\`${ADLIB_PROJECT}.${ADLIB_DATASET}.ad_snapshots\``;
+  const { json, client, runQuery, dataset } = cx;
+  const REGISTRY = `\`${ADLIB_PROJECT}.${dataset}.adlib_ad_registry\``;
+  const SNAPSHOTS = `\`${ADLIB_PROJECT}.${dataset}.adlib_ad_snapshots\``;
   // Bounded result size: caller may ask for fewer, never more than the cap.
   const CAP = 100;
   const limit = Math.min(Math.max(parseInt(body.limit, 10) || 25, 1), CAP);
@@ -1234,9 +1243,9 @@ async function queryLeaderboard(body, credentials, cors) {
 async function queryNetNew(body, credentials, cors) {
   const cx = martContext(body, credentials, cors, 'net-new');
   if (cx.badRequest) return cx.badRequest;
-  const { json, runQuery } = cx;
-  const ADS = `\`${ADLIB_PROJECT}.${ADLIB_DATASET}.competitor_net_new_ads\``;
-  const BY_PAGE = `\`${ADLIB_PROJECT}.${ADLIB_DATASET}.competitor_net_new_by_page\``;
+  const { json, runQuery, dataset } = cx;
+  const ADS = `\`${ADLIB_PROJECT}.${dataset}.adlib_competitor_net_new_ads\``;
+  const BY_PAGE = `\`${ADLIB_PROJECT}.${dataset}.adlib_competitor_net_new_by_page\``;
   try {
     if (body.probe) {
       const [rows] = await runQuery(
@@ -1297,8 +1306,8 @@ async function queryNetNew(body, credentials, cors) {
 async function queryCompetitorIntel(body, credentials, cors) {
   const cx = martContext(body, credentials, cors, 'competitor-intel');
   if (cx.badRequest) return cx.badRequest;
-  const { json, client, runQuery } = cx;
-  const T = (name) => `\`${ADLIB_PROJECT}.${ADLIB_DATASET}.${name}\``;
+  const { json, client, runQuery, dataset } = cx;
+  const T = (name) => `\`${ADLIB_PROJECT}.${dataset}.adlib_${name}\``;
 
   // Run a client-scoped read, but treat a not-yet-materialized mart as empty so the
   // consolidated action degrades gracefully mart-by-mart (hq-never-swallow-errors:
