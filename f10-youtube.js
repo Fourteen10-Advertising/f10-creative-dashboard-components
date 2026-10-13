@@ -214,10 +214,12 @@
     return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
   function money(n) { return (typeof fmt$ === 'function') ? fmt$(n) : '$' + Math.round(n).toLocaleString('en-AU'); }
-  /* Unit costs (CPM, CPCV) always show cents: fmt$ drops them at $10+. */
+  /* Unit costs (CPM, CPCV) always show cents (fmt$ drops them at $10+), and a third
+   * decimal below $1 so a typical CPCV of ~2c is not flattened to "$0.02" for every ad. */
   function money2(n) {
     if (n == null || !isFinite(n)) return '–';
-    return '$' + Number(n).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    var dp = Math.abs(n) < 1 ? 3 : 2;
+    return '$' + Number(n).toLocaleString('en-AU', { minimumFractionDigits: dp, maximumFractionDigits: dp });
   }
   function count(n) { return (n == null) ? 'n/a' : Number(n).toLocaleString('en-AU', { maximumFractionDigits: 0 }); }
   function pct(r) { return (r == null || !isFinite(r)) ? '–' : (r * 100).toFixed(1) + '%'; }

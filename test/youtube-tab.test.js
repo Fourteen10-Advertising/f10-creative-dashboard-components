@@ -275,7 +275,7 @@ function bbRows() {
     assert.ok(kpis.indexOf('403,290') !== -1, 'impressions');
     assert.ok(kpis.indexOf('$13.46') !== -1, 'cpm');
     assert.ok(kpis.indexOf('67.8%') !== -1, 'completion');
-    assert.ok(kpis.indexOf('$0.02') !== -1, 'cpcv');
+    assert.ok(kpis.indexOf('$0.020') !== -1, 'cpcv shows 3dp below $1');
     assert.ok(kpis.indexOf('80.7%') !== -1, 'viewability');
     assert.ok(kpis.indexOf('35,338') !== -1 && kpis.indexOf('27.0%') !== -1, 'views + view rate (skippable)');
     const body = d.getElementById('yt-table-body').innerHTML;
