@@ -1138,6 +1138,11 @@ ${liControls}
    * defines initLinkedIn when a LINKEDIN config exists, so a Meta-only or
    * Meta+TikTok dashboard that still loads the script is untouched. */
   if (hasLinkedIn && typeof initLinkedIn === 'function') initLinkedIn();
+  /* YouTube video tab (config-gated): f10-youtube.js only defines initYouTube when the
+   * dashboard has a YOUTUBE config with a TABLE, so every other dashboard is untouched.
+   * It registers synchronously through f10RegisterModuleTab, so its nav group sits
+   * after the channel groups and before any probe-registered tab. */
+  if (typeof initYouTube === 'function') initYouTube();
   /* Competitor tab visibility is probe-driven (US-003): f10-competitors.js runs a
    * cheap existence probe and registers its own nav entry + panel only when the
    * client has competitor rows — so this call is unconditional. */

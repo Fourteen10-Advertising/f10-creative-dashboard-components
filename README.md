@@ -15,6 +15,7 @@ A dashboard is now just a config block plus script tags: the markup, styling, an
 | `f10-layout.js` | `renderLayout()` — builds the sidebar, controls bar, and every tab panel into `<div id="app"></div>` (Meta's eight, plus TikTok's and LinkedIn's eight each when those channels are configured). Production benchmark copy is derived from the threshold constants |
 | `f10-preview.js` | Inline creative hover previews for `.preview-link` targets; renders a swipeable carousel when an ad has multiple cards. Exposes `f10MediaMarkup({type,url}, opts)` — the shared `<img>`/`<video>` builder reused by the competitor tab — plus `f10PreviewCards(media)` and `f10CarouselHtml(cards, idx)` |
 | `f10-linkedin.js` | LinkedIn channel section (config-gated: a no-op unless the dashboard defines a `LINKEDIN` object). Adds a **LinkedIn** nav group with its own full eight-tab set — Weekly Summary / Movement Board / Movement Map, then Ad Power Law / Ad Production / Ad Decay / Ad Age / Creative Effectiveness — driven by the same shared query and render engines as TikTok with `li-` ids and state (see [Secondary-channel tab parity](#secondary-channel-tab-parity-tiktok--linkedin)). Two source modes: a **per-client LinkedIn mart** (with optional per-column `*_EXPR` overrides when the mart does not publish the contract verbatim), or the **shared `all_clients_linkedin_ads` dataset scoped by ad-account URN** for a client who has no mart of their own (see [LinkedIn channel](#linkedin-channel)) |
+| `f10-youtube.js` | YouTube video tab (config-gated: a no-op unless the dashboard defines a `YOUTUBE` object with a `TABLE`). Adds a **YouTube** nav group with one **Video Performance** tab over a Google Ads video mart (`gads_video_ad_daily`): date / campaign / ad type / format filters, KPI row (spend, impressions, CPM, viewability, completion rate, cost per completed view, engagements, views and view rate for skippable ads only), daily spend + completion chart, per-ad table, quartile drop-off chart and a notes box. No CPA or conversion metrics. Registers through `f10RegisterModuleTab` (see [YouTube video tab](#youtube-video-tab)) |
 | `f10-competitors.js` | Competitor Ad Library tab (probe-driven: appears automatically when the client has competitor rows in `all_clients_adlib`): groups a client's tracked competitor Meta ads by competitor in the F10 card layout, with Status / Timeframe / Competitor filters, per-competitor pagination (20/page), and a metadata + on-demand creatives split that fetches only the visible page's signed media. Reuses `f10MediaMarkup` from `f10-preview.js` |
 | `f10-components.js` | Component Scale tab (probe-driven: appears automatically when the client has a `{client}_marts.component_performance` mart): grades the five creative components (hook, format, CTA, message angle, visual style) against the client's own baseline, with lift, evidence count, confidence tier, the verbatim descriptive caveat, and a co-occurrence mark; plus the cross-client whitespace lane as a separate, clearly-labelled hypotheses section. Adds `f10ActivateTab()` (in `f10-layout.js`) as the single generic tab dispatcher (see [Component Scale](#component-scale)) |
 | `f10-brief-editor.js` | Brief Editor tab (probe-driven: appears only when the client has a saved brief revision to edit): a canonical-constrained editor for the F10 internal review app. Loads a brief revision and saves a NEW one via the US-003 persistence contract (GCS `brief-revisions/{client}/{id}.json` + a `brief_revisions` BigQuery row). The four creative axes (visual style, hook, message angle, CTA) are dropdowns locked to the canonical vocabularies, so a non-canonical value can never be saved; copy is free text. (US-004 retired the dead Format axis: photo versus illustration is a visual_style concept and every ad is static for now; the `brief_revisions.format` column is kept for backward compatibility but is no longer edited or driven.) Dual-mode: the same file exports the persistence core behind an injectable writer seam for the brief backend (see [Brief editor](#brief-editor)) |
@@ -196,6 +197,7 @@ lives in `test/review-list-bundles.test.js`.
 | `THRESHOLDS` | no | Ad Production threshold overrides (see below) |
 | `TIKTOK` | no | Optional TikTok channel section: `{ DATASET?, TABLE, CONV_EXPR?, REVENUE_EXPR?, THRESHOLDS?, AGE_BUCKET_EXPR? }`. `TABLE` is required — no `TABLE`, no TikTok nav group. `DATASET` defaults to the dashboard's `DATASET`, `CONV_EXPR` to `'conversions'`, thresholds to `HR 5000/$70 · OB 1000/$100 · SO 500/$140` (ROAS bands `4`/`2`/`1`). All **eight** tabs appear automatically; only `AGE_BUCKET_EXPR` is new and it is optional (see [Secondary-channel tab parity](#secondary-channel-tab-parity-tiktok--linkedin)) |
 | `LINKEDIN` | no | Optional LinkedIn channel section. Two mutually exclusive modes — a per-client mart (optionally with per-column `*_EXPR` overrides for a mart that does not publish the contract verbatim), or the shared `all_clients_linkedin_ads` dataset scoped by `ACCOUNT_URN`. Defining the object at all is the gate (no `TABLE` required). All **eight** tabs appear automatically; the only new optional key is `AGE_BUCKET_EXPR`. See [LinkedIn channel](#linkedin-channel) and [Secondary-channel tab parity](#secondary-channel-tab-parity-tiktok--linkedin) |
+| `YOUTUBE` | no | Optional YouTube video tab: `{ DATASET?, TABLE, NETWORK?, FORMAT_REGEX?, NON_SKIPPABLE_REGEX?, DEFAULT_DAYS? }`. `TABLE` is required. Needs the `f10-youtube.js` script tag before `f10-layout.js`. See [YouTube video tab](#youtube-video-tab) |
 | `CREATIVE_SCORE_CONFIG` | no | Creative Score weights, maturity target, per-rate quality ceilings and band cutoffs (see [Creative Score column](#creative-score-column)) |
 | `COMPETITORS` | no | Optional Competitor Ad Library overrides — the tab itself is automatic (see below) |
 | `COMPONENTS` | no | Optional Component Scale overrides; the tab itself is automatic (see [Component Scale](#component-scale)) |
@@ -613,6 +615,50 @@ revenue-integrity guard covers the LinkedIn tabs too. LinkedIn is almost always 
 lead-gen / CAC channel, so CPA (the default) is the right lens for it.
 
 Regression coverage lives in `test/linkedin-channel.test.js`.
+
+## YouTube video tab
+
+`f10-youtube.js` adds a **YouTube → Video Performance** tab for clients whose Google Ads video data is in a per-client mart (f10-dataform `gads_video_ad_daily`, one row per ad per ad network per day). It is **config-gated**: without a `YOUTUBE` object that has a `TABLE`, the script defines nothing and the dashboard is unchanged, so it is safe to load everywhere.
+
+```html
+<script src=".../f10-utils.js"></script>
+<!-- ... weekly / monthly / tiktok / competitors ... -->
+<script src=".../f10-youtube.js"></script>   <!-- before f10-layout.js -->
+<script src=".../f10-layout.js"></script>
+```
+
+```js
+const YOUTUBE = {
+  DATASET:             'acme_marts',                 // optional; defaults to DATASET
+  TABLE:               'gads_video_ad_daily',        // required
+  NETWORK:             'YOUTUBE',                    // optional ad_network_type filter (default 'YOUTUBE'; '' = no filter)
+  FORMAT_REGEX:        '\\d+\\s*"\\s*$',             // optional; default reads a trailing duration such as 6" / 15" / 30"
+  NON_SKIPPABLE_REGEX: 'non[- ]?skippable|bumper',   // optional; default shown
+  DEFAULT_DAYS:        30,                           // optional; default window ends at the latest date
+};
+```
+
+Columns read: `date_start`, `ad_network_type`, `ad_id`, `ad_name`, `campaign_name`, `spend`, `impressions`, `video_views`, `video_p25`, `video_p50`, `video_p75`, `video_p100`, `viewable_impressions`, `measurable_impressions`, `engagements`. The tab issues two queries through `runQuery` (min/max date, then one row per ad per day for the window). Filtering and aggregation happen in the browser, so changing campaign, ad type or format does not re-query.
+
+What it shows:
+
+- **Filters** (inside the panel, so they hide with it): from / to dates, campaign, ad type (skippable / non-skippable) and format. The `GROUP_FILTERS` dropdowns and the Meta controls bar do not apply to this tab.
+- **KPI row**: spend, impressions, CPM, viewability (`viewable_impressions / measurable_impressions`), completion rate (`video_p100 / impressions`), cost per completed view (`spend / video_p100`), engagements, and views and view rate (`video_views / impressions`) over **skippable ads only**, shown as `n/a` when the selection has none.
+- **Daily chart**: spend bars and a completion-rate line.
+- **Ad table**: one row per `ad_id` (never per ad name; the name shown is the ad's latest), with format, ad type, spend, impressions, CPM, viewability, completion rate, CPCV, views and view rate (`n/a` for non-skippable ads). Sorted by spend; every column header sorts.
+- **Drop-off chart**: for each ad, the share of impressions reaching 25 / 50 / 75 / 100%.
+- **Notes box**: non-skippable ads always report 0 views; quartile figures are Google estimates (completion rate × impressions); brand campaigns carry no CPA.
+
+How the two classifications work:
+
+- **Format** is parsed from the ad name with `FORMAT_REGEX` (case-insensitive). The first capture group is the label if the regex has one, otherwise the whole match; whitespace is removed. No match gives `Other`.
+- **Skippable vs non-skippable** is decided by name: `NON_SKIPPABLE_REGEX` (case-insensitive) is tested against `campaign_name + ' | ' + ad_name`. It is deliberately not "has views > 0", because a skippable ad can have zero views in a short window.
+
+`video_p25` to `video_p100` in the mart are Google's estimated completed-play **counts**, so every quartile rate divides by impressions. Errors (for example a wrong column name) render in the panel with the BigQuery message, and an empty window shows a "No YouTube data" state. There are no previews: the mart has no video id or thumbnail.
+
+The starter's `index.html` is not changed: its pins still lag at an old tag (see `f10-scaffold-verify-jsdelivr-pins-match-release`), so a `f10-youtube.js` tag there would 404. Add the tag by hand when a client needs the tab.
+
+Tests: `test/youtube-tab.test.js` covers the config gate, format parsing, skippable classification, aggregation by `ad_id`, the KPI maths against the Beyond Bank Brand flight, the SQL shape, and a live-path boot that opens the tab, checks the rendered KPIs, and switches back to Meta and TikTok.
 
 ## Competitor Ad Library
 
