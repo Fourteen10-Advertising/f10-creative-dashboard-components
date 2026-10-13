@@ -688,6 +688,16 @@ A failed component-scale query renders a **visible panel error state** ("Compone
 
 The Component Scale tab activates through **`f10ActivateTab()`** in `f10-layout.js`, a single generic dispatcher that clears **every** nav link (`#sidebar nav a`) and **every** panel (`.tab-panel`) before activating the selected pair. New modules call it instead of hard-coding a clear-list of every other tab's nav-link classes, which is the fix for the old O(tabs^2) activation coupling: adding this tab needed **no edit to any existing module**, and a future tab needs none either. The panel carries the shared `.tab-panel` class, so the existing engines' own clears hide it when another tab is selected, and the module binds a generic deactivate handler to the other nav anchors so its highlight clears too. A net-new live-path canary in `test/us-components-scale.test.js` boots the real base, TikTok and Competitor engines alongside this module and asserts each pre-existing tab (Weekly, Monthly, Competitors, TikTok) still switches to exactly one visible panel after the new module registers.
 
+#### Delegated nav clear and `f10RegisterModuleTab` (v1.32.0)
+
+The older engines (Meta `selectTab`, TikTok, Competitors) still clear only their own hand-listed nav classes, so a link registered later in boot could stay highlighted after the user moved to another tab. `renderLayout()` now installs **`f10WireNavDispatcher()`**: one delegated click listener on `#sidebar nav` that runs after the clicked link's own handler and removes `active` from every **other** nav anchor. It is delegated, so it also covers links that register after `renderLayout` returns, and it never shows anything, so each tab's own activation is unchanged. It binds once.
+
+New self-registering tabs should use **`f10RegisterModuleTab({ section, linkClass, label, panelId, panelHtml, title, onActivate })`**: it injects an optional nav-section divider, one nav link and one panel (which must carry `.tab-panel`), and routes the click through `f10ActivateTab`. The module never names another tab's classes and needs no per-module deactivate handler. The YouTube tab is the first user.
+
+The Meta controls bar's show path (`applyControlsVisibility()` in `f10-weekly.js`) is now tab-aware: when a non-Meta panel is the visible one, a late Meta re-render (for example `initWeekly` finishing after the user has already switched tabs) keeps the bar hidden instead of re-showing it over that tab.
+
+`test/tab-dispatcher.test.js` boots the real Meta, TikTok and Competitor engines on a DOM whose clicks bubble (`test/helpers/live-dom.js`), registers a late module tab, and asserts exactly one visible panel and one highlighted link after every switch, in mixed order. It also reproduces the stale-highlight bug with the dispatcher switched off.
+
 `COMPONENTS` is an **optional overrides object** only:
 
 ```js

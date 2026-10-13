@@ -149,7 +149,15 @@ function onGroupChange(e){
 function applyControlsVisibility(){
   const compPanel = document.getElementById('panel-competitors');
   const compActive = compPanel && compPanel.classList.contains('active');
-  if(compActive){
+  /* Tab-aware SHOW path: a late Meta re-render (initWeekly / loadWindows finishing
+   * after the user has already switched away) must not re-show the Meta controls bar
+   * over another module's tab. The Meta engine's own panel for activeTab is
+   * #tab-<activeTab>; when some other panel (TikTok, LinkedIn, YouTube, Component
+   * Scale...) is the visible one, that Meta panel is not active. */
+  const metaPanel = document.getElementById('tab-'+activeTab);
+  const otherTabActive = !!(metaPanel && metaPanel.classList && !metaPanel.classList.contains('active')
+    && document.querySelector && document.querySelector('.tab-panel.active'));
+  if(compActive || otherTabActive){
     document.getElementById('controls-bar').style.display = 'none';
     return;
   }

@@ -741,6 +741,61 @@ function f10ActivateTab(opts){
   const lc = document.getElementById('li-controls-bar'); if (lc) lc.style.display = 'none';
 }
 
+/* ── Generic nav highlight clear (delegated, installed once by renderLayout) ──
+ * f10ActivateTab covers modules that call it, but the older engines (Meta selectTab,
+ * TikTok, Competitors) still clear only their own hand-listed nav classes. A nav link
+ * injected later in boot (a probe-registered or config-gated module) is not on any of
+ * those lists, so its highlight could stay lit after the user moved to another tab.
+ * One delegated click listener on `#sidebar nav` closes that gap for every current and
+ * future tab: it runs in the bubble phase, AFTER the clicked link's own handler has
+ * activated its link + panel, and removes `active` from every OTHER nav anchor. Because
+ * it is delegated it also covers anchors that register after renderLayout returns. It
+ * never adds or shows anything, so a tab's own activation logic is unchanged. */
+function f10WireNavDispatcher(){
+  const nav = document.querySelector('#sidebar nav');
+  if (!nav || !nav.addEventListener || nav.__f10NavDispatch) return;
+  nav.__f10NavDispatch = true;
+  nav.addEventListener('click', function(e){
+    const a = e && e.target && e.target.closest ? e.target.closest('a') : null;
+    if (!a) return;
+    nav.querySelectorAll('a').forEach(function(l){ if (l !== a) l.classList.remove('active'); });
+  });
+}
+
+/* ── Generic module-tab registration ──
+ * The shared way for a self-registering module (YouTube, and any future channel tab)
+ * to add its tab: inject an optional nav-section label, ONE nav link and ONE panel,
+ * then route the link's click through f10ActivateTab so the module never names any
+ * other tab's classes. The panel markup MUST carry the shared `.tab-panel` class so
+ * every engine's own `.tab-panel` clear hides it when another tab is chosen.
+ *   opts.section   - nav-section label (optional; omitted = no divider)
+ *   opts.linkClass - class for the nav <a> (module-unique, e.g. 'yt-nav-link')
+ *   opts.label     - nav link text
+ *   opts.panelId   - id of the panel inside opts.panelHtml
+ *   opts.panelHtml - full panel markup (`<div class="tab-panel ..." id="...">`)
+ *   opts.title     - page title on activation (default: label)
+ *   opts.onActivate- callback after activation (lazy-load data here)
+ * Returns the nav link element, or null when the layout is not rendered. */
+function f10RegisterModuleTab(opts){
+  opts = opts || {};
+  const nav = document.querySelector('#sidebar nav');
+  const content = document.getElementById('content');
+  if (!nav || !content) return null;
+  if (opts.section) nav.insertAdjacentHTML('beforeend', '<div class="nav-section">' + opts.section + '</div>');
+  nav.insertAdjacentHTML('beforeend', '<a href="#" class="' + opts.linkClass + '">' + opts.label + '</a>');
+  content.insertAdjacentHTML('beforeend', opts.panelHtml);
+  const links = document.querySelectorAll('.' + opts.linkClass);
+  const link = links[links.length - 1] || null;
+  if (link && link.addEventListener) {
+    link.addEventListener('click', function(e){
+      if (e && e.preventDefault) e.preventDefault();
+      f10ActivateTab({ panelId: opts.panelId, navLink: link, title: opts.title || opts.label });
+      if (typeof opts.onActivate === 'function') opts.onActivate();
+    });
+  }
+  return link;
+}
+
 function renderLayout(){
   const client = (typeof CLIENT_NAME !== 'undefined' && CLIENT_NAME) ? CLIENT_NAME : 'Client';
   const report = (typeof REPORT_NAME !== 'undefined' && REPORT_NAME) ? REPORT_NAME : 'Creative Reporting';
@@ -1071,6 +1126,7 @@ ${liControls}
   const _f10Theme = f10ThemeVars(branding);
   if (_f10Theme) document.documentElement.style.cssText += ';' + _f10Theme;
   initTableSorting();
+  f10WireNavDispatcher();
 
   if (window.F10A) {
     F10A.init({ client: client, dashboardType: 'creative' });
