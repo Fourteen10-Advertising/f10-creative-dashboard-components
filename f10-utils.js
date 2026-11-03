@@ -651,7 +651,7 @@ function statusClauses(){ return statusFilter === 'active' ? ['is_active'] : [];
  *   scopeWhere('WHERE') — start a fresh WHERE block (e.g. FROM t ${scopeWhere('WHERE')})
  *   scopeWhere()        — append to an existing WHERE (leads with AND)
  * Returns '' when nothing is active. */
-function scopeClauses(){ return groupClauses().concat(statusClauses()); }
+function scopeClauses(){ return groupClauses().concat(statusClauses(), segmentClauses()); }
 /* scopeWhere plus the ad search, for queries that sum totals across ads. */
 function searchScopeWhere(lead){
   const parts = scopeClauses().concat(adSearchClauses('adset_name'));
@@ -1756,6 +1756,225 @@ if (typeof window !== 'undefined') {
   window.confidenceCurvePoints = confidenceCurvePoints;
 }
 /* ==== CONFIDENCE LINES END ================================================ */
+
+/* ==== CONFIDENCE BASELINE START =========================================== *
+ * CAMPAIGN TYPE SEGMENT AND MOVEABLE BASELINE (confidence-lines US-002)
+ *
+ * Optional, config-gated. A dashboard opts in with:
+ *   const CONFIDENCE_LINES = {
+ *     KILL_CONV_EXPR:  'plan_assigned',   // conversion that earns a Cut
+ *     SCALE_CONV_EXPR: 'subscriptions',   // conversion that earns a Scale
+ *     SEGMENT_EXPR:    "CASE ... END",    // campaign_name to campaign type
+ *     BASELINE_DAYS:   90,                // optional, default 90
+ *     CONFIDENCE:      0.9,               // optional, default 0.9
+ *   };
+ * With no CONFIDENCE_LINES every function here is inert: segmentClauses() adds
+ * nothing to scopeClauses(), the layout renders no dropdown or panel, and the
+ * production queries are byte-identical to the ungated build.
+ *
+ * SEGMENT_EXPR contract: return the campaign type as a string, NULL for
+ * campaigns excluded from the baseline (Awareness for Mosh), and 'Unmatched'
+ * for campaigns that match no pattern. 'Unmatched' rows are kept and flagged in
+ * the UI so a new campaign is never silently bucketed.
+ *
+ * The baseline is Meta-reported cost per conversion (spend / SUM(conv) in the
+ * creative mart), per group x segment, over the trailing window that ends the
+ * day before the dashboard window end. Session edits to a target live in
+ * _confidenceOverrides and re-grade the page through loadProduction(), the same
+ * way the Adjust thresholds panel works. A reload reverts them.
+ */
+const CONFIDENCE_MIN_CONVERSIONS = 50;
+const CONFIDENCE_UNMATCHED_SEGMENT = 'Unmatched';
+const CONFIDENCE_DEFAULT_BASELINE_DAYS = 90;
+/* Group key used when the dashboard has no Product / Group column. */
+const CONFIDENCE_SINGLE_GROUP = 'All';
+
+function confidenceLinesConfig(){
+  const c = (typeof CONFIDENCE_LINES !== 'undefined' && CONFIDENCE_LINES) ? CONFIDENCE_LINES : null;
+  if (!c || typeof c !== 'object') return null;
+  const str = v => (typeof v === 'string' && v.trim()) ? v.trim() : null;
+  const kill = str(c.KILL_CONV_EXPR), scale = str(c.SCALE_CONV_EXPR), seg = str(c.SEGMENT_EXPR);
+  if (!kill || !scale || !seg) return null;
+  const days = Number(c.BASELINE_DAYS);
+  return {
+    killConvExpr: kill,
+    scaleConvExpr: scale,
+    segmentExpr: seg,
+    baselineDays: (Number.isInteger(days) && days > 0) ? days : CONFIDENCE_DEFAULT_BASELINE_DAYS,
+    confidence: _confidenceLevel(c.CONFIDENCE),
+    killLabel: str(c.KILL_LABEL) || 'Cost per kill conversion',
+    scaleLabel: str(c.SCALE_LABEL) || 'Cost per scale conversion',
+  };
+}
+function confidenceLinesEnabled(){ return !!confidenceLinesConfig(); }
+
+/* ── Campaign type filter ── */
+let segmentSelection = GROUP_ALL;
+function setSegmentSelection(v){ segmentSelection = (v == null || v === '') ? GROUP_ALL : String(v); }
+function segmentClauses(){
+  const cfg = confidenceLinesConfig();
+  if (!cfg || !segmentSelection || segmentSelection === GROUP_ALL) return [];
+  return [`(${cfg.segmentExpr}) = ${sqlQuote(segmentSelection)}`];
+}
+
+/* The column the baseline groups by: the per-group thresholds column when set
+ * (the Product filter the thresholds already follow), else the first
+ * GROUP_FILTERS column, else none (one account-wide group). */
+function confidenceGroupCol(){
+  const tc = thresholdGroupCol();
+  if (tc) return tc;
+  const f = groupFilters()[0];
+  return (f && /^[A-Za-z_][A-Za-z0-9_]*$/.test(f.col)) ? f.col : null;
+}
+
+/* Trailing window that ends the day before the dashboard window end:
+ * date_start BETWEEN end - (days + 1) AND end - 1. For days 90 and end
+ * 2026-10-31 that is 2026-08-01 to 2026-10-30. Pure UTC date maths. */
+function confidenceBaselineWindow(endIso, days){
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(endIso == null ? '' : endIso));
+  if (!m) return null;
+  const n = (Number.isInteger(days) && days > 0) ? days : CONFIDENCE_DEFAULT_BASELINE_DAYS;
+  const DAY = 86400000;
+  const end = Date.UTC(+m[1], +m[2] - 1, +m[3]);
+  const iso = t => new Date(t).toISOString().slice(0, 10);
+  return { start: iso(end - (n + 1) * DAY), end: iso(end - DAY) };
+}
+
+/* One query: trailing cost per kill and per scale conversion for every
+ * group x segment. Excluded campaigns (SEGMENT_EXPR NULL) drop out; Unmatched
+ * rows stay so the UI can flag them. No group or status scope is applied: the
+ * baseline is the account's own history. null when not configured or the end
+ * date is not a date. */
+function confidenceBaselineSQL(endIso){
+  const cfg = confidenceLinesConfig();
+  if (!cfg) return null;
+  const w = confidenceBaselineWindow(endIso, cfg.baselineDays);
+  if (!w) return null;
+  const col = confidenceGroupCol();
+  const grp = col ? `CAST(${col} AS STRING)` : sqlQuote(CONFIDENCE_SINGLE_GROUP);
+  return `
+    SELECT ${grp} AS grp, (${cfg.segmentExpr}) AS segment,
+      ROUND(SUM(spend), 2) AS spend,
+      SUM(${cfg.killConvExpr}) AS kill_conv, SUM(${cfg.scaleConvExpr}) AS scale_conv,
+      SAFE_DIVIDE(SUM(spend), NULLIF(SUM(${cfg.killConvExpr}), 0)) AS cost_per_kill,
+      SAFE_DIVIDE(SUM(spend), NULLIF(SUM(${cfg.scaleConvExpr}), 0)) AS cost_per_scale
+    FROM \`${PROJECT}.${DATASET}.${TABLE}\`
+    WHERE date_start BETWEEN '${w.start}' AND '${w.end}' AND (${cfg.segmentExpr}) IS NOT NULL
+    GROUP BY 1, 2`;
+}
+
+/* Per-ad columns the production scatter needs to grade an ad. '' when off, so
+ * the ungated scatter SQL is unchanged. */
+function confidenceAdSelect(){
+  const cfg = confidenceLinesConfig();
+  if (!cfg) return '';
+  const col = confidenceGroupCol();
+  const grp = col ? `CAST(ANY_VALUE(${col}) AS STRING)` : sqlQuote(CONFIDENCE_SINGLE_GROUP);
+  return `, ${grp} AS conf_group, ANY_VALUE(${cfg.segmentExpr}) AS conf_segment` +
+    `, SUM(${cfg.killConvExpr}) AS kill_conv, SUM(${cfg.scaleConvExpr}) AS scale_conv`;
+}
+
+/* ── Baseline store and session overrides ── */
+const _confidenceBaseline = { endIso: null, rows: {} };
+const _confidenceOverrides = {};
+function confidenceKey(group, segment){ return String(group) + '|' + String(segment); }
+function _confStr(v){
+  if (v == null) return null;
+  if (typeof v === 'object' && 'value' in v) v = v.value;
+  return v == null ? null : String(v);
+}
+
+/* Load query rows into the store. A target is null when its conversion count
+ * is under CONFIDENCE_MIN_CONVERSIONS: not enough data for a baseline. */
+function setConfidenceBaseline(rows, endIso){
+  _confidenceBaseline.endIso = endIso == null ? null : String(endIso);
+  _confidenceBaseline.rows = {};
+  (rows || []).forEach(r => {
+    const seg = _confStr(r.segment);
+    if (seg == null || seg === '') return;
+    const grp = _confStr(r.grp);
+    const killConv = Number(r.kill_conv) || 0, scaleConv = Number(r.scale_conv) || 0;
+    const ck = Number(r.cost_per_kill), cs = Number(r.cost_per_scale);
+    _confidenceBaseline.rows[confidenceKey(grp == null ? '' : grp, seg)] = {
+      group: grp, segment: seg, spend: Number(r.spend) || 0, killConv, scaleConv,
+      killTarget: (killConv >= CONFIDENCE_MIN_CONVERSIONS && ck > 0) ? ck : null,
+      scaleTarget: (scaleConv >= CONFIDENCE_MIN_CONVERSIONS && cs > 0) ? cs : null,
+    };
+  });
+}
+function confidenceBaselineEnd(){ return _confidenceBaseline.endIso; }
+function getConfidenceBaseline(key){ return _confidenceBaseline.rows[key] || null; }
+/* Spend in the window on campaigns SEGMENT_EXPR could not type. */
+function confidenceUnmatchedSpend(){
+  return Object.values(_confidenceBaseline.rows)
+    .filter(r => r.segment === CONFIDENCE_UNMATCHED_SEGMENT)
+    .reduce((s, r) => s + r.spend, 0);
+}
+
+/* The group x segment the Ad Production panel shows: needs a single group (or
+ * a dashboard with no group column) and a single campaign type. null on All. */
+function confidenceSelectedKey(){
+  if (!confidenceLinesEnabled()) return null;
+  const col = confidenceGroupCol();
+  const grp = col ? groupSelections[col] : CONFIDENCE_SINGLE_GROUP;
+  if (!grp || grp === GROUP_ALL) return null;
+  if (!segmentSelection || segmentSelection === GROUP_ALL) return null;
+  return confidenceKey(grp, segmentSelection);
+}
+
+/* Active targets for a key: the baseline with any session edit applied. kill
+ * and scale are null when there is not enough data (no lines). null when the
+ * key has no baseline row at all. */
+function getConfidenceTargets(key){
+  const b = getConfidenceBaseline(key);
+  if (!b) return null;
+  const o = _confidenceOverrides[key] || {};
+  return {
+    kill: b.killTarget == null ? null : (o.kill != null ? o.kill : b.killTarget),
+    scale: b.scaleTarget == null ? null : (o.scale != null ? o.scale : b.scaleTarget),
+    killBaseline: b.killTarget, scaleBaseline: b.scaleTarget,
+    killConv: b.killConv, scaleConv: b.scaleConv,
+    edited: o.kill != null || o.scale != null,
+  };
+}
+/* Session-only edit. which is 'kill' or 'scale'. Rejects a non-positive value
+ * or a target that has no baseline. Returns true when the edit applied. */
+function setConfidenceTarget(key, which, value){
+  if (which !== 'kill' && which !== 'scale') return false;
+  const b = getConfidenceBaseline(key);
+  if (!b || b[which + 'Target'] == null) return false;
+  const v = Number(value);
+  if (!(v > 0) || !isFinite(v)) return false;
+  (_confidenceOverrides[key] || (_confidenceOverrides[key] = {}))[which] = v;
+  return true;
+}
+function resetConfidenceTargets(key){
+  if (key == null) Object.keys(_confidenceOverrides).forEach(k => { delete _confidenceOverrides[k]; });
+  else delete _confidenceOverrides[key];
+}
+
+/* Grade one ad against its own group x segment targets with the US-001
+ * confidenceVerdict. null when the ad's cell has no usable baseline. */
+function confidenceGradeAd(ad){
+  const cfg = confidenceLinesConfig();
+  if (!cfg || !ad) return null;
+  const t = getConfidenceTargets(confidenceKey(ad.group, ad.segment));
+  if (!t || (t.kill == null && t.scale == null)) return null;
+  return confidenceVerdict(Number(ad.spend) || 0, Number(ad.killConv) || 0, t.kill, {
+    conf: cfg.confidence, scaleConv: Number(ad.scaleConv) || 0, scaleTarget: t.scale,
+  });
+}
+
+if (typeof window !== 'undefined') {
+  window.confidenceLinesConfig = confidenceLinesConfig;
+  window.confidenceBaselineWindow = confidenceBaselineWindow;
+  window.confidenceBaselineSQL = confidenceBaselineSQL;
+  window.getConfidenceTargets = getConfidenceTargets;
+  window.setConfidenceTarget = setConfidenceTarget;
+  window.resetConfidenceTargets = resetConfidenceTargets;
+  window.confidenceGradeAd = confidenceGradeAd;
+}
+/* ==== CONFIDENCE BASELINE END ============================================= */
 
 /* ======================================================================== *
  * SHARED STRUCTURE WIREFRAME (Phase 3, US-022)

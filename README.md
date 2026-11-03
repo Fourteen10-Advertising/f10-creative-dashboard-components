@@ -209,6 +209,7 @@ lives in `test/review-list-bundles.test.js`.
 | `SHOW_STATE_FILTER` | no | Set `true` to add an ad-state dropdown that narrows the Movement Board to one state (see [Movement Board state filter](#movement-board-state-filter)) |
 | `FULL_COVERAGE_TIERS` | no | Set `true` to grade every ad into one of five tiers that sum to 100% of the ad base (see [Full-coverage tiers](#full-coverage-tiers)) |
 | `THRESHOLDS_BY_GROUP` | no | Per-product Ad Production thresholds, e.g. grade SMSF ads on a different cost scale than Trade (see [Per-product thresholds](#per-product-thresholds)) |
+| `CONFIDENCE_LINES` | no | Campaign type dropdown and an editable trailing cost-per-conversion baseline on Ad Production: `{ KILL_CONV_EXPR, SCALE_CONV_EXPR, SEGMENT_EXPR, BASELINE_DAYS?, CONFIDENCE? }`. Off when absent (see [Campaign type and moveable baseline](#campaign-type-and-moveable-baseline-confidence_lines)) |
 | `REVIEW` | no | F10-internal Creative Review surface only. The bundle list is now **auto-discovered** via the `list-bundles` action, so this block no longer carries `BUNDLES` or `LIMIT` and is effectively optional/empty; it holds only optional overrides (`CLIENT` slug override, `ACTOR`, `FEEDBACK_FUNCTION`). Live client dashboards never define it (see [Creative review](#creative-review)) |
 
 ## Secondary-channel tab parity (TikTok + LinkedIn)
@@ -1285,8 +1286,8 @@ The change is **purely additive**, so a dashboard adopts the Creative Score simp
 
 Helpers in `f10-utils.js` that grade an ad as **Scale**, **Testing** or **Cut**
 with a one-sided Poisson test against a cost-per-conversion target, instead of a
-fixed CPA cut-off. They are not wired into any tab yet, so nothing on a
-dashboard changes until a later story uses them.
+fixed CPA cut-off. On their own they change nothing on a dashboard. The
+opt-in `CONFIDENCE_LINES` config below wires them into Ad Production.
 
 With `lam = spend / target` (the conversions the ad would have if it ran exactly
 at target) and `k` = its conversions:
@@ -1332,6 +1333,67 @@ Reference anchors from the Mosh kill-line backtest
 the backtest's `gen_fixtures.py`, so the dashboard and the backtest cannot drift.
 It also evaluates the emitted SQL against the JS mirror and checks that removing
 the helper block leaves every existing global, tier and score output unchanged.
+
+### Campaign type and moveable baseline (`CONFIDENCE_LINES`)
+
+Opt-in. With no `CONFIDENCE_LINES` the dashboard renders and queries exactly as
+before: no dropdown, no panel, no extra query, and the Ad Production SQL is
+byte-identical (`test/confidence-baseline.test.js` pins this).
+
+```js
+const CONFIDENCE_LINES = {
+  KILL_CONV_EXPR:  'plan_assigned',   // conversion an ad is Cut on
+  SCALE_CONV_EXPR: 'subscriptions',   // conversion an ad is Scaled on
+  SEGMENT_EXPR: `CASE
+    WHEN campaign_name LIKE '%_Awareness%' THEN NULL
+    WHEN campaign_name LIKE '%_Prospecting_Web-Visit-Retargeting_%' THEN 'Retargeting'
+    WHEN campaign_name LIKE '%_Retargeting_Reach%'
+      OR campaign_name LIKE '%_Post-Quiz_Retargeting_%'
+      OR campaign_name LIKE '%_Web-Visit_Retargeting_Reach%' THEN 'Retargeting'
+    WHEN campaign_name LIKE '%_Prospecting%' OR campaign_name LIKE '%ASC+%' THEN 'Prospecting'
+    ELSE 'Unmatched' END`,
+  BASELINE_DAYS: 90,                  // optional, default 90
+  CONFIDENCE: 0.9,                    // optional, default 0.9
+  KILL_LABEL: 'Cost per plan',        // optional input labels
+  SCALE_LABEL: 'Cost per subscription',
+};
+```
+
+The example `SEGMENT_EXPR` is the Mosh mapping: plain `_Prospecting`, ASC+ and
+`_Prospecting_Female` / `_Male` campaigns are Prospecting; the web-visit and
+Reach retargeting types all collapse into Retargeting; Awareness returns `NULL`
+and is left out of the baseline. A campaign that matches no pattern must return
+`'Unmatched'`. Those rows are kept and flagged, so a new naming pattern is never
+silently bucketed.
+
+What it adds:
+
+- A **Campaign type** dropdown next to Product / Group. It lists the distinct
+  `SEGMENT_EXPR` values (Unmatched shows as "Unmatched (check naming)") and
+  scopes every non-weekly tab, the same way a Product pick does.
+- One baseline query per window end: Meta-reported spend, kill and scale
+  conversions and cost per each, for every group x campaign type, over the
+  `BASELINE_DAYS` that end the day before the window end. For 90 days and a
+  window ending 2026-10-31 that is `date_start BETWEEN '2026-08-01' AND
+  '2026-10-30'`, `GROUP BY 1, 2`. The group is the per-product thresholds
+  column, else the first `GROUP_FILTERS` column, else one account-wide group.
+- A **Your last 90 days (Meta-reported)** panel on Ad Production. Once a single
+  product and campaign type are picked it shows the cost per kill and cost per
+  scale targets as editable inputs, and how many visible ads grade Scale,
+  Testing and Cut at those targets (with the US-001 `confidenceVerdict`).
+  Editing a target re-grades the page for this session only; **Reset to
+  baseline** or a reload puts the baseline back.
+- A cell with fewer than 50 conversions shows "Not enough data for a baseline"
+  and gets no input and no line. Kill and scale are checked separately.
+- When any window spend sits on `'Unmatched'` campaigns, the panel says how
+  much and points to the Unmatched campaign type so the names or the mapping
+  can be fixed.
+
+The Verdict column in the tables and the lines on the scatter chart come in a
+later story. Helpers (all in `f10-utils.js`): `confidenceLinesConfig`,
+`confidenceBaselineSQL(endIso)`, `confidenceBaselineWindow(endIso, days)`,
+`getConfidenceTargets(key)`, `setConfidenceTarget(key, 'kill' | 'scale', v)`,
+`resetConfidenceTargets(key)` and `confidenceGradeAd(ad)`.
 
 ## Co-branding (optional)
 

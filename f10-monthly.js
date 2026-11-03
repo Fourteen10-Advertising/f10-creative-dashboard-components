@@ -200,6 +200,7 @@ function metaScoreOpts(){
 
 async function loadProduction(){
   ensureProductionControls();
+  if (confidenceLinesEnabled()) ensureConfidenceControls();
   fillProductionInputs();
   refreshProductionThresholdCopy();
   /* CPA is spend / conversions using the dashboard's CONV_EXPR (the same conversion
@@ -216,7 +217,7 @@ async function loadProduction(){
         ROUND(${lifetimeMetricSQL('ANY_VALUE(lifetime_spend)', `SUM(${CONV_EXPR})`)}, 2) AS ${lifetimeMetricCol()},
         SUM(impressions) AS impressions, SUM(clicks) AS clicks, SUM(video_15s) AS video_15s,
         SUM(video_p25) AS video_p25, SUM(video_p50) AS video_p50, SUM(video_p75) AS video_p75,
-        SUM(video_p100) AS video_p100, SUM(video_plays) AS video_plays, SUM(outbound_clicks) AS outbound_clicks${thresholdGroupSelect()}
+        SUM(video_p100) AS video_p100, SUM(video_plays) AS video_plays, SUM(outbound_clicks) AS outbound_clicks${thresholdGroupSelect()}${confidenceAdSelect()}
       FROM \`${PROJECT}.${DATASET}.${TABLE}\`${scopeWhere('WHERE')} GROUP BY 1
     )
     SELECT *,
@@ -250,6 +251,10 @@ async function loadProduction(){
   try {
     const [scatterData, monthlyData] = await Promise.all([runQuery(scatterSQL), runQuery(monthlySQL)]);
     if(term !== adSearchTerm) return;  /* a newer search is already reloading this tab */
+    if (confidenceLinesEnabled()){
+      try { await loadConfidenceBaseline(); renderConfidenceBaselinePanel(adSearchFilter(scatterData, r=>adSearchKey(r.ad_name, r.campaign_name, r.adset_name))); }
+      catch(err){ console.error('Confidence baseline error:', err); }
+    }
     /* Revenue-integrity guard (US-010): in ROAS mode, if there is lifetime spend
      * but NOT ONE ad shows positive ROAS, blended revenue is 0 across the whole
      * account — the gated revenue column is missing/zeroed. (A single Strike Out
@@ -329,6 +334,135 @@ async function loadProduction(){
       return `<tr ${adNameAttr(r.ad_name, r.campaign_name, r.adset_name)}><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adset_name}">${r.adset_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmt$(r.lifetime_spend)}</td><td>${r[mCol]&&Number(r[mCol])>0?fmtMetricCell(r[mCol]):'–'}</td><td>${fmtNum(r.total_conversions)}</td><td class="num">${cr.hold!=null?fmtPct(cr.hold,2):'–'}</td><td class="num">${cr.completion!=null?fmtPct(cr.completion,2):'–'}</td><td class="num">${cr.outboundCtr!=null?fmtPct(cr.outboundCtr,2):'–'}</td><td>${r.creative_link?`<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.creative_link}" target="_blank">Preview</a>`:'–'}</td><td><span class="badge ${badgeClass}">${cls}</span></td><td>${creativeScoreBadge(r.creative_score)}</td></tr>`; }));
     hideEl('scatter-table-loading'); showEl('scatter-table');
   } catch(err){ console.error('Production error:',err); }
+}
+
+/* ── Confidence lines baseline panel (confidence-lines US-002) ──
+ * All of this is inert unless CONFIDENCE_LINES is configured: the layout has no
+ * #ctrl-segment or #prod-baseline-controls, and loadProduction() never calls in. */
+let confidenceControlsWired = false;
+let confidenceSegmentsLoaded = false;
+let _confidenceBaselinePromise = null;
+let _confidenceBaselinePromiseEnd = null;
+
+/* Populate the Campaign type dropdown once and wire its change, plus the Reset
+ * to baseline button. A segment change re-scopes every non-weekly tab the same
+ * way a Product change does. */
+function ensureConfidenceControls(){
+  if (confidenceControlsWired || !confidenceLinesEnabled()) return;
+  const sel = document.getElementById('ctrl-segment');
+  const reset = document.getElementById('cl-reset');
+  if (!sel || !reset) return;
+  confidenceControlsWired = true;
+  sel.addEventListener('change', () => {
+    setSegmentSelection(sel.value);
+    if (window.F10A) F10A.track('filter_changed', { filter: 'campaign_type', value: sel.value });
+    Object.keys(loadedTabs).forEach(t => { if (!isWeekly(t)) delete loadedTabs[t]; });
+    loadWindows();
+    if (!isWeekly(activeTab)) loadMonthlyTab(activeTab);
+  });
+  reset.addEventListener('click', () => {
+    resetConfidenceTargets(confidenceSelectedKey());
+    loadProduction();
+  });
+  loadConfidenceSegments(sel);
+}
+
+async function loadConfidenceSegments(sel){
+  if (confidenceSegmentsLoaded) return;
+  const cfg = confidenceLinesConfig();
+  if (!cfg) return;
+  confidenceSegmentsLoaded = true;
+  try {
+    const rows = await runQuery(`SELECT DISTINCT (${cfg.segmentExpr}) AS segment FROM \`${PROJECT}.${DATASET}.${TABLE}\` WHERE (${cfg.segmentExpr}) IS NOT NULL ORDER BY 1`);
+    const opts = rows.map(r => _confStr(r.segment)).filter(v => v != null && v !== '');
+    sel.innerHTML = `<option value="${GROUP_ALL}">All campaign types</option>` + opts.map(v => {
+      const label = v === CONFIDENCE_UNMATCHED_SEGMENT ? 'Unmatched (check naming)' : v;
+      return `<option value="${escapeHtmlAttr(v)}"${v === segmentSelection ? ' selected' : ''}>${escapeHtmlAttr(label)}</option>`;
+    }).join('');
+    sel.value = segmentSelection;
+  } catch (err) { confidenceSegmentsLoaded = false; console.error('Campaign type list error:', err); }
+}
+function escapeHtmlAttr(v){ return String(v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+/* The window end the dashboard is showing: the end-date control, else the
+ * latest date in the mart. */
+function confidenceWindowEnd(){
+  const el = document.getElementById('ctrl-enddate');
+  if (el && el.value) return el.value;
+  return (typeof MAXDATE !== 'undefined' && MAXDATE) ? MAXDATE : null;
+}
+
+/* Run the baseline query once per window end; later calls reuse the result. */
+async function loadConfidenceBaseline(){
+  const end = confidenceWindowEnd();
+  if (!end) return false;
+  if (confidenceBaselineEnd() === end) return true;
+  if (_confidenceBaselinePromise && _confidenceBaselinePromiseEnd === end) return _confidenceBaselinePromise;
+  const sql = confidenceBaselineSQL(end);
+  if (!sql) return false;
+  _confidenceBaselinePromiseEnd = end;
+  _confidenceBaselinePromise = runQuery(sql).then(rows => { setConfidenceBaseline(rows, end); return true; })
+    .finally(() => { _confidenceBaselinePromise = null; _confidenceBaselinePromiseEnd = null; });
+  return _confidenceBaselinePromise;
+}
+
+/* Grade the visible scatter rows against the selected cell's targets. */
+function confidenceVerdictCounts(rows){
+  const out = { Scale: 0, Testing: 0, Cut: 0, ungraded: 0 };
+  (rows || []).forEach(r => {
+    const v = confidenceGradeAd({ group: _confStr(r.conf_group), segment: _confStr(r.conf_segment),
+      spend: r.lifetime_spend, killConv: r.kill_conv, scaleConv: r.scale_conv });
+    if (v && out[v] !== undefined) out[v]++; else out.ungraded++;
+  });
+  return out;
+}
+
+function _confTargetField(id, label, value, conv){
+  if (value == null) return `<div class="tc-field"><label>${label}</label><span class="tc-note">Not enough data for a baseline (${fmtNum(conv)} conversions, needs ${CONFIDENCE_MIN_CONVERSIONS}).</span></div>`;
+  return `<div class="tc-field"><label for="${id}">${label}</label><input type="number" id="${id}" min="0" step="any" value="${Math.round(value * 100) / 100}" /></div>`;
+}
+
+/* Fill the baseline panel for the selected Product x Campaign type and wire the
+ * target inputs. Edits are session-only and re-grade the page. */
+function renderConfidenceBaselinePanel(rows){
+  const cfg = confidenceLinesConfig();
+  const body = document.getElementById('prod-baseline-body');
+  if (!cfg || !body) return;
+  const unmatched = document.getElementById('prod-baseline-unmatched');
+  const verdicts = document.getElementById('prod-baseline-verdicts');
+  const resetBtn = document.getElementById('cl-reset');
+  const uSpend = confidenceUnmatchedSpend();
+  if (unmatched) unmatched.innerHTML = uSpend > 0
+    ? `<div class="tc-note" id="cl-unmatched-flag">${fmt$(uSpend)} of spend in this window is on campaigns whose names match no campaign type. Pick "Unmatched (check naming)" in Campaign type to see them, then fix the names or the mapping.</div>`
+    : '';
+  const key = confidenceSelectedKey();
+  const t = key ? getConfidenceTargets(key) : null;
+  if (!key){
+    body.innerHTML = '<span class="tc-note">Pick a product and campaign type to see its baseline.</span>';
+    if (verdicts) verdicts.innerHTML = '';
+    if (resetBtn) resetBtn.style.display = 'none';
+    return;
+  }
+  if (!t || (t.kill == null && t.scale == null)){
+    body.innerHTML = '<span class="tc-note" id="cl-not-enough">Not enough data for a baseline</span>';
+    if (verdicts) verdicts.innerHTML = '';
+    if (resetBtn) resetBtn.style.display = 'none';
+    return;
+  }
+  body.innerHTML = `<div class="tc-grid">${_confTargetField('cl-target-kill', cfg.killLabel, t.kill, t.killConv)}${_confTargetField('cl-target-scale', cfg.scaleLabel, t.scale, t.scaleConv)}</div>`;
+  if (resetBtn) resetBtn.style.display = '';
+  [['cl-target-kill', 'kill'], ['cl-target-scale', 'scale']].forEach(([id, which]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('change', () => {
+      if (setConfidenceTarget(key, which, el.value)) loadProduction();
+      else { const cur = getConfidenceTargets(key); el.value = cur && cur[which] != null ? Math.round(cur[which] * 100) / 100 : ''; }
+    });
+  });
+  if (verdicts){
+    const c = confidenceVerdictCounts(rows);
+    verdicts.innerHTML = `<span class="tc-note" id="cl-verdict-counts">At these targets: <strong>${c.Scale}</strong> Scale, <strong>${c.Testing}</strong> Testing, <strong>${c.Cut}</strong> Cut${t.edited ? ' (edited for this session)' : ''}.</span>`;
+  }
 }
 
 /* ── Ad Power Law ── */

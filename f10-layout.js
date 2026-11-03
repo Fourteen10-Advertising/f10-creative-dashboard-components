@@ -896,7 +896,8 @@ function renderLayout(){
     <!-- Global controls: group filters (all tabs) + weekly-only controls -->
     <div class="controls-bar" id="controls-bar" style="display:none;">
       <div id="ctrl-groups" class="ctrl-groups"></div>
-      <div id="ctrl-scope" class="ctrl-groups">
+${confidenceLinesEnabled() ? `      <div class="ctrl-groups" id="ctrl-segment-wrap"><div class="ctrl"><label>Campaign type</label><select id="ctrl-segment"><option value="${GROUP_ALL}" selected>All campaign types</option></select></div></div>
+` : ''}      <div id="ctrl-scope" class="ctrl-groups">
         <div class="ctrl"><label>Search ad</label><input type="search" id="ctrl-adsearch" class="ctrl-search" placeholder="Ad or campaign name&hellip;" autocomplete="off" /></div>
         <div class="ctrl"><label>Ad status</label><select id="ctrl-status"><option value="all" selected>All ads</option><option value="active">Active only</option></select></div>
         ${zeroSpendFilterEnabled() ? `<div class="ctrl"><label>Zero spend ads</label><select id="ctrl-zerospend"><option value="show" selected>Show</option><option value="hide">Hide</option></select></div>` : ''}
@@ -1007,7 +1008,17 @@ ${liControls}
           <button class="tc-reset" id="th-reset">Reset to defaults</button>
         </div>
       </div>
-      <div id="production-revenue-guard"></div>
+${confidenceLinesEnabled() ? `      <div class="threshold-controls" id="prod-baseline-controls">
+        <div class="tc-header">
+          <strong>Your last ${confidenceLinesConfig().baselineDays} days (Meta-reported)</strong>
+          <span class="tc-note">Targets come from this product and campaign type over the ${confidenceLinesConfig().baselineDays} days before the window end. Edit a target to re-grade the page for this session; a reload also reverts.</span>
+        </div>
+        <div id="prod-baseline-unmatched"></div>
+        <div id="prod-baseline-body"><span class="tc-note">Loading baseline&hellip;</span></div>
+        <div id="prod-baseline-verdicts"></div>
+        <div class="tc-actions"><button class="tc-reset" id="cl-reset">Reset to baseline</button></div>
+      </div>
+` : ''}      <div id="production-revenue-guard"></div>
       <div id="production-scorecards-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
       <div id="production-scorecards" style="display:none;">
         <div class="scorecard-grid">
