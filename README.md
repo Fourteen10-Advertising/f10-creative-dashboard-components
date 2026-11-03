@@ -1434,6 +1434,33 @@ Helpers (all in `f10-utils.js`): `confidenceLinesConfig`,
 `confidenceVerdictSQL(...)` and `confidenceCurvePoints(...)`. Tests:
 `test/confidence-production.test.js`.
 
+### Limits of the confidence lines
+
+Released in v1.33.0. Read the verdicts with these limits in mind:
+
+- **Meta-reported, not incrementality.** Spend, conversions and the 90 day
+  baseline all come from Meta's own attribution in `creative_reporting`. A
+  Scale verdict says an ad is converting faster than the target on Meta's
+  count. It does not say the ad caused those conversions or that the spend
+  is incremental. Check that with a holdout or a lift test before moving
+  real budget on it.
+- **The baseline is the account's own recent past.** The target for each
+  product and campaign type is the trailing 90 day Meta-reported cost per
+  conversion. If the whole account got worse over those 90 days, the bar is
+  lower too. Edit the target in the panel when the business target differs.
+- **90% confidence, one ad at a time.** Each ad is tested on its own. Across
+  a page of many ads a few will grade Scale or Cut by chance, so treat a
+  borderline call as a prompt to look, not a decision.
+- **Poisson assumption.** The test treats conversions as independent events
+  at a steady rate. Bursty delivery, a learning phase or a tracking outage
+  breaks that, and the verdict can be confidently wrong.
+- **Minimum data.** A cell needs 50 conversions in the baseline window for a
+  target. Below that the panel shows "Not enough data for a baseline" and
+  its ads show "No baseline".
+- **Cut on one event, Scale on another.** For Mosh, Cut reads plan assigned
+  and Scale reads subscriptions. An ad can be Testing on subs while it is
+  clearly fine on plans, and Scale is checked first, so it wins a tie.
+
 ### Cost per 1,000 reached view (`REACH_TABLE`)
 
 Set `CONFIDENCE_LINES.REACH_TABLE` to the name of the reach mart in the
