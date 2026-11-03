@@ -1,6 +1,6 @@
 'use strict';
-/* Confidence lines US-007: the Cost per 1,000 reached (CPMr) x axis on the Ad
- * Production scatter, read from the client's ad_window_reach mart. Fixtures
+/* Confidence lines US-007/US-008: the Reach cost chart on the Scale & Cut tab
+ * (Cost per 1,000 reached against cost per conversion), read from the client's ad_window_reach mart. Fixtures
  * only: the mart has not run live yet. The verdict comes from the scatter SQL,
  * evaluated by test/helpers/confidence-sql.js as in the US-003 tests. */
 const fs = require('fs');
@@ -143,7 +143,7 @@ function boot(opts){
 async function flush(){ for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); }
 
 /* Boot with confidence lines, pick Hair x Prospecting, set the dashboard
- * window, then switch the x axis to Cost per 1,000 reached. */
+ * window and load the Scale & Cut tab. */
 async function bootReach(opts){
   opts = opts || {};
   const ctx = boot({ config: opts.config || CONFIG, reachFails: opts.reachFails });
@@ -153,21 +153,18 @@ async function bootReach(opts){
   if (opts.group !== false) ctx.run("groupSelections['group_name'] = 'Hair';");
   ctx.sb.setSegmentSelection('Prospecting');
   if (opts.search) ctx.run(`adSearchTerm = ${JSON.stringify(opts.search)};`);
-  await ctx.sb.loadProduction();
+  await ctx.sb.loadScaleCut();
   await flush();
-  if (opts.cpmr !== false){
-    const sel = ctx.doc.getElementById('cl-x-mode');
-    sel.value = 'cpmr';
-    sel.dispatch('change');
-    await flush();
-  }
   return ctx;
 }
 
-const scatterChart = (ctx) => { const c = ctx.charts.filter((x) => x.el && x.el.id === 'scatter-chart'); return c[c.length - 1]; };
+const chartOn = (ctx, id) => { const c = ctx.charts.filter((x) => x.el && x.el.id === id); return c[c.length - 1]; };
+const reachChart = (ctx) => chartOn(ctx, 'sc-reach-chart');
+const linesChart = (ctx) => chartOn(ctx, 'sc-lines-chart');
 const allPoints = (chart) => chart.data.datasets.reduce((a, d) => a.concat(d.data.map((p) => Object.assign({ _set: d.label }, p))), []);
 const pointOf = (chart, name) => allPoints(chart).find((p) => p.label === name);
 const reachQueries = (ctx) => ctx.queries.filter((q) => /ad_window_reach/.test(q));
+const shown = (ctx, id) => ctx.doc.getElementById(id).style.display !== 'none';
 
 let failures = 0;
 async function test(name, fn){
@@ -176,32 +173,17 @@ async function test(name, fn){
 }
 
 (async () => {
-  await test('no REACH_TABLE: no x axis option and no reach query, even in cpmr mode', async () => {
-    const ctx = boot({ config: BASE_CONFIG });
-    ctx.sb.renderLayout();
-    ctx.doc.getElementById('ctrl-length').value = '30';
-    ctx.run("groupSelections['group_name'] = 'Hair';");
-    ctx.sb.setSegmentSelection('Prospecting');
-    ctx.run("confidenceXMode = 'cpmr';");
-    await ctx.sb.loadProduction();
-    await flush();
-    const html = ctx.doc.getElementById('app').innerHTML;
-    ['cl-x-mode', 'Cost per 1,000 reached', 'prod-reach-note', 'prod-reach-missing'].forEach((s) => assert.ok(!html.includes(s), s));
+  await test('no REACH_TABLE: "Reach data is not loaded yet." and no reach query', async () => {
+    const ctx = await bootReach({ config: BASE_CONFIG });
     assert.strictEqual(reachQueries(ctx).length, 0);
-    assert.strictEqual(ctx.sb.confidenceReachActive(), false);
     assert.strictEqual(ctx.sb.confidenceLinesConfig().reachTable, null);
-    const chart = scatterChart(ctx);
-    assert.notStrictEqual(chart.options.scales.x.title.text, 'Cost per 1,000 reached ($)');
-    assert.ok(!chart.plugins.some((p) => p.id === 'confidence-quadrants'));
-  });
-
-  await test('REACH_TABLE set but lifetime spend picked: the option shows and no reach query runs', async () => {
-    const ctx = await bootReach({ cpmr: false });
-    const html = ctx.doc.getElementById('app').innerHTML;
-    assert.ok(html.includes('<option value="cpmr">Cost per 1,000 reached</option>'), html.slice(html.indexOf('cl-x-mode') - 40, html.indexOf('cl-x-mode') + 300));
-    assert.ok(html.includes('<option value="spend" selected>Lifetime spend</option>'), 'lifetime spend is the default');
-    assert.strictEqual(reachQueries(ctx).length, 0);
-    assert.strictEqual(ctx.doc.getElementById('prod-reach-note').textContent, '');
+    assert.ok(shown(ctx, 'sc-reach-empty'));
+    assert.strictEqual(ctx.doc.getElementById('sc-reach-empty').textContent || 'Reach data is not loaded yet.', 'Reach data is not loaded yet.');
+    assert.ok(ctx.doc.getElementById('app').innerHTML.includes('id="sc-reach-empty">Reach data is not loaded yet.</div>'));
+    assert.ok(!shown(ctx, 'sc-reach-wrapper'));
+    assert.strictEqual(reachChart(ctx), undefined, 'no reach chart drawn');
+    assert.ok(linesChart(ctx), 'the lines chart still draws');
+    assert.deepStrictEqual(ctx.errors, []);
   });
 
   await test('a bad REACH_TABLE value is ignored', async () => {
@@ -211,9 +193,8 @@ async function test(name, fn){
   });
 
   await test('reach window follows the dashboard window', async () => {
-    const w = (d) => vmCall(d);
     const ctx = boot({ config: CONFIG });
-    function vmCall(d){ return ctx.sb.confidenceReachWindow(d); }
+    const w = (d) => ctx.sb.confidenceReachWindow(d);
     assert.strictEqual(w(7), 'last_28d');
     assert.strictEqual(w(28), 'last_28d');
     assert.strictEqual(w(30), 'last_28d');
@@ -225,7 +206,7 @@ async function test(name, fn){
     assert.strictEqual(w(null), 'lifetime');
   });
 
-  await test('30 day window: queries the 28 day reach window and the label says so', async () => {
+  await test('30 day window: queries the 28 day reach window and the note says so', async () => {
     const ctx = await bootReach({ days: 30 });
     const q = reachQueries(ctx);
     assert.strictEqual(q.length, 1, 'one reach query');
@@ -233,29 +214,40 @@ async function test(name, fn){
     assert.ok(sql.includes('FROM `mcc-poc-477801.mosh_marts.ad_window_reach`'), sql);
     assert.ok(sql.includes("`window` = 'last_28d'"), sql);
     assert.ok(/WHERE is_latest AND/.test(sql), sql);
-    assert.ok(sql.includes('FROM `mcc-poc-477801.mosh_marts.creative_reporting`' + ctx.sb.scopeWhere('WHERE')), 'scoped to the page ads');
+    assert.ok(sql.includes('FROM `mcc-poc-477801.mosh_marts.creative_reporting`' + ctx.sb.scaleCutScopeWhere('WHERE')), 'scoped to the tab ads');
     assert.ok(!/all_clients_|staging/.test(sql), 'reads the mart only');
-    const note = ctx.doc.getElementById('prod-reach-note').textContent;
+    const note = ctx.doc.getElementById('sc-reach-note').textContent;
     assert.ok(note.startsWith('Using the 28 day reach window (as of 2026-10-30).'), note);
     assert.ok(note.includes('Meta-reported') && note.includes('index'), note);
+    assert.ok(!shown(ctx, 'sc-reach-empty'));
+    assert.ok(shown(ctx, 'sc-reach-wrapper'));
     assert.deepStrictEqual(ctx.errors, []);
   });
 
   await test('90 day dashboard window reads the 90 day reach window', async () => {
     const ctx = await bootReach({ days: 90 });
     assert.ok(reachQueries(ctx)[0].includes("`window` = 'last_90d'"));
-    assert.ok(ctx.doc.getElementById('prod-reach-note').textContent.startsWith('Using the 90 day reach window (as of 2026-10-29).'));
+    assert.ok(ctx.doc.getElementById('sc-reach-note').textContent.startsWith('Using the 90 day reach window (as of 2026-10-29).'));
   });
 
-  await test('Cut ad with low CPMr and high cost per conversion lands in Reach play with the marker', async () => {
+  await test('axes: x is cost per 1,000 reached from $0, y is the same cost per conversion as the lines chart', async () => {
     const ctx = await bootReach();
-    const chart = scatterChart(ctx);
-    assert.strictEqual(chart.options.scales.x.title.text, 'Cost per 1,000 reached ($)');
-    assert.strictEqual(chart.options.scales.y.title.text, 'Cost per kill conversion');
+    const r = reachChart(ctx), l = linesChart(ctx);
+    assert.strictEqual(r.options.scales.x.title.text, 'Cost per 1,000 reached');
+    assert.strictEqual(r.options.scales.x.min, 0);
+    assert.strictEqual(r.options.scales.y.title.text, 'Cost per kill conversion');
+    assert.strictEqual(r.options.scales.y.title.text, l.options.scales.y.title.text);
+    assert.strictEqual(r.options.scales.y.max, l.options.scales.y.max);
+    assert.strictEqual(r.options.plugins.legend.display, false);
+  });
+
+  await test('Cut ad with cheap reach and high cost per conversion lands in Reach play with the marker', async () => {
+    const ctx = await bootReach();
+    const chart = reachChart(ctx);
     const p = pointOf(chart, 'cutthree');
     assert.strictEqual(p._verdict, 'Cut');
     assert.strictEqual(p.x, 4);
-    assert.ok(Math.abs(p.y - 7.5 * KILL_T / 3) < 1e-9);
+    assert.ok(Math.abs(p._cpa - 7.5 * KILL_T / 3) < 1e-9);
     assert.strictEqual(p._quadrant, 'Reach play');
     assert.strictEqual(p._newPeople, true);
     assert.strictEqual(p._set, 'Cut, may be bringing in new people');
@@ -265,102 +257,112 @@ async function test(name, fn){
     const lines = chart.options.plugins.tooltip.callbacks.label({ raw: p, dataset: marker });
     assert.ok(lines.some((l) => /may be bringing in new people/.test(l)), lines.join(' / '));
     assert.ok(lines.includes('Quadrant: Reach play'));
-    /* A Cut ad with dear reach is a Cut candidate and gets no marker. */
     const dear = pointOf(chart, 'cutpricey');
     assert.strictEqual(dear._verdict, 'Cut');
     assert.strictEqual(dear._quadrant, 'Cut candidate');
     assert.ok(!dear._newPeople);
-    assert.strictEqual(dear._set, 'Cut');
+    assert.strictEqual(dear._set, 'Cut candidate');
   });
 
-  await test('quadrant lines sit at the cell median CPMr and the target, with all four labels', async () => {
+  await test('quadrants split at the cell median CPMr and the median cost per conversion, not the target', async () => {
     const ctx = await bootReach();
     const st = ctx.run('confidenceQuadState');
     assert.strictEqual(st.median, 12.5, 'median of 4, 6, 10, 15, 20, 30; Retargeting ad excluded');
-    assert.strictEqual(st.target, KILL_T);
-    const chart = scatterChart(ctx);
+    const medCpa = 4000 / 6;
+    assert.ok(Math.abs(st.medianCpa - medCpa) < 1e-9, 'median of 100, 511, 667, 1915, 1915 = ' + st.medianCpa);
+    assert.notStrictEqual(st.medianCpa, KILL_T);
+    assert.strictEqual(st.target, KILL_T, 'target kept for the faint reference line');
+    const chart = reachChart(ctx);
     assert.strictEqual(pointOf(chart, 'twoxlead')._quadrant, 'Efficient growth');
-    assert.strictEqual(pointOf(chart, 'steady')._quadrant, 'Efficient growth');
+    assert.strictEqual(pointOf(chart, 'steady')._quadrant, 'Efficient growth', 'a tie counts as the low side');
     assert.strictEqual(pointOf(chart, 'scalesubs')._quadrant, 'Precision');
     assert.strictEqual(pointOf(chart, 'bothcutscale')._quadrant, 'Cut candidate', 'no kill conversions reads as the high side');
     const plugin = chart.plugins.find((x) => x.id === 'confidence-quadrants');
     assert.ok(plugin, 'quadrant plugin');
-    assert.ok(!chart.plugins.some((x) => x.id === 'confidence-lines'), 'no spend curve on the CPMr view');
     const calls = [];
-    plugin.afterDraw(fakeChart(calls));
-    assert.ok(calls.filter((c) => c === 'stroke').length === 2, 'two lines');
-    ['Efficient growth', 'Reach play', 'Precision', 'Cut candidate'].forEach((l) => assert.ok(calls.includes('fillText:' + l), l));
-    assert.ok(calls.includes('fillText:Median CPMr ' + ctx.sb.fmt$(12.5)));
+    plugin.beforeDatasetsDraw(fakeChart(calls));
+    assert.strictEqual(calls.filter((c) => c === 'fillRect').length, 4, 'four tinted quadrants');
+    ['REACH PLAY', 'cheap reach, higher CPA', 'CUT CANDIDATE', 'pricey reach, higher CPA', 'EFFICIENT GROWTH', 'cheap reach, lower CPA',
+      'PRECISION', 'pricey reach, lower CPA', 'cheaper reach'].forEach((l) => assert.ok(calls.includes('fillText:' + l), l));
+    assert.ok(calls.includes('fillText:median ' + ctx.sb.fmt$(12.5)));
+    assert.ok(calls.includes('fillText:median ' + ctx.sb.fmt$(medCpa)));
+    assert.ok(calls.includes('fillText:target ' + ctx.sb.fmt$(KILL_T)), 'faint target line labelled');
   });
 
-  await test('scale y axis uses the scale target for the horizontal line', async () => {
+  await test('bubbles are translucent, outlined and sized by reach', async () => {
+    const ctx = await bootReach();
+    const chart = reachChart(ctx);
+    const ds = chart.data.datasets.find((d) => d.label === 'Efficient growth');
+    assert.ok(/55$/.test(ds.backgroundColor), ds.backgroundColor);
+    assert.ok(ds.borderWidth > 0);
+    assert.strictEqual(typeof ds.pointRadius, 'function');
+  });
+
+  await test('scale y axis uses the scale target for the reference line', async () => {
     const ctx = await bootReach();
     const y = ctx.doc.getElementById('cl-y-mode');
     y.value = 'scale';
     y.dispatch('change');
     await flush();
     assert.strictEqual(ctx.run('confidenceQuadState').target, SCALE_T);
-    assert.strictEqual(scatterChart(ctx).options.scales.y.title.text, 'Cost per scale conversion');
+    assert.strictEqual(reachChart(ctx).options.scales.y.title.text, 'Cost per scale conversion');
     ctx.run("confidenceYMode = 'kill';");
   });
 
   await test('an ad with no reach row is listed under No reach data yet and not plotted', async () => {
     const ctx = await bootReach();
-    const chart = scatterChart(ctx);
-    assert.strictEqual(pointOf(chart, 'freshad'), undefined);
-    const miss = ctx.doc.getElementById('prod-reach-missing').innerHTML;
-    assert.strictEqual(miss, 'No reach data yet (1): freshad');
+    assert.strictEqual(pointOf(reachChart(ctx), 'freshad'), undefined);
+    assert.strictEqual(ctx.doc.getElementById('sc-reach-missing').innerHTML, 'No reach data yet (1): freshad');
   });
 
-  await test('the ad search filters the missing list and points but never moves the median', async () => {
+  await test('the ad search filters the missing list but never moves the medians', async () => {
     const ctx = await bootReach({ search: 'cutthree' });
-    assert.strictEqual(ctx.doc.getElementById('prod-reach-missing').innerHTML, '');
+    assert.strictEqual(ctx.doc.getElementById('sc-reach-missing').innerHTML, '');
     assert.strictEqual(ctx.run('confidenceQuadState').median, 12.5);
     ctx.run("adSearchTerm = '';");
   });
 
-  await test('Product / Group set to All: CPMr points but no quadrants or markers', async () => {
+  await test('Product set to All: medians over every ad with reach, no target line', async () => {
     const ctx = await bootReach({ group: false });
-    const chart = scatterChart(ctx);
-    assert.strictEqual(chart.options.scales.x.title.text, 'Cost per 1,000 reached ($)');
-    assert.strictEqual(ctx.run('confidenceQuadState'), null);
-    assert.ok(!chart.data.datasets.some((d) => d.label === 'Cut, may be bringing in new people'));
-    assert.strictEqual(pointOf(chart, 'cutthree')._set, 'Cut');
-    const calls = [];
-    chart.plugins.find((x) => x.id === 'confidence-quadrants').afterDraw(fakeChart(calls));
-    assert.ok(!calls.includes('stroke'), 'nothing drawn');
+    const st = ctx.run('confidenceQuadState');
+    assert.strictEqual(st.median, 15, 'median of 4, 6, 10, 15, 20, 30, 1000');
+    assert.strictEqual(st.target, null);
   });
 
-  await test('reach query failure is logged and the chart falls back to lifetime spend', async () => {
-    const ctx = await bootReach({ reachFails: true });
-    assert.ok(ctx.errors.some((e) => /Reach query error/.test(String(e[0]))), 'error logged');
-    assert.strictEqual(ctx.doc.getElementById('prod-reach-note').textContent, 'Could not load reach data, so the chart shows lifetime spend.');
-    assert.notStrictEqual(scatterChart(ctx).options.scales.x.title.text, 'Cost per 1,000 reached ($)');
-  });
-
-  await test('switching back to lifetime spend restores the spend chart and clears the notes', async () => {
-    const ctx = await bootReach();
-    const sel = ctx.doc.getElementById('cl-x-mode');
-    sel.value = 'spend';
-    sel.dispatch('change');
+  await test('reach query with no rows shows the no-data message', async () => {
+    const ctx = boot({ config: CONFIG });
+    const orig = ctx.sb.runQuery;
+    ctx.sb.runQuery = async (sql) => (/ad_window_reach/.test(sql) ? [] : orig(sql));
+    ctx.sb.renderLayout();
+    ctx.doc.getElementById('ctrl-enddate').value = '2026-10-31';
+    ctx.run("groupSelections['group_name'] = 'Hair';");
+    ctx.sb.setSegmentSelection('Prospecting');
+    await ctx.sb.loadScaleCut();
     await flush();
-    const chart = scatterChart(ctx);
-    assert.ok(chart.plugins.some((p) => p.id === 'confidence-lines'));
-    assert.strictEqual(ctx.doc.getElementById('prod-reach-note').textContent, '');
-    assert.strictEqual(ctx.doc.getElementById('prod-reach-missing').innerHTML, '');
-    assert.strictEqual(reachQueries(ctx).length, 1, 'no second reach query');
+    assert.ok(shown(ctx, 'sc-reach-empty'));
+    assert.ok(!shown(ctx, 'sc-reach-wrapper'));
+    assert.strictEqual(reachChart(ctx), undefined);
   });
 
-  await test('no em or en dashes in the US-007 code', async () => {
+  await test('reach query failure is logged and the chart is hidden', async () => {
+    const ctx = await bootReach({ reachFails: true });
+    assert.ok(ctx.errors.some((e) => /Reach data error/.test(String(e[0]))), 'error logged');
+    assert.strictEqual(ctx.doc.getElementById('sc-reach-note').textContent, 'Could not load reach data.');
+    assert.ok(!shown(ctx, 'sc-reach-wrapper'));
+    assert.ok(linesChart(ctx), 'the lines chart still draws');
+  });
+
+  await test('no em or en dashes in the Scale & Cut code', async () => {
     const src = read('f10-monthly.js');
-    const a = src.indexOf('Cost per 1,000 reached view (confidence-lines US-007)');
-    const b = src.indexOf('function _confTargetField', a);
+    const a = src.indexOf('/* \u2500\u2500 Scale & Cut tab');
+    const b = src.indexOf('/* \u2500\u2500 Ad Power Law', a);
     assert.ok(a > 0 && b > a);
-    assert.ok(!/[–—]/.test(src.slice(a, b)));
+    assert.ok(!/[\u2013\u2014]/.test(src.slice(a, b)));
     const lay = read('f10-layout.js');
-    const la = lay.indexOf('US-007: the Cost per 1,000 reached x axis');
-    assert.ok(la > 0);
-    assert.ok(!/[–—]/.test(lay.slice(la, lay.indexOf('function', la))));
+    const la = lay.indexOf('/* Scale & Cut tab');
+    const lb = lay.indexOf('function prodThresholdLegendHTML', la);
+    assert.ok(la > 0 && lb > la);
+    assert.ok(!/[\u2013\u2014]/.test(lay.slice(la, lb)));
   });
 
   console.log(failures ? `${failures} failed` : 'all passed');
@@ -371,8 +373,11 @@ function fakeChart(calls){
   const rec = (n) => (...a) => { calls.push(n === 'fillText' ? 'fillText:' + a[0] : n); };
   return {
     ctx: { save: rec('save'), restore: rec('restore'), beginPath: rec('beginPath'), rect: rec('rect'), clip: rec('clip'),
-      moveTo: rec('moveTo'), lineTo: rec('lineTo'), stroke: rec('stroke'), fillText: rec('fillText') },
-    scales: { x: { getPixelForValue: (v) => v }, y: { getPixelForValue: (v) => v } },
-    chartArea: { left: 0, top: 0, right: 100, bottom: 100 },
+      moveTo: rec('moveTo'), lineTo: rec('lineTo'), stroke: rec('stroke'), fill: rec('fill'), closePath: rec('closePath'),
+      fillRect: rec('fillRect'), setLineDash: rec('setLineDash'), fillText: rec('fillText'), roundRect: rec('roundRect'),
+      measureText: (t) => ({ width: String(t).length * 5 }) },
+    scales: { x: { getPixelForValue: (v) => v / 10 }, y: { getPixelForValue: (v) => 300 - v / 10 } },
+    chartArea: { left: 0, top: 0, right: 300, bottom: 300 },
+    height: 320,
   };
 }

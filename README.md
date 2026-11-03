@@ -209,7 +209,7 @@ lives in `test/review-list-bundles.test.js`.
 | `SHOW_STATE_FILTER` | no | Set `true` to add an ad-state dropdown that narrows the Movement Board to one state (see [Movement Board state filter](#movement-board-state-filter)) |
 | `FULL_COVERAGE_TIERS` | no | Set `true` to grade every ad into one of five tiers that sum to 100% of the ad base (see [Full-coverage tiers](#full-coverage-tiers)) |
 | `THRESHOLDS_BY_GROUP` | no | Per-product Ad Production thresholds, e.g. grade SMSF ads on a different cost scale than Trade (see [Per-product thresholds](#per-product-thresholds)) |
-| `CONFIDENCE_LINES` | no | Campaign type dropdown and an editable trailing cost-per-conversion baseline on Ad Production: `{ KILL_CONV_EXPR, SCALE_CONV_EXPR, SEGMENT_EXPR, BASELINE_DAYS?, CONFIDENCE?, REACH_TABLE? }`. `REACH_TABLE` adds a Cost per 1,000 reached x axis to the scatter (see [Cost per 1,000 reached view](#cost-per-1000-reached-view-reach_table)). Off when absent (see [Campaign type and moveable baseline](#campaign-type-and-moveable-baseline-confidence_lines)) |
+| `CONFIDENCE_LINES` | no | Adds a **Scale & Cut** tab after Ad Production: Campaign type dropdown, an editable trailing cost-per-conversion baseline, kill and scale lines, a reach cost chart and a per-ad Verdict table: `{ KILL_CONV_EXPR, SCALE_CONV_EXPR, SEGMENT_EXPR, BASELINE_DAYS?, CONFIDENCE?, REACH_TABLE? }`. Ad Production is unchanged. `REACH_TABLE` feeds the Reach cost chart (see [Reach cost chart](#reach-cost-chart-reach_table)). Off when absent (see [Scale & Cut tab](#scale--cut-tab-confidence_lines))
 | `REVIEW` | no | F10-internal Creative Review surface only. The bundle list is now **auto-discovered** via the `list-bundles` action, so this block no longer carries `BUNDLES` or `LIMIT` and is effectively optional/empty; it holds only optional overrides (`CLIENT` slug override, `ACTOR`, `FEEDBACK_FUNCTION`). Live client dashboards never define it (see [Creative review](#creative-review)) |
 
 ## Secondary-channel tab parity (TikTok + LinkedIn)
@@ -936,7 +936,7 @@ Both controls live in the controls bar on **every Meta/monthly tab** and need no
 - **Ad status** (`All ads` / `Active only`) — server-side filter. `Active only` scopes every query to ads whose latest Meta delivery status is ACTIVE, via the `is_active` column on the `creative_reporting` mart. Composed with group filters through `scopeWhere()` (group + status predicates, correct WHERE/AND leading).
   - **Requires** the mart to expose `is_active` (and `effective_status`), added by the `f10-dataform` `stg_meta_ad_status` model. Pin a client to a framework tag that ships this control **only after** that column is live in the client's mart, or `Active only` queries will error.
 - **Search ad** — client-side filter over the ad name **plus the campaign and ad set names**, applied to the current view across all ad tables (Movement Board, Ad Age, Ad Production, Power Law, Creative Effectiveness) in every section: Meta, TikTok and LinkedIn. Instant, no re-query. Matching ignores case, spacing and punctuation: both sides are reduced to letters and digits, the typed text is split on spaces, and every word must appear (so `moving back in` finds `..._movingbackin_...` and `2% deposit` finds `2%deposit`). A word never matches across two names. The TikTok and LinkedIn control bars carry their own search box, visible on every tab of that section (the window/metric controls stay weekly-only); all search boxes share one term, so a search carries across sections. When a term is present the weekly board **bypasses the noise floor** so a searched ad always appears. Ad rows carry a normalised `data-adname` key (`adNameAttr(adName, campaignName, adsetName)`); `renderPagedTable`/`refilterAllTables` do the filtering and `wireAdSearchInput()` wires each box. Month-level summary rows have no `data-adname` and are never filtered.
-- **Search on charts** — charts that plot one mark per ad follow the same search: the Movement Map bubbles, the Ad Production scatter points and the Ad Power Law bars, in Meta, TikTok and LinkedIn. Each chart tags its marks with `adSearchKey()` (the same key `adNameAttr` writes on table rows) and registers with `followAdSearch(slot, chart[, keys])` after it is built; `refilterAdSearchCharts()` runs after every search change and re-filters from the full data, so no re-query. Power Law bars keep their overall rank label (`#17`) and spend share.
+- **Search on charts**: charts that plot one mark per ad follow the same search: the Movement Map bubbles, the Ad Production scatter points, the Scale & Cut lines and reach charts (when `CONFIDENCE_LINES` is set) and the Ad Power Law bars, in Meta, TikTok and LinkedIn. Each chart tags its marks with `adSearchKey()` (the same key `adNameAttr` writes on table rows) and registers with `followAdSearch(slot, chart[, keys])` after it is built; `refilterAdSearchCharts()` runs after every search change and re-filters from the full data, so no re-query. Power Law bars keep their overall rank label (`#17`) and spend share.
 - **Search on summed views** — views that total spend across ads follow the search too, in Meta, TikTok and LinkedIn. The **Weekly Summary** scorecards and decomposition, the **Creative Effectiveness** curve and tiles, and the **Ad Production** scorecards are summed in the browser from rows already loaded, so they redraw instantly (`adSearchFilter()` + `onAdSearch(slot, fn)`). **Ad Decay** (cohort table and both charts), the **Ad Age** spend mix and **Ads Launched by month** are summed in SQL, so their queries carry the search (`searchScopeWhere()` on Meta, `adSearchWhere('WHERE', 'adgroup_name')` on TikTok/LinkedIn). The SQL reduces each name to lowercase letters and digits and joins them with `|`, the same key as `adSearchKey()`, so a summed view counts exactly the ads the tables show. When the search changes, each section's `onAdSearchReload()` marks those tabs stale and re-queries only the one on screen, after a 450 ms typing pause. With no search the SQL is unchanged. The Weekly Summary **revenue-integrity warning** always reads every ad in the window (`windowRevenueBroken()`), so searching for ads with no revenue does not raise it; the scorecards still show the searched ads.
 - **Query cache** — `runQuery()` keeps results for the session keyed by SQL text (up to 100), so returning to an earlier search, filter or tab costs no query. A failed query is not kept. **Refresh** clears the cache.
 
@@ -1334,11 +1334,15 @@ the backtest's `gen_fixtures.py`, so the dashboard and the backtest cannot drift
 It also evaluates the emitted SQL against the JS mirror and checks that removing
 the helper block leaves every existing global, tier and score output unchanged.
 
-### Campaign type and moveable baseline (`CONFIDENCE_LINES`)
+### Scale & Cut tab (`CONFIDENCE_LINES`)
 
 Opt-in. With no `CONFIDENCE_LINES` the dashboard renders and queries exactly as
-before: no dropdown, no panel, no extra query, and the Ad Production SQL is
-byte-identical (`test/confidence-baseline.test.js` pins this).
+before: no tab, no dropdown, no panel and no extra query. With it set, the only
+change is a **Scale & Cut** tab after Ad Production. Ad Production itself
+renders and queries exactly as v1.31.0 did, whatever Campaign type is picked.
+`test/confidence-baseline.test.js` pins both: the layout without config and the
+Ad Production SQL are hashed against v1.31.0, and with config the layout must
+equal the plain layout once the Scale & Cut nav link and panel are taken out.
 
 ```js
 const CONFIDENCE_LINES = {
@@ -1371,72 +1375,142 @@ governed `campaign_type` column in the client's dataform marts (one definition
 every report groups by) and set `SEGMENT_EXPR: 'campaign_type'`. Keep the inline
 `CASE` only until the mart publishes that column.
 
-What it adds:
+The tab has, top to bottom:
 
-- A **Campaign type** dropdown next to Product / Group. It lists the distinct
-  `SEGMENT_EXPR` values (Unmatched shows as "Unmatched (check naming)") and
-  scopes every non-weekly tab, the same way a Product pick does.
-- One baseline query per window end: Meta-reported spend, kill and scale
-  conversions and cost per each, for every group x campaign type, over the
-  `BASELINE_DAYS` that end the day before the window end. For 90 days and a
-  window ending 2026-10-31 that is `date_start BETWEEN '2026-08-01' AND
-  '2026-10-30'`, `GROUP BY 1, 2`. The group is the per-product thresholds
-  column, else the first `GROUP_FILTERS` column, else one account-wide group.
-- A **Your last 90 days (Meta-reported)** panel on Ad Production. Once a single
-  product and campaign type are picked it shows the cost per kill and cost per
-  scale targets as editable inputs, and how many visible ads grade Scale,
-  Testing and Cut at those targets. The counts read the `verdict` column of
-  the Ad Production query, so they always match the Verdict column.
-  Editing a target re-grades the page for this session only; **Reset to
-  baseline** or a reload puts the baseline back.
-- A cell with fewer than 50 conversions shows "Not enough data for a baseline"
-  and gets no input and no line. Kill and scale are checked separately.
-- When any window spend sits on `'Unmatched'` campaigns, the panel says how
-  much and points to the Unmatched campaign type so the names or the mapping
-  can be fixed.
+- A **Campaign type** dropdown. It lists the distinct `SEGMENT_EXPR` values
+  (Unmatched shows as "Unmatched (check naming)") and scopes only this tab's
+  queries, through `scaleCutScopeWhere()`. Every other tab keeps using
+  `scopeWhere()`, which has no campaign type clause. Product / Group and the
+  status filters still apply as usual.
+- A **Your last 90 days (Meta-reported)** baseline panel. One baseline query
+  per window end: Meta-reported spend, kill and scale conversions and cost per
+  each, for every group x campaign type, over the `BASELINE_DAYS` that end the
+  day before the window end. For 90 days and a window ending 2026-10-31 that is
+  `date_start BETWEEN '2026-08-01' AND '2026-10-30'`, `GROUP BY 1, 2`. The group
+  is the per-product thresholds column, else the first `GROUP_FILTERS` column,
+  else one account-wide group. Once a single product and campaign type are
+  picked the panel shows the cost per kill and cost per scale targets as
+  editable inputs, and how many ads grade Scale, Testing and Cut. Editing a
+  target re-grades the tab for this session only; **Reset to baseline** or a
+  reload puts the baseline back. A cell with fewer than 50 conversions shows
+  "Not enough data for a baseline" and gets no input and no line (kill and
+  scale are checked separately). When window spend sits on `'Unmatched'`
+  campaigns, the panel says how much so the names or the mapping can be fixed.
+- Two charts side by side: **Kill and scale lines** and **Reach cost** (below).
+- An **Ads by verdict** table: one row per ad with lifetime spend, conversions,
+  cost per conversion and a sortable **Verdict** column. The Verdict header
+  hover reads "Judged against your last 90 days for this product and campaign
+  type, using Meta-reported results, at 90% confidence." (the day count and
+  confidence come from the config).
 
-### Verdict column and confidence lines
+**Verdict, computed once in SQL.** The tab sends one per-ad query
+(`scaleCutSQL()`). A `per_ad_conf` CTE adds `kill_target` and `scale_target`
+for each ad's product and campaign type (from the baseline, or an edited
+target), and `confidenceVerdictSQL` turns them into a `verdict` column. Cut
+comes from the kill conversion (plan assigned for Mosh) and Scale from the
+scale conversion (subs for Mosh). Scale is tested first, so it wins when both
+qualify. An ad with no baseline for its cell shows "No baseline". The table,
+the panel counts and both charts all read that column; nothing in the browser
+recomputes a verdict.
 
-With `CONFIDENCE_LINES` set, Ad Production also gets:
+The ad search and the status filters apply to the table and both charts,
+because they all come from the same query. With Product / Group or Campaign
+type on All, each ad is still judged against its own cell.
 
-- A sortable **Verdict** column in the per-ad table, after Creative Score. It
-  reads Scale, Testing or Cut. The verdict is computed once, in SQL: a
-  `per_ad_conf` CTE adds `kill_target` and `scale_target` for each ad's product
-  and campaign type (from the baseline, or an edited target), and
-  `confidenceVerdictSQL` turns them into a `verdict` column. Cut comes from the
-  kill conversion (plan assigned for Mosh) and Scale from the scale conversion
-  (subs for Mosh). Scale is tested first, so it wins when both qualify. An ad
-  with no baseline for its cell shows "No baseline". The header hover reads
-  "Judged against your last 90 days for this product and campaign type, using
-  Meta-reported results, at 90% confidence." (the day count and confidence come
-  from the config).
-- A **Log spend axis** checkbox and a **Y axis** select on the scatter. The y
-  axis is cost per kill conversion or cost per scale conversion. Ads with none
-  of that conversion yet sit on the top edge of the chart.
-- The matching curve for the selected product and campaign type: the Cut line
-  on the kill view, the Scale line on the scale view. Each point is
-  `confidenceCurvePoints(target, ...)`, so an ad above the Cut line grades Cut
-  and an ad below the Scale line grades Scale.
-- When Product / Group or Campaign type is All, the Verdict column still shows
-  (each ad is judged against its own cell), the curves are hidden and the chart
-  note reads "Pick a product and campaign type to see the lines".
+#### Kill and scale lines chart
 
-The ad search and the status filters apply to the Verdict column, the counts
-and the scatter points, because they all come from the same query. The Home
-Run / On Base / Strike Out tiers, Creative Score and the threshold panel are
-unchanged. With no `CONFIDENCE_LINES` config the page and its SQL are byte for
-byte the same as before.
+- X axis is lifetime spend per ad on a log scale. Y axis is cost per kill
+  conversion or cost per scale conversion, picked with the **Y axis** select.
+  Ads with none of that conversion yet sit on the top edge.
+- For the selected product and campaign type it draws the **CUT** curve and the
+  **SCALE** curve from that cell's target, with the area above CUT and below
+  SCALE shaded, a **target** pill on the target line and a **TESTING** label in
+  the band between. Each curve point comes from `confidenceBounds(k, conf)`:
+  an ad with k conversions turns Cut once its spend passes target x the kill
+  bound, and stays Scale while its spend is under target x the scale bound.
+- Dots are coloured by the SQL verdict and sized by spend.
+- With Product / Group or Campaign type on All there is no single target, so
+  only the dots show and the note reads "Pick a product and campaign type to
+  see the lines".
+- The verdict mixes two conversions (Cut on kill, Scale on scale), while the
+  chart plots one of them on the y axis. On the kill view the CUT curve is
+  exact and the SCALE curve is approximate; on the scale view it is the other
+  way round. A dot can sit just past a line and still carry the other verdict.
 
-Helpers (all in `f10-utils.js`): `confidenceLinesConfig`,
-`confidenceBaselineSQL(endIso)`, `confidenceBaselineWindow(endIso, days)`,
-`getConfidenceTargets(key)`, `setConfidenceTarget(key, 'kill' | 'scale', v)`,
-`resetConfidenceTargets(key)`, `confidenceGradeAd(ad)`,
-`confidenceVerdictSQL(...)` and `confidenceCurvePoints(...)`. Tests:
-`test/confidence-production.test.js`.
+#### Reach cost chart (`REACH_TABLE`)
+
+Set `CONFIDENCE_LINES.REACH_TABLE` to the name of the reach mart in the
+client's own marts dataset (for Mosh, `ad_window_reach`, built by
+f10-dataform). The name must be a plain table name; anything else is ignored.
+
+```js
+const CONFIDENCE_LINES = {
+  KILL_CONV_EXPR: 'plan_assigned',
+  SCALE_CONV_EXPR: 'subscriptions',
+  SEGMENT_EXPR: `CASE ... END`,
+  REACH_TABLE: 'ad_window_reach',
+};
+```
+
+The chart plots each ad's Meta-reported cost per 1,000 people reached (CPMr)
+against its lifetime cost per conversion (the same y conversion as the lines
+chart). Bubbles are sized by reach and coloured by quadrant.
+
+- **Not loaded.** Without `REACH_TABLE`, or when the reach query returns no
+  rows, the card shows "Reach data is not loaded yet." Without `REACH_TABLE`
+  no reach query runs at all. If the query fails the error is logged and the
+  card says "Could not load reach data."
+- **Reach window.** The mart holds 28 day, 90 day and lifetime reach. The chart
+  reads the one closest to the dashboard window: up to 59 days reads 28 day,
+  up to 180 days reads 90 day, longer reads lifetime. A note under the chart
+  names the window and its as-of date.
+- **Quadrants.** Dotted lines sit at the median CPMr and the median cost per
+  conversion of the ads with reach in the selected cell (all ads with reach
+  when Product or Campaign type is All), with their values labelled. The
+  medians are taken before any ad search, so a search never moves the lines.
+  The cell's target shows as a faint dashed line for reference; it does not
+  split the quadrants. The corner labels are Efficient growth (cheap reach,
+  low cost), Reach play (cheap reach, high cost), Precision (dear reach, low
+  cost) and Cut candidate (dear reach, high cost). Ties count as the cheap or
+  low side. An ad with no conversions reads as high cost.
+- **Marker.** A Cut ad that lands in Reach play is drawn as a triangle, and
+  its hover note says it may be bringing in new people. Check it before
+  switching it off.
+- **No reach row.** Ads with no reach row for the window are listed under the
+  chart and not plotted.
+- **Query.** One query against `` `{PROJECT}.{DATASET}.{REACH_TABLE}` ``,
+  filtered to `is_latest` and the chosen `` `window` `` (backticked, it is a
+  reserved word) and to the ads in the tab's scope. It never reads raw
+  `all_clients_*` or staging tables.
+
+Limits of the reach chart:
+
+- Reach is Meta-reported, so treat CPMr as an index for comparing ads, not
+  as a measure of incremental reach.
+- The X axis uses the chosen reach window while the Y axis stays lifetime
+  cost per conversion, so a recent ad and an old ad are not on exactly the
+  same footing.
+- CPMr may sort ads by placement (for example Reels against Feed) as much as
+  by creative. This has not been measured because the mart has not run on
+  live data yet. Compare the CPMr spread inside ad sets with the spread
+  between them before the quadrants are used to make cut calls.
+
+Helpers: `confidenceLinesConfig`, `confidenceBaselineSQL(endIso)`,
+`confidenceBaselineWindow(endIso, days)`, `getConfidenceTargets(key)`,
+`setConfidenceTarget(key, 'kill' | 'scale', v)`, `resetConfidenceTargets(key)`,
+`confidenceVerdictSQL(...)`, `confidenceCurvePoints(...)` and
+`scaleCutScopeWhere(lead)` in `f10-utils.js`; `loadScaleCut()`,
+`scaleCutSQL()`, `confidenceCurveFor(mode, maxSpend)`,
+`confidenceLinesView(rows, mode)`, `confidenceReachWindow(days)`,
+`confidenceReachSQL(win)`, `confidenceReachView(rows, reachRows, mode)`,
+`confidenceQuadrant(p, medianCpmr, medianCpa)` and
+`confidenceQuadrantPlugin()` in `f10-monthly.js`. Tests:
+`test/confidence-baseline.test.js`, `test/confidence-production.test.js` and
+`test/confidence-reach.test.js`.
 
 ### Limits of the confidence lines
 
-Released in v1.33.0. Read the verdicts with these limits in mind:
+Released in v1.34.0 (v1.33.0 put this on Ad Production; v1.34.0 moved it to its own tab). Read the verdicts with these limits in mind:
 
 - **Meta-reported, not incrementality.** Spend, conversions and the 90 day
   baseline all come from Meta's own attribution in `creative_reporting`. A
@@ -1460,70 +1534,6 @@ Released in v1.33.0. Read the verdicts with these limits in mind:
 - **Cut on one event, Scale on another.** For Mosh, Cut reads plan assigned
   and Scale reads subscriptions. An ad can be Testing on subs while it is
   clearly fine on plans, and Scale is checked first, so it wins a tie.
-
-### Cost per 1,000 reached view (`REACH_TABLE`)
-
-Set `CONFIDENCE_LINES.REACH_TABLE` to the name of the reach mart in the
-client's own marts dataset (for Mosh, `ad_window_reach`, built by
-f10-dataform). The name must be a plain table name; anything else is ignored.
-
-```js
-const CONFIDENCE_LINES = {
-  KILL_CONV_EXPR: 'plan_assigned',
-  SCALE_CONV_EXPR: 'subscriptions',
-  SEGMENT_EXPR: `CASE ... END`,
-  REACH_TABLE: 'ad_window_reach',
-};
-```
-
-With it set, the Ad Production scatter gets an **X axis** dropdown with
-"Lifetime spend" (the default) and "Cost per 1,000 reached". Picking the
-second plots each ad's Meta-reported cost per 1,000 people reached (CPMr)
-against its lifetime cost per conversion (the Y axis dropdown still picks
-the kill or scale conversion). Without `REACH_TABLE` there is no dropdown and
-no reach query.
-
-- **Reach window.** The mart holds 28 day, 90 day and lifetime reach. The view
-  reads the one closest to the dashboard window: up to 59 days reads 28 day,
-  up to 180 days reads 90 day, longer reads lifetime. A note under the chart
-  names the window and its as-of date.
-- **Quadrants.** A vertical line sits at the median CPMr of the ads in the
-  selected Product / Group and Campaign type, and a horizontal line at that
-  cell's target. The four areas are Efficient growth (cheap reach, under
-  target), Reach play (cheap reach, over target), Precision (dear reach, under
-  target) and Cut candidate (dear reach, over target). Ties count as the
-  cheap or under side. An ad with no conversions reads as over target. With
-  Product / Group or Campaign type on All there is no single target, so the
-  points show without lines.
-- **Marker.** A Cut ad that lands in Reach play is drawn as a triangle, and
-  its hover note says it may be bringing in new people. Check it before
-  switching it off.
-- **No reach data yet.** Ads with no reach row for the window are listed
-  under the chart and not plotted.
-- **Query.** One query against `` `{PROJECT}.{DATASET}.{REACH_TABLE}` ``,
-  filtered to `is_latest` and the chosen `` `window` `` (backticked, it is a
-  reserved word) and to the ads in the page scope. It runs only while the
-  Cost per 1,000 reached option is picked. It never reads raw
-  `all_clients_*` or staging tables. If it fails, the error is logged, a note
-  says so, and the chart falls back to lifetime spend.
-
-Limits:
-
-- Reach is Meta-reported, so treat CPMr as an index for comparing ads, not
-  as a measure of incremental reach.
-- The X axis uses the chosen reach window while the Y axis stays lifetime
-  cost per conversion, so a recent ad and an old ad are not on exactly the
-  same footing.
-- CPMr may sort ads by placement (for example Reels against Feed) as much as
-  by creative. This has not been measured because the mart has not run on
-  live data yet. The US-008 pilot should compare the CPMr spread inside ad
-  sets with the spread between them before the quadrants are used to make
-  cut calls.
-
-Helpers (in `f10-monthly.js`): `confidenceReachWindow(days)`,
-`confidenceReachSQL(win)`, `confidenceReachView(rows, reachRows, mode)`,
-`confidenceQuadrant(p, median, target)` and `confidenceQuadrantPlugin()`.
-Tests: `test/confidence-reach.test.js`.
 
 ## Co-branding (optional)
 

@@ -1,8 +1,9 @@
 'use strict';
-/* Confidence lines US-003: the Verdict column and the lines on the Ad
- * Production scatter. The verdict is computed in SQL; the fake BigQuery here
- * evaluates that SQL (test/helpers/confidence-sql.js), so these tests check the
- * emitted query and what the page does with its answer. */
+/* Confidence lines US-003, moved to the Scale & Cut tab in US-008: the Verdict
+ * column, the kill and scale lines chart and the verdict counts. The verdict is
+ * computed in SQL; the fake BigQuery here evaluates that SQL
+ * (test/helpers/confidence-sql.js), so these tests check the emitted query and
+ * what the page does with its answer. */
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
@@ -134,13 +135,14 @@ async function bootEnabled(opts){
   if (opts.group !== false) ctx.run("groupSelections['group_name'] = 'Hair';");
   ctx.sb.setSegmentSelection(opts.segment || 'Prospecting');
   if (opts.search) ctx.run(`adSearchTerm = ${JSON.stringify(opts.search)};`);
-  await ctx.sb.loadProduction();
+  await ctx.sb.loadScaleCut();
   await flush();
   return ctx;
 }
 
-const scatterChart = (ctx) => { const c = ctx.charts.filter((x) => x.el && x.el.id === 'scatter-chart'); return c[c.length - 1]; };
-const tableBody = (ctx) => ctx.doc.getElementById('scatter-table-body').innerHTML;
+const chartOn = (ctx, id) => { const c = ctx.charts.filter((x) => x.el && x.el.id === id); return c[c.length - 1]; };
+const linesChart = (ctx) => chartOn(ctx, 'sc-lines-chart');
+const tableBody = (ctx) => ctx.doc.getElementById('sc-table-body').innerHTML;
 /* Verdict cell for one ad: the last <td> of its row. */
 function verdictOf(ctx, name){
   const rows = tableBody(ctx).split('</tr>');
@@ -149,7 +151,8 @@ function verdictOf(ctx, name){
   const m = /<td><span class="badge badge-(scale|testing|cut)">(Scale|Testing|Cut)<\/span><\/td>$/.exec(row);
   return m ? m[2] : null;
 }
-const scatterPoints = (ctx) => scatterChart(ctx).data.datasets.reduce((a, d) => a.concat(d.data), []);
+const linePoints = (ctx) => linesChart(ctx).data.datasets.reduce((a, d) => a.concat(d.data), []);
+const linesPlugin = (ctx) => linesChart(ctx).plugins.find((p) => p.id === 'confidence-lines');
 
 let failures = 0;
 async function test(name, fn){
@@ -176,161 +179,196 @@ async function test(name, fn){
     assert.strictEqual(verdictOf(ctx, 'bothcutscale'), 'Scale');
   });
 
-  await test('the verdict is one SQL column, read by the table and the counts', async () => {
+  await test('the verdict is one SQL column, read by the table, the counts, the chips and the dots', async () => {
     const ctx = await bootEnabled();
-    const sql = ctx.queries.find((q) => /per_ad_conf/.test(q));
-    assert.ok(sql, 'scatter query carries per_ad_conf');
+    const sqls = ctx.queries.filter((q) => /per_ad_conf/.test(q));
+    assert.strictEqual(sqls.length, 1, 'one verdict query per load');
+    const sql = sqls[0];
     assert.ok(sql.includes(`WHEN IFNULL(conf_group, '') = 'Hair' AND conf_segment = 'Prospecting' THEN ${KILL_T}`), sql);
     assert.ok(sql.includes(`THEN ${SCALE_T}`));
-    assert.ok(/ AS verdict\n\s*FROM per_ad_conf ORDER BY lifetime_spend DESC/.test(sql), sql);
+    assert.ok(/ AS verdict FROM per_ad_conf ORDER BY lifetime_spend DESC/.test(sql.replace(/\s+/g, ' ')), sql);
     assert.ok(sql.includes(ctx.sb.confidenceVerdictSQL('lifetime_spend', 'kill_conv', 'kill_target', { conf: 0.9, scaleConvCol: 'scale_conv', scaleTargetCol: 'scale_target' })));
     const src = read('f10-monthly.js');
-    assert.ok(!/confidenceGradeAd\(/.test(src.slice(src.indexOf('async function loadProduction'))), 'display never re-grades');
-    const counts = ctx.doc.getElementById('prod-baseline-verdicts').innerHTML;
+    const block = src.slice(src.indexOf('/* ── Scale & Cut tab'), src.indexOf('/* ── Ad Power Law'));
+    assert.ok(block.length > 1000, 'Scale & Cut block found');
+    assert.ok(!/confidenceGradeAd\(|confidenceVerdict\(/.test(block), 'display never re-grades');
     const want = { Scale: 0, Testing: 0, Cut: 0 };
     ['cutthree', 'twoxlead', 'bothcutscale', 'scalesubs', 'freshad', 'steady'].forEach((n) => { want[verdictOf(ctx, n)]++; });
+    const counts = ctx.doc.getElementById('sc-baseline-verdicts').innerHTML;
     assert.ok(counts.includes(`<strong>${want.Scale}</strong> Scale, <strong>${want.Testing}</strong> Testing, <strong>${want.Cut}</strong> Cut`), counts);
+    assert.strictEqual(ctx.doc.getElementById('sc-count-scale').textContent, String(want.Scale));
+    assert.strictEqual(ctx.doc.getElementById('sc-count-testing').textContent, String(want.Testing));
+    assert.strictEqual(ctx.doc.getElementById('sc-count-cut').textContent, String(want.Cut));
+    linePoints(ctx).forEach((p) => {
+      if (['cutthree', 'twoxlead', 'bothcutscale', 'scalesubs', 'freshad', 'steady'].includes(p.label)) assert.strictEqual(p._verdict, verdictOf(ctx, p.label), p.label);
+    });
   });
 
-  await test('Verdict header is sortable and its hover explains the test', async () => {
+  await test('Verdict header is sortable, follows the cost column and its hover explains the test', async () => {
     const ctx = await bootEnabled();
     const html = ctx.doc.getElementById('app').innerHTML;
     const hover = 'Judged against your last 90 days for this product and campaign type, using Meta-reported results, at 90% confidence.';
-    const i = html.indexOf('>Verdict</th>');
-    assert.ok(i > 0, 'Verdict header renders');
-    const th = html.slice(html.lastIndexOf('<th', i), i);
+    const panel = html.slice(html.indexOf('id="tab-scalecut"'));
+    const i = panel.indexOf('>Verdict</th>');
+    assert.ok(i > 0, 'Verdict header renders in the Scale & Cut tab');
+    const th = panel.slice(panel.lastIndexOf('<th', i), i);
     assert.ok(th.includes(hover), th);
-    assert.ok(html.slice(i - 2000, i).includes('<th>Creative Score</th>'), 'Verdict follows Creative Score');
+    const before = panel.slice(panel.lastIndexOf('<thead', i), i);
+    ['>Ad</th>', '>Campaign</th>', '>Campaign type</th>', '>Lifetime spend</th>', 'id="sc-th-conv"', 'id="sc-th-cpa"'].forEach((s) => assert.ok(before.includes(s), s));
+    assert.ok(before.indexOf('id="sc-th-cpa"') > before.indexOf('id="sc-th-conv"'));
     assert.ok(!/<th[^>]*no-sort/.test(th), 'header is sortable like the rest');
   });
 
-  await test('Product / Group set to All: verdicts show, no curve, note visible', async () => {
+  await test('Product set to All: dots and verdicts show, no lines, note visible', async () => {
     const ctx = await bootEnabled({ group: false });
     assert.strictEqual(ctx.sb.confidenceSelectedKey(), null);
     assert.strictEqual(ctx.run('confidenceCurveState'), null);
-    assert.strictEqual(ctx.doc.getElementById('prod-conf-lines-note').textContent, 'Pick a product and campaign type to see the lines');
+    assert.strictEqual(ctx.doc.getElementById('sc-lines-note').textContent, 'Pick a product and campaign type to see the lines');
     assert.strictEqual(verdictOf(ctx, 'cutthree'), 'Cut', 'the column still shows');
-    const plugin = scatterChart(ctx).plugins.find((p) => p.id === 'confidence-lines');
+    assert.ok(linePoints(ctx).length > 0, 'dots still drawn');
     const calls = [];
-    plugin.afterDraw(fakeChart(calls));
-    assert.ok(!calls.includes('stroke'), 'nothing drawn');
+    linesPlugin(ctx).beforeDatasetsDraw(fakeChart(calls));
+    assert.ok(!calls.includes('stroke') && !calls.some((c) => c.startsWith('fillText:')), 'nothing drawn');
   });
 
-  await test('hair and Prospecting, log toggle on: kill curve drawn from the hair prospecting lead target', async () => {
+  await test('Campaign type set to All: dots only and the same note', async () => {
+    const ctx = await bootEnabled({ segment: '__all__' });
+    assert.strictEqual(ctx.sb.confidenceSelectedKey(), null);
+    assert.strictEqual(ctx.run('confidenceCurveState'), null);
+    assert.strictEqual(ctx.doc.getElementById('sc-lines-note').textContent, 'Pick a product and campaign type to see the lines');
+    assert.ok(linePoints(ctx).length > 0);
+  });
+
+  await test('hair and Prospecting: kill curves from the hair prospecting lead target on a log spend axis', async () => {
     const ctx = await bootEnabled();
-    assert.strictEqual(ctx.doc.getElementById('prod-conf-lines-note').textContent, '');
-    const box = ctx.doc.getElementById('cl-log-toggle');
-    box.checked = true;
-    box.dispatch('change');
-    await flush();
-    const chart = scatterChart(ctx);
+    const chart = linesChart(ctx);
     assert.strictEqual(chart.options.scales.x.type, 'logarithmic');
+    assert.strictEqual(chart.options.scales.x.title.text, 'Spend per ad (log)');
     assert.ok(chart.options.scales.x.min > 0);
+    assert.strictEqual(chart.options.scales.y.min, 0);
+    assert.strictEqual(chart.options.scales.y.max, Math.ceil(KILL_T * 4), 'y runs to about 4x target');
+    assert.strictEqual(chart.options.scales.y.title.text, 'Cost per kill conversion');
+    assert.strictEqual(ctx.doc.getElementById('sc-lines-sub').textContent, 'Spend (log) against cost per kill conversion');
     const st = ctx.run('confidenceCurveState');
     assert.strictEqual(st.which, 'kill');
     assert.strictEqual(st.target, KILL_T);
     assert.strictEqual(st.key, 'Hair|Prospecting');
-    assert.strictEqual(st.log, true);
-    const p = st.points[st.points.length - 1];
-    assert.deepStrictEqual(JSON.parse(JSON.stringify(p)), JSON.parse(JSON.stringify(ctx.sb.confidenceCurvePoints(KILL_T, p.spend, p.spend, 0.9)[0])));
-    assert.strictEqual(chart.options.scales.y.title.text, 'Cost per kill conversion');
+    const b3 = ctx.sb.confidenceBounds(3, 0.9);
+    const c3 = st.cut.find((p) => p.conv === 3), s3 = st.scale.find((p) => p.conv === 3);
+    assert.ok(Math.abs(c3.spend - KILL_T * b3.kill) < 1e-6 && Math.abs(c3.cpa - KILL_T * b3.kill / 3) < 1e-6, 'Cut curve point at 3 conversions');
+    assert.ok(Math.abs(s3.spend - KILL_T * b3.scale) < 1e-6, 'Scale curve point at 3 conversions');
+    assert.ok(st.cut[st.cut.length - 1].cpa < st.cut[0].cpa, 'Cut curve falls towards target');
+    assert.ok(st.scale[st.scale.length - 1].cpa > st.scale[0].cpa, 'Scale curve rises towards target');
+    const ticks = ctx.sb.confidenceLogTicks(100, 100000).map((v) => ctx.sb.confidenceShortMoney(v));
+    assert.strictEqual(JSON.stringify(ticks), JSON.stringify(['$100', '$1k', '$10k', '$100k']));
     const calls = [];
-    chart.plugins.find((x) => x.id === 'confidence-lines').afterDraw(fakeChart(calls));
-    assert.ok(calls.includes('stroke') && calls.includes('lineTo'), 'curve drawn');
-    assert.ok(calls.includes('fillText:Cut line'));
-    assert.ok(ctx.doc.getElementById('app').innerHTML.includes('Log spend axis'));
+    linesPlugin(ctx).beforeDatasetsDraw(fakeChart(calls));
+    assert.ok(calls.includes('stroke') && calls.includes('lineTo') && calls.includes('fill'), 'curves and shading drawn');
+    assert.ok(calls.includes('setLineDash'), 'dashed target line');
+    ['CUT', '90% sure it misses target', 'SCALE', '90% sure it beats target', 'TESTING', 'keep spending', 'target $766'].forEach((t) => {
+      assert.ok(calls.includes('fillText:' + t), t + ' in ' + calls.filter((c) => c.startsWith('fillText')).join(', '));
+    });
+    assert.deepStrictEqual(ctx.errors, []);
   });
 
-  await test('y-axis toggle: cost per scale conversion and the scale curve', async () => {
+  await test('dots are coloured by verdict, sized by spend and clamped to the top', async () => {
+    const ctx = await bootEnabled();
+    const chart = linesChart(ctx);
+    const labels = chart.data.datasets.map((d) => d.label);
+    labels.forEach((l) => assert.ok(['Scale', 'Testing', 'Cut', 'No baseline'].includes(l), l));
+    const pts = linePoints(ctx);
+    const big = pts.find((p) => p.label === 'cutthree'), small = pts.find((p) => p.label === 'freshad');
+    assert.ok(big._r > small._r, 'bigger spend, bigger dot');
+    assert.ok(small._clamped && small.y === chart.options.scales.y.max, 'no conversions sits on the top edge');
+    const tip = ctx.sb.confidenceLinesTooltip(big, ctx.run('scaleCutState').mode);
+    assert.ok(tip.includes('Verdict: Cut') && tip.some((t) => t.startsWith('Spend: ')), tip.join(' / '));
+  });
+
+  await test('y-axis toggle: cost per scale conversion and the scale target', async () => {
     const ctx = await bootEnabled();
     const sel = ctx.doc.getElementById('cl-y-mode');
     sel.value = 'scale';
     sel.dispatch('change');
     await flush();
-    const chart = scatterChart(ctx);
+    const chart = linesChart(ctx);
     assert.strictEqual(chart.options.scales.y.title.text, 'Cost per scale conversion');
-    assert.notStrictEqual(chart.options.scales.x.type, 'logarithmic');
+    assert.strictEqual(chart.options.scales.x.type, 'logarithmic');
     const st = ctx.run('confidenceCurveState');
     assert.strictEqual(st.which, 'scale');
     assert.strictEqual(st.target, SCALE_T);
-    const pts = scatterPoints(ctx);
-    const scale = pts.find((x) => x.label === 'scalesubs');
-    assert.strictEqual(scale.y, 2000 / 8, 'y is spend per sub');
-    const none = pts.find((x) => x.label === 'freshad');
-    assert.ok(none._noConv && none.y === chart.options.scales.y.max, 'no-conversion ads sit on the top edge');
-    const calls = [];
-    chart.plugins.find((x) => x.id === 'confidence-lines').afterDraw(fakeChart(calls));
-    assert.ok(calls.includes('fillText:Scale line'));
-    ctx.run("confidenceYMode = 'kill'; confidenceLogAxis = false;");
+    const pts = linePoints(ctx);
+    assert.strictEqual(pts.find((x) => x.label === 'scalesubs').y, 2000 / 8, 'y is spend per sub');
+    assert.ok(ctx.doc.getElementById('sc-lines-note').textContent.startsWith('The Scale line is exact here.'));
+    ctx.run("confidenceYMode = 'kill';");
   });
 
-  await test('an ad search for one ad name: the verdict table and the scatter show only that ad', async () => {
+  await test('an ad search for one ad name: the table, the dots and the chips show only that ad', async () => {
     const ctx = await bootEnabled({ search: 'cutthree' });
     const rows = tableBody(ctx).split('data-adname="').length - 1;
     assert.strictEqual(rows, 1, tableBody(ctx));
     assert.strictEqual(verdictOf(ctx, 'cutthree'), 'Cut');
-    const pts = scatterPoints(ctx);
-    assert.deepStrictEqual(pts.map((p) => p.label), ['cutthree']);
-    assert.ok(ctx.run('confidenceCurveState'), 'the line stays');
+    assert.deepStrictEqual(linePoints(ctx).map((p) => p.label), ['cutthree']);
+    assert.ok(ctx.run('confidenceCurveState'), 'the lines stay');
+    assert.strictEqual(ctx.doc.getElementById('sc-count-cut').textContent, '1');
+    assert.strictEqual(ctx.doc.getElementById('sc-count-scale').textContent, '0');
     ctx.run("adSearchTerm = '';");
   });
 
-  await test('status filters scope the verdict query', async () => {
+  await test('status and Campaign type filters scope the verdict query', async () => {
     const ctx = await bootEnabled();
     const sql = ctx.queries.find((q) => /per_ad_conf/.test(q));
-    assert.ok(sql.includes(ctx.sb.scopeWhere('WHERE')), 'scatter query carries the page scope');
+    const scope = ctx.sb.scaleCutScopeWhere('WHERE');
+    assert.ok(scope.includes('Prospecting'), scope);
+    assert.ok(sql.includes(scope), 'verdict query carries the tab scope');
   });
 
-  await test('tiers, Creative Score and the threshold panel keep working alongside the verdict', async () => {
-    const ctx = await bootEnabled();
-    const body = tableBody(ctx);
-    assert.ok(body.includes('badge-ob') && body.includes('On Base'));
-    const sql = ctx.queries.find((q) => /per_ad_conf/.test(q));
-    assert.ok(sql.includes('AS classification') && sql.includes('AS creative_score'));
-    assert.ok(ctx.doc.getElementById('app').innerHTML.includes('id="prod-baseline-body"'));
-  });
-
-  await test('no config: no verdict cell, controls, note, log axis or curve plugin', async () => {
+  await test('no config: no Scale & Cut nav, panel or verdict query', async () => {
     const ctx = boot();
     ctx.sb.renderLayout();
+    const html = ctx.doc.getElementById('app').innerHTML;
+    ['data-tab="scalecut"', 'tab-scalecut', '>Verdict</th>', 'cl-y-mode', 'sc-lines-note'].forEach((s) => assert.ok(!html.includes(s), s));
+    await ctx.sb.loadScaleCut();
     await ctx.sb.loadProduction();
     await flush();
-    const html = ctx.doc.getElementById('app').innerHTML;
-    ['>Verdict</th>', 'cl-log-toggle', 'cl-y-mode', 'prod-conf-lines-note'].forEach((s) => assert.ok(!html.includes(s), s));
-    const body = tableBody(ctx);
-    assert.ok(!body.includes('No baseline') && !body.includes('badge-cut') && !body.includes('badge-testing'));
-    const chart = scatterChart(ctx);
-    if (chart){
-      assert.notStrictEqual(chart.options.scales.x.type, 'logarithmic');
-      assert.ok(!chart.plugins.some((p) => p.id === 'confidence-lines'));
-    }
     assert.ok(!ctx.queries.some((q) => /per_ad_conf| AS verdict/.test(q)));
+    assert.ok(!ctx.charts.some((c) => c.el && c.el.id === 'sc-lines-chart'));
   });
 
-  await test('no em or en dashes in the US-003 code and CSS', async () => {
+  await test('with config the Scale & Cut nav sits after Ad Production', async () => {
+    const ctx = boot({ config: CONFIG });
+    ctx.sb.renderLayout();
+    const html = ctx.doc.getElementById('app').innerHTML;
+    const prod = html.indexOf('data-tab="production"'), sc = html.indexOf('data-tab="scalecut"');
+    assert.ok(prod > 0 && sc > prod, 'Scale & Cut after Ad Production');
+    assert.ok(html.includes('Scale &amp; Cut'));
+  });
+
+  await test('no em or en dashes in the Scale & Cut code and CSS', async () => {
     const src = read('f10-monthly.js');
-    const a = src.indexOf('Verdict column and confidence lines (confidence-lines US-003)');
-    const b = src.indexOf('function _confTargetField', a);
+    const a = src.indexOf('/* ── Scale & Cut tab');
+    const b = src.indexOf('/* ── Ad Power Law', a);
     assert.ok(a > 0 && b > a);
     assert.ok(!/[\u2013\u2014]/.test(src.slice(a, b)));
-    const lay = read('f10-layout.js');
-    const la = lay.indexOf('function confidenceVerdictHover');
-    assert.ok(!/[\u2013\u2014]/.test(lay.slice(la, lay.indexOf('function prodThresholdLegendHTML', la))));
     const css = read('f10-shared.css');
-    const ca = css.indexOf('confidence-lines US-003');
-    assert.ok(!/[\u2013\u2014]/.test(css.slice(ca, css.indexOf('.cl-lines-note', ca))));
+    const ca = css.indexOf('Scale & Cut tab cards');
+    assert.ok(ca > 0);
+    assert.ok(!/[\u2013\u2014]/.test(css.slice(ca, css.indexOf('.cl-reach-empty', ca) + 80)));
   });
 
   console.log(failures ? `${failures} failed` : 'all passed');
   process.exit(failures ? 1 : 0);
 })();
 
+
 function fakeChart(calls){
   const rec = (n) => (...a) => { calls.push(n === 'fillText' ? 'fillText:' + a[0] : n); };
   return {
     ctx: { save: rec('save'), restore: rec('restore'), beginPath: rec('beginPath'), rect: rec('rect'), clip: rec('clip'),
-      moveTo: rec('moveTo'), lineTo: rec('lineTo'), stroke: rec('stroke'), fillText: rec('fillText') },
-    scales: { x: { getPixelForValue: (v) => v }, y: { getPixelForValue: (v) => v } },
-    chartArea: { left: 0, top: 0, right: 100, bottom: 100 },
+      moveTo: rec('moveTo'), lineTo: rec('lineTo'), stroke: rec('stroke'), fillText: rec('fillText'), fill: rec('fill'),
+      closePath: rec('closePath'), fillRect: rec('fillRect'), setLineDash: rec('setLineDash'), roundRect: rec('roundRect'),
+      measureText: (t) => ({ width: String(t).length * 6 }) },
+    scales: { x: { getPixelForValue: (v) => Math.log10(Math.max(1, v)) * 20 }, y: { getPixelForValue: (v) => 300 - v / 10 } },
+    chartArea: { left: 0, top: 0, right: 400, bottom: 300 },
+    height: 340,
   };
 }

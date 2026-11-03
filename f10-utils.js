@@ -651,7 +651,7 @@ function statusClauses(){ return statusFilter === 'active' ? ['is_active'] : [];
  *   scopeWhere('WHERE') — start a fresh WHERE block (e.g. FROM t ${scopeWhere('WHERE')})
  *   scopeWhere()        — append to an existing WHERE (leads with AND)
  * Returns '' when nothing is active. */
-function scopeClauses(){ return groupClauses().concat(statusClauses(), segmentClauses()); }
+function scopeClauses(){ return groupClauses().concat(statusClauses()); }
 /* scopeWhere plus the ad search, for queries that sum totals across ads. */
 function searchScopeWhere(lead){
   const parts = scopeClauses().concat(adSearchClauses('adset_name'));
@@ -661,6 +661,14 @@ function searchScopeWhere(lead){
 }
 function scopeWhere(lead){
   const parts = scopeClauses();
+  if(!parts.length) return '';
+  const prefix = lead === 'WHERE' ? 'WHERE' : 'AND';
+  return ' ' + prefix + ' ' + parts.join(' AND ');
+}
+/* scopeWhere plus the Campaign type filter. Only the Scale & Cut tab uses it,
+ * so every other tab stays byte-identical whether or not CONFIDENCE_LINES is set. */
+function scaleCutScopeWhere(lead){
+  const parts = scopeClauses().concat(segmentClauses());
   if(!parts.length) return '';
   const prefix = lead === 'WHERE' ? 'WHERE' : 'AND';
   return ' ' + prefix + ' ' + parts.join(' AND ');
@@ -1768,9 +1776,10 @@ if (typeof window !== 'undefined') {
  *     BASELINE_DAYS:   90,                // optional, default 90
  *     CONFIDENCE:      0.9,               // optional, default 0.9
  *   };
- * With no CONFIDENCE_LINES every function here is inert: segmentClauses() adds
- * nothing to scopeClauses(), the layout renders no dropdown or panel, and the
- * production queries are byte-identical to the ungated build.
+ * With no CONFIDENCE_LINES every function here is inert: the layout renders no
+ * Scale & Cut tab, and no other tab changes. With it set, only the Scale & Cut
+ * tab reads the Campaign type filter (scaleCutScopeWhere()); Ad Production and
+ * every other tab run the same queries as the ungated build.
  *
  * SEGMENT_EXPR contract: return the campaign type as a string, NULL for
  * campaigns excluded from the baseline (Awareness for Mosh), and 'Unmatched'
@@ -1780,7 +1789,7 @@ if (typeof window !== 'undefined') {
  * The baseline is Meta-reported cost per conversion (spend / SUM(conv) in the
  * creative mart), per group x segment, over the trailing window that ends the
  * day before the dashboard window end. Session edits to a target live in
- * _confidenceOverrides and re-grade the page through loadProduction(), the same
+ * _confidenceOverrides and re-grade the Scale & Cut tab through loadScaleCut(), the same
  * way the Adjust thresholds panel works. A reload reverts them.
  */
 const CONFIDENCE_MIN_CONVERSIONS = 50;

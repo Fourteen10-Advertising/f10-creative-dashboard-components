@@ -50,32 +50,76 @@ function prodBenchmarkHTML(){
     .map((name) => _benchTiersHTML(getGroupThresholds(name), name)).join('');
   return base + groups;
 }
-/* Verdict header hover and the scatter toggles (confidence-lines US-003). */
+/* Scale & Cut tab (confidence-lines US-003, reworked in US-008). Every helper
+ * below returns '' without CONFIDENCE_LINES, so the layout is unchanged. */
 function confidenceVerdictHover(){
   const cfg = confidenceLinesConfig();
   if (!cfg) return '';
   return `Judged against your last ${cfg.baselineDays} days for this product and campaign type, using Meta-reported results, at ${Math.round(cfg.confidence * 100)}% confidence.`;
 }
-function confidenceScatterControlsHTML(){
+function scaleCutNavHTML(){
+  return confidenceLinesEnabled() ? `
+      <a href="#" class="nav-link" data-tab="scalecut">Scale &amp; Cut</a>` : '';
+}
+/* Conversion noun from a "Cost per X" label: "Cost per plan" -> "Plans". */
+function confidenceConvNoun(label){
+  const n = String(label || '').replace(/^cost per /i, '').trim() || 'conversion';
+  return n.charAt(0).toUpperCase() + n.slice(1) + 's';
+}
+function scaleCutPanelHTML(){
   const cfg = confidenceLinesConfig();
   if (!cfg) return '';
-  const logOn = typeof confidenceLogAxis !== 'undefined' && confidenceLogAxis;
-  const yMode = typeof confidenceYMode !== 'undefined' && confidenceYMode === 'scale' ? 'scale' : 'kill';
   const e = v => String(v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  /* US-007: the Cost per 1,000 reached x axis, only when REACH_TABLE is set. */
-  const xMode = typeof confidenceXMode !== 'undefined' && confidenceXMode === 'cpmr' ? 'cpmr' : 'spend';
-  const xSel = cfg.reachTable ? `
-            <label for="cl-x-mode">X axis</label>
-            <select id="cl-x-mode"><option value="spend"${xMode === 'spend' ? ' selected' : ''}>Lifetime spend</option><option value="cpmr"${xMode === 'cpmr' ? ' selected' : ''}>Cost per 1,000 reached</option></select>` : '';
-  const reachNotes = cfg.reachTable ? `
-          <div class="tc-note cl-lines-note" id="prod-reach-note"></div>
-          <div class="tc-note cl-lines-note" id="prod-reach-missing"></div>` : '';
-  return `<div class="cl-toggles" id="prod-conf-toggles">${xSel}
-            <label><input type="checkbox" id="cl-log-toggle"${logOn ? ' checked' : ''} /> Log spend axis</label>
+  const days = cfg.baselineDays;
+  const chip = (cls, label, id) => `<span class="cl-chip"><span class="cl-swatch ${cls}"></span>${label} <strong id="${id}">0</strong></span>`;
+  const qchip = (cls, label) => `<span class="cl-chip"><span class="cl-swatch ${cls}"></span>${label}</span>`;
+  return `
+    <!-- MONTHLY: SCALE & CUT (CONFIDENCE_LINES only) -->
+    <div class="tab-panel" id="tab-scalecut">
+      ${howToNote('scalecut')}
+      <div class="threshold-controls" id="sc-baseline-controls">
+        <div class="tc-header">
+          <strong>Your last ${days} days (Meta-reported)</strong>
+          <span class="tc-note">Targets come from this product and campaign type over the ${days} days before the window end. Edit a target to re-grade this tab for this session; a reload also reverts.</span>
+        </div>
+        <div class="cl-toggles"><label for="ctrl-segment">Campaign type</label><select id="ctrl-segment"><option value="${GROUP_ALL}" selected>All campaign types</option></select></div>
+        <div id="sc-baseline-unmatched"></div>
+        <div id="sc-baseline-body"><span class="tc-note">Loading baseline&hellip;</span></div>
+        <div id="sc-baseline-verdicts"></div>
+        <div class="tc-actions"><button class="tc-reset" id="cl-reset">Reset to baseline</button></div>
+      </div>
+      <div class="two-col">
+        <div class="chart-card" style="margin-bottom:0;"><h3>Kill and scale lines</h3>
+          <div class="cl-sub" id="sc-lines-sub">Spend (log) against ${e(cfg.killLabel).toLowerCase()}</div>
+          <div class="cl-toggles">
             <label for="cl-y-mode">Y axis</label>
-            <select id="cl-y-mode"><option value="kill"${yMode === 'kill' ? ' selected' : ''}>${e(cfg.killLabel)}</option><option value="scale"${yMode === 'scale' ? ' selected' : ''}>${e(cfg.scaleLabel)}</option></select>
+            <select id="cl-y-mode"><option value="kill" selected>${e(cfg.killLabel)}</option><option value="scale">${e(cfg.scaleLabel)}</option></select>
           </div>
-          <div class="tc-note cl-lines-note" id="prod-conf-lines-note"></div>${reachNotes}
+          <div class="cl-legend" id="sc-lines-legend">${chip('cl-sw-scale', 'Scale', 'sc-count-scale')}${chip('cl-sw-testing', 'Testing', 'sc-count-testing')}${chip('cl-sw-cut', 'Cut', 'sc-count-cut')}</div>
+          <div class="tc-note cl-lines-note" id="sc-lines-note"></div>
+          <div id="sc-lines-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+          <div class="chart-wrapper" id="sc-lines-wrapper" style="display:none; height:340px;"><canvas id="sc-lines-chart"></canvas></div>
+        </div>
+        <div class="chart-card" style="margin-bottom:0;"><h3>Reach cost</h3>
+          <div class="cl-sub">Bubble = reach, split at the medians</div>
+          <div class="cl-legend">${qchip('cl-sw-eff', 'Efficient growth')}${qchip('cl-sw-reach', 'Reach play')}${qchip('cl-sw-prec', 'Precision')}${qchip('cl-sw-cut', 'Cut candidate')}</div>
+          <div class="tc-note cl-lines-note" id="sc-reach-note"></div>
+          <div class="tc-note cl-lines-note" id="sc-reach-missing"></div>
+          <div class="tc-note cl-reach-empty" id="sc-reach-empty">Reach data is not loaded yet.</div>
+          <div id="sc-reach-loading" class="loading" style="display:none;"><div class="spinner"></div>Loading&hellip;</div>
+          <div class="chart-wrapper" id="sc-reach-wrapper" style="display:none; height:340px;"><canvas id="sc-reach-chart"></canvas></div>
+        </div>
+      </div>
+      <div class="table-card" style="margin-top:20px;"><h3>Ads by verdict</h3>
+        <div class="table-scroll">
+          <div id="sc-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+          <table id="sc-table" style="display:none;">
+            <thead><tr><th>Ad</th><th>Campaign</th><th>Campaign type</th><th>Lifetime spend</th><th id="sc-th-conv">${e(confidenceConvNoun(cfg.killLabel))}</th><th id="sc-th-cpa">${e(cfg.killLabel)}</th><th${defAttr(confidenceVerdictHover())}>Verdict</th></tr></thead>
+            <tbody id="sc-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
 `;
 }
 
@@ -662,6 +706,7 @@ const HOW_TO_READ = {
   decay:      'Use this for planning ahead: it shows how quickly older ads fade, which tells you how much fresh creative to line up to keep spend steady. The note and cohort charts below go into the detail.',
   age:        'Use this to check how fresh your running creative is. If a few older ads are doing most of the work, take it as a nudge to test more. The age bands and the healthy&#8209;mix benchmark are explained below.',
   creative:   'Use this to understand why an ad grabs people or loses them, beyond what it costs, so you can brief sharper creative next time. The attention measures (hold, completion, drop&#8209;off) are defined below.',
+  scalecut:   'Use this to decide which ads to scale, which to keep testing and which to cut. Each ad is judged against your own recent cost for its product and campaign type. The left chart shows the scale and cut lines; the right chart shows how cheaply each ad reaches people.',
 };
 /* One-line "what counts as a conversion" definition, worded from CONV_LABEL. */
 function convDefinitionHTML(){
@@ -903,7 +948,7 @@ function renderLayout(){
       <a href="#" class="nav-link" data-tab="map">Movement Map</a>
       <div class="nav-section">Meta - Monthly</div>
       <a href="#" class="nav-link" data-tab="powerlaw">Ad Power Law</a>
-      <a href="#" class="nav-link" data-tab="production">Ad Production</a>
+      <a href="#" class="nav-link" data-tab="production">Ad Production</a>${scaleCutNavHTML()}
       <a href="#" class="nav-link" data-tab="decay">Ad Decay</a>
       <a href="#" class="nav-link" data-tab="age">Ad Age</a>
       <a href="#" class="nav-link" data-tab="creative">Creative Effectiveness</a>
@@ -925,8 +970,7 @@ function renderLayout(){
     <!-- Global controls: group filters (all tabs) + weekly-only controls -->
     <div class="controls-bar" id="controls-bar" style="display:none;">
       <div id="ctrl-groups" class="ctrl-groups"></div>
-${confidenceLinesEnabled() ? `      <div class="ctrl-groups" id="ctrl-segment-wrap"><div class="ctrl"><label>Campaign type</label><select id="ctrl-segment"><option value="${GROUP_ALL}" selected>All campaign types</option></select></div></div>
-` : ''}      <div id="ctrl-scope" class="ctrl-groups">
+      <div id="ctrl-scope" class="ctrl-groups">
         <div class="ctrl"><label>Search ad</label><input type="search" id="ctrl-adsearch" class="ctrl-search" placeholder="Ad or campaign name&hellip;" autocomplete="off" /></div>
         <div class="ctrl"><label>Ad status</label><select id="ctrl-status"><option value="all" selected>All ads</option><option value="active">Active only</option></select></div>
         ${zeroSpendFilterEnabled() ? `<div class="ctrl"><label>Zero spend ads</label><select id="ctrl-zerospend"><option value="show" selected>Show</option><option value="hide">Hide</option></select></div>` : ''}
@@ -1037,17 +1081,7 @@ ${liControls}
           <button class="tc-reset" id="th-reset">Reset to defaults</button>
         </div>
       </div>
-${confidenceLinesEnabled() ? `      <div class="threshold-controls" id="prod-baseline-controls">
-        <div class="tc-header">
-          <strong>Your last ${confidenceLinesConfig().baselineDays} days (Meta-reported)</strong>
-          <span class="tc-note">Targets come from this product and campaign type over the ${confidenceLinesConfig().baselineDays} days before the window end. Edit a target to re-grade the page for this session; a reload also reverts.</span>
-        </div>
-        <div id="prod-baseline-unmatched"></div>
-        <div id="prod-baseline-body"><span class="tc-note">Loading baseline&hellip;</span></div>
-        <div id="prod-baseline-verdicts"></div>
-        <div class="tc-actions"><button class="tc-reset" id="cl-reset">Reset to baseline</button></div>
-      </div>
-` : ''}      <div id="production-revenue-guard"></div>
+      <div id="production-revenue-guard"></div>
       <div id="production-scorecards-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
       <div id="production-scorecards" style="display:none;">
         <div class="scorecard-grid">
@@ -1063,7 +1097,7 @@ ${confidenceLinesEnabled() ? `      <div class="threshold-controls" id="prod-bas
       <div class="two-col">
         <div class="chart-card" style="margin-bottom:0;"><h3>Lifetime Spend vs ${targetMetricDef().label} &mdash; All Ads</h3>
           <div class="threshold-legend" id="prod-threshold-legend">${prodThresholdLegendHTML()}</div>
-${confidenceLinesEnabled() ? confidenceScatterControlsHTML() : ''}          <div id="scatter-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+          <div id="scatter-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <div class="chart-wrapper" id="scatter-wrapper" style="display:none; height:320px;"><canvas id="scatter-chart"></canvas></div>
         </div>
         <div class="chart-card" style="margin-bottom:0;"><h3>Ads Launched &amp; Hit Rates by Month</h3>
@@ -1084,13 +1118,13 @@ ${confidenceLinesEnabled() ? confidenceScatterControlsHTML() : ''}          <div
         <div class="table-scroll">
           <div id="scatter-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="scatter-table" style="display:none;">
-            <thead><tr><th>Ad</th><th>Campaign</th><th>Adset</th><th>Launch Date</th><th>Lifetime Spend</th><th>Lifetime ${targetMetricDef().label}</th><th>Conversions</th><th class="num">Hold %</th><th class="num">Compl. %</th><th class="num">Out CTR</th><th>Preview</th><th>Classification</th><th>Creative Score</th>${confidenceLinesEnabled() ? `<th${defAttr(confidenceVerdictHover())}>Verdict</th>` : ''}</tr></thead>
+            <thead><tr><th>Ad</th><th>Campaign</th><th>Adset</th><th>Launch Date</th><th>Lifetime Spend</th><th>Lifetime ${targetMetricDef().label}</th><th>Conversions</th><th class="num">Hold %</th><th class="num">Compl. %</th><th class="num">Out CTR</th><th>Preview</th><th>Classification</th><th>Creative Score</th></tr></thead>
             <tbody id="scatter-table-body"></tbody>
           </table>
         </div>
       </div>
     </div>
-
+${scaleCutPanelHTML()}
     <!-- MONTHLY: AD DECAY -->
     <div class="tab-panel" id="tab-decay">
       ${howToNote('decay')}

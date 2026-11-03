@@ -32,6 +32,7 @@ const tabTitles = {
   map:        'Movement Map',
   powerlaw:   'Ad Power Law',
   production: 'Ad Production',
+  scalecut:   'Scale & Cut',
   decay:      'Ad Decay',
   age:        'Ad Age',
   creative:   'Creative Effectiveness',

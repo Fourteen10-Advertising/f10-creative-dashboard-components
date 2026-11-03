@@ -1,13 +1,18 @@
 /**
  * Campaign type segment and moveable baseline acceptance test
- * (creative-dashboard-confidence-lines US-002).
+ * (creative-dashboard-confidence-lines US-002, moved to the Scale & Cut tab in
+ * US-008).
  *
  * Boots f10-utils.js, f10-weekly.js, f10-layout.js and f10-monthly.js together
  * in a vm with a small auto-creating DOM stub, renders the layout, runs
- * loadProduction() against a fake runQuery and checks:
+ * loadScaleCut() (and loadProduction() for the parity checks) against a fake
+ * runQuery and checks:
  *   1. No CONFIDENCE_LINES: the rendered layout HTML and every SQL string
  *      loadProduction() sends are byte-identical to the build before US-002
- *      (pinned SHA-256 below), with no dropdown, panel or target input.
+ *      (pinned SHA-256 below), with no tab, dropdown, panel or target input.
+ *      With CONFIDENCE_LINES set, Ad Production is still identical: the layout
+ *      only gains the Scale & Cut nav link and panel, and loadProduction()
+ *      sends the same SQL whatever Campaign type is picked.
  *   2. BASELINE_DAYS 90 with window end 2026-10-31 queries
  *      date_start BETWEEN '2026-08-01' AND '2026-10-30' ... GROUP BY 1, 2.
  *   3. Editing the kill target 766 -> 600 re-grades the page; Reset to
@@ -179,7 +184,7 @@ async function bootEnabled(rows){
   ctx.doc.getElementById('ctrl-enddate').value = '2026-10-31';
   ctx.run("groupSelections['group_name'] = 'Hair';");
   ctx.sb.setSegmentSelection('Prospecting');
-  await ctx.sb.loadProduction();
+  await ctx.sb.loadScaleCut();
   await flush();
   return ctx;
 }
@@ -208,7 +213,7 @@ const countsText = (c) => `<strong>${c.Scale}</strong> Scale, <strong>${c.Testin
 
   await test('no config: no dropdown, panel, input or extra query', async () => {
     const o = await noConfigOutput(ROOT);
-    ['ctrl-segment', 'prod-baseline-controls', 'cl-reset', 'cl-target-kill', 'Campaign type', 'Meta-reported']
+    ['ctrl-segment', 'sc-baseline-controls', 'tab-scalecut', 'data-tab="scalecut"', 'Scale &amp; Cut', 'cl-reset', 'cl-target-kill', 'Campaign type', 'Meta-reported']
       .forEach((s) => assert.ok(!o.html.includes(s), s + ' must not render'));
     assert.strictEqual(o.sb.confidenceLinesEnabled(), false);
     assert.strictEqual(o.sb.confidenceAdSelect(), '');
@@ -216,6 +221,9 @@ const countsText = (c) => `<strong>${c.Scale}</strong> Scale, <strong>${c.Testin
     const before = o.sb.scopeWhere('WHERE');
     o.sb.setSegmentSelection('Prospecting');
     assert.strictEqual(o.sb.scopeWhere('WHERE'), before, 'segment selection is inert without config');
+    assert.strictEqual(o.sb.scaleCutScopeWhere('WHERE'), before, 'no segment clause without config');
+    await o.sb.loadScaleCut();
+    assert.ok(!o.queries.some((q) => /cost_per_kill|conf_segment/.test(q)), 'loadScaleCut is a no-op without config');
     assert.ok(!o.queries.some((q) => /cost_per_kill|conf_segment/.test(q)));
   });
 
@@ -234,27 +242,58 @@ const countsText = (c) => `<strong>${c.Scale}</strong> Scale, <strong>${c.Testin
     assert.deepStrictEqual(ctx.errors, []);
   });
 
-  await test('segment dropdown sits next to Product and scopes every query', async () => {
+  await test('Campaign type dropdown and baseline panel sit in the Scale & Cut tab and scope only its queries', async () => {
     const ctx = await bootEnabled(baselineRows(100, 60));
     const html = ctx.doc.getElementById('app').innerHTML;
-    const gi = html.indexOf('id="ctrl-groups"'), si = html.indexOf('id="ctrl-segment"');
-    assert.ok(gi > 0 && si > gi && html.slice(gi, si).split('<div').length <= 4, 'dropdown follows the Product filter');
-    assert.ok(html.includes('Your last 90 days (Meta-reported)'));
+    const tab = html.indexOf('id="tab-scalecut"');
+    const end = html.indexOf('class="tab-panel"', tab + 1);
+    const panel = html.slice(tab, end < 0 ? html.length : end);
+    assert.ok(tab > 0, 'Scale & Cut panel renders');
+    assert.ok(panel.includes('id="sc-baseline-controls"') && panel.includes('id="ctrl-segment"'), 'dropdown and panel live in the tab');
+    assert.ok(panel.includes('Your last 90 days (Meta-reported)'));
+    assert.strictEqual(html.split('id="ctrl-segment"').length, 2, 'one Campaign type dropdown on the page');
+    const prod = html.indexOf('id="tab-production"');
+    const prodPanel = html.slice(prod, html.indexOf('class="tab-panel"', prod + 1));
+    assert.ok(!/ctrl-segment|sc-baseline|Meta-reported/.test(prodPanel), 'nothing confidence-related in Ad Production');
     const opts = ctx.doc.getElementById('ctrl-segment').innerHTML;
     assert.ok(opts.includes('value="Prospecting"') && opts.includes('value="Retargeting"'));
     assert.ok(opts.includes('Unmatched (check naming)'));
     const scatter = ctx.queries.find((q) => /conf_segment/.test(q));
     assert.ok(scatter.includes(`(${SEGMENT_EXPR}) = 'Prospecting'`), 'scatter is scoped to the segment');
     assert.ok(scatter.includes("group_name = 'Hair'"));
+    assert.ok(ctx.sb.scaleCutScopeWhere('WHERE').includes(`(${SEGMENT_EXPR}) = 'Prospecting'`));
+    assert.ok(!ctx.sb.scopeWhere('WHERE').includes(SEGMENT_EXPR), 'other tabs ignore the Campaign type');
     ctx.sb.setSegmentSelection('__all__');
-    assert.ok(!ctx.sb.scopeWhere('WHERE').includes('Unmatched'));
+    assert.ok(!ctx.sb.scaleCutScopeWhere('WHERE').includes('Unmatched'));
+  });
+
+  await test('with config, Ad Production renders and queries exactly as without it', async () => {
+    const plain = boot(ROOT);
+    plain.sb.renderLayout();
+    plain.run("groupSelections['group_name'] = 'Hair';");
+    await plain.sb.loadProduction();
+    const errors = [];
+    const conf = boot(ROOT, { config: CONFIG, answer: answerFor(baselineRows(100, 60)), errors });
+    conf.sb.renderLayout();
+    const confHtml = conf.doc.getElementById('app').innerHTML;
+    const stripped = confHtml.replace(conf.sb.scaleCutNavHTML(), '').replace(conf.sb.scaleCutPanelHTML(), '');
+    assert.notStrictEqual(stripped, confHtml, 'config adds the Scale & Cut tab');
+    assert.strictEqual(stripped, plain.doc.getElementById('app').innerHTML, 'layout differs only by the Scale & Cut nav link and panel');
+    conf.run("groupSelections['group_name'] = 'Hair';");
+    for (const seg of ['Prospecting', 'Retargeting', '__all__']){
+      conf.sb.setSegmentSelection(seg);
+      const start = conf.queries.length;
+      await conf.sb.loadProduction();
+      assert.strictEqual(JSON.stringify(conf.queries.slice(start)), JSON.stringify(plain.queries), 'Ad Production SQL with segment ' + seg);
+    }
+    assert.deepStrictEqual(errors, []);
   });
 
   await test('target 766 -> 600 re-grades the page; Reset restores 766', async () => {
     const ctx = await bootEnabled(baselineRows(100, 60));
     const { doc, sb } = ctx;
-    const body = () => doc.getElementById('prod-baseline-body').innerHTML;
-    const counts = () => doc.getElementById('prod-baseline-verdicts').innerHTML;
+    const body = () => doc.getElementById('sc-baseline-body').innerHTML;
+    const counts = () => doc.getElementById('sc-baseline-verdicts').innerHTML;
     assert.ok(body().includes('id="cl-target-kill"') && body().includes('value="766"'), body());
     const at766 = expectedCounts(sb, 766), at600 = expectedCounts(sb, 600);
     assert.notDeepStrictEqual(at766, at600, 'fixture ads straddle the two lines');
@@ -290,10 +329,10 @@ const countsText = (c) => `<strong>${c.Scale}</strong> Scale, <strong>${c.Testin
 
   await test('40 conversions: Not enough data for a baseline, no inputs, no lines', async () => {
     const ctx = await bootEnabled(baselineRows(40, 20));
-    const body = ctx.doc.getElementById('prod-baseline-body').innerHTML;
+    const body = ctx.doc.getElementById('sc-baseline-body').innerHTML;
     assert.ok(body.includes('Not enough data for a baseline'), body);
     assert.ok(!body.includes('<input'), 'no target inputs');
-    assert.strictEqual(ctx.doc.getElementById('prod-baseline-verdicts').innerHTML, '');
+    assert.strictEqual(ctx.doc.getElementById('sc-baseline-verdicts').innerHTML, '');
     assert.strictEqual(ctx.doc.getElementById('cl-reset').style.display, 'none');
     const t = ctx.sb.getConfidenceTargets('Hair|Prospecting');
     assert.strictEqual(t.kill, null); assert.strictEqual(t.scale, null);
@@ -303,7 +342,7 @@ const countsText = (c) => `<strong>${c.Scale}</strong> Scale, <strong>${c.Testin
 
   await test('50 kill conversions but 49 scale: kill line only', async () => {
     const ctx = await bootEnabled(baselineRows(50, 49));
-    const body = ctx.doc.getElementById('prod-baseline-body').innerHTML;
+    const body = ctx.doc.getElementById('sc-baseline-body').innerHTML;
     assert.ok(body.includes('id="cl-target-kill"'));
     assert.ok(!body.includes('id="cl-target-scale"'));
     assert.ok(body.includes('Not enough data for a baseline (49 conversions, needs 50)'), body);
@@ -311,19 +350,19 @@ const countsText = (c) => `<strong>${c.Scale}</strong> Scale, <strong>${c.Testin
 
   await test('unmatched campaigns are flagged with their spend', async () => {
     const ctx = await bootEnabled(baselineRows(100, 60));
-    const flag = ctx.doc.getElementById('prod-baseline-unmatched').innerHTML;
+    const flag = ctx.doc.getElementById('sc-baseline-unmatched').innerHTML;
     assert.ok(flag.includes('id="cl-unmatched-flag"'), flag);
     assert.ok(flag.includes('match no campaign type'));
     assert.strictEqual(ctx.sb.confidenceUnmatchedSpend(), 1234.5);
     const clean = await bootEnabled(baselineRows(100, 60).filter((r) => r.segment !== 'Unmatched'));
-    assert.strictEqual(clean.doc.getElementById('prod-baseline-unmatched').innerHTML, '');
+    assert.strictEqual(clean.doc.getElementById('sc-baseline-unmatched').innerHTML, '');
   });
 
   await test('All selected: asks for a product and campaign type, no inputs', async () => {
     const ctx = await bootEnabled(baselineRows(100, 60));
     ctx.sb.setSegmentSelection('__all__');
-    await ctx.sb.loadProduction();
-    const body = ctx.doc.getElementById('prod-baseline-body').innerHTML;
+    await ctx.sb.loadScaleCut();
+    const body = ctx.doc.getElementById('sc-baseline-body').innerHTML;
     assert.ok(body.includes('Pick a product and campaign type'), body);
     assert.ok(!body.includes('<input'));
   });
