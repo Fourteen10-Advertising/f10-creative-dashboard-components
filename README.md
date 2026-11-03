@@ -1281,6 +1281,58 @@ Any subset can be overridden; omitted keys keep their defaults.
 
 The change is **purely additive**, so a dashboard adopts the Creative Score simply by re-pinning its jsDelivr URLs to **v1.18.0 or later** (see [How to use in a dashboard](#how-to-use-in-a-dashboard)). No config is required, the defaults ship, and it works in ROAS mode as well as CPA mode. Optionally tune `CREATIVE_SCORE_CONFIG` (weights, `maturityDays`, per-rate `qualityCeil`, band cutoffs) per client, and re-validate the score against that client's known winners and dogs before relying on it for cross-creative comparison.
 
+## Confidence lines (Scale / Testing / Cut)
+
+Helpers in `f10-utils.js` that grade an ad as **Scale**, **Testing** or **Cut**
+with a one-sided Poisson test against a cost-per-conversion target, instead of a
+fixed CPA cut-off. They are not wired into any tab yet, so nothing on a
+dashboard changes until a later story uses them.
+
+With `lam = spend / target` (the conversions the ad would have if it ran exactly
+at target) and `k` = its conversions:
+
+- **Cut** when `P(X <= k | lam) < alpha`: fewer conversions than running at
+  target plausibly explains.
+- **Scale** when `k >= 1` and `P(X >= k | lam) < alpha`: more conversions than
+  running at target plausibly explains.
+- **Testing** otherwise, and whenever the target is missing or zero.
+
+`alpha = 1 - confidence`. The default confidence is 90%. Pass `0.9` or `90`.
+
+```js
+confidenceVerdictSQL('spend', 'conversions', 'target_cpa')          // BigQuery expression -> 'Scale' | 'Testing' | 'Cut'
+confidenceVerdictSQL('spend', 'plan_assigned', 'target_cpa', {
+  conf: 0.9, scaleConvCol: 'subs', scaleTargetCol: 'sub_target' })  // kill on one event, scale on another (Scale wins a tie)
+confidenceVerdict(spend, conv, target, opts)                         // JS mirror, same verdict
+confidenceCurvePoints(target, minSpend, maxSpend, conf, { steps })   // [{ spend, kill, scale, killConv, scaleConv }]
+poissonCdf(k, lam)                                                   // P(X <= k)
+confidenceBounds(k, conf)                                            // { kill, scale } cut-offs on spend / target
+```
+
+`confidenceCurvePoints` returns, at each spend point, the cost per conversion at
+or above which an ad is Cut (`kill`, `null` while only zero conversions would
+cut) and at or below which it is Scaled (`scale`). These are the two lines to
+draw on a spend by CPA chart.
+
+How the SQL works: BigQuery has no Poisson CDF, so the test is inverted into a
+cut-off on `lam` for each conversion count. Those cut-offs are solved exactly in
+JS for 0 to 100 conversions and written into the SQL as array literals. Above
+100 conversions both the SQL and the JS mirror use the Wilson-Hilferty gamma
+approximation, which is within 1e-4 of the exact value there. Every division is
+a `SAFE_DIVIDE`, so zero targets and zero conversions never error.
+
+Reference anchors from the Mosh kill-line backtest
+(`workspace/reports/mosh-kill-line-backtest/` in HQ), at target 50 and 90%:
+
+- Kill CPA 77 at spend 1,000 (13 conversions) and 58 at spend 5,000 (86).
+- Zero conversions grade Testing until spend passes about 2.3x target
+  (`-ln(0.1)`), then Cut.
+
+`test/confidence-lines.test.js` pins these. Its fixtures are literal output of
+the backtest's `gen_fixtures.py`, so the dashboard and the backtest cannot drift.
+It also evaluates the emitted SQL against the JS mirror and checks that removing
+the helper block leaves every existing global, tier and score output unchanged.
+
 ## Co-branding (optional)
 
 A dashboard can be co-branded for a client: recoloured chrome plus a **client + F10 logo lockup** in the sidebar. This is opt-in — a dashboard with no `BRANDING` config renders exactly as before. The F10 **type system and content styling are kept**; only the chrome colours and the sidebar mark change, so the dashboard still reads as an F10 product carrying the client's brand.

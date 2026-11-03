@@ -1522,6 +1522,241 @@ function creativeScoreHover(sqlScore, vals, opts){
 }
 if (typeof window !== 'undefined') window.creativeScoreHover = creativeScoreHover;
 
+/* ==== CONFIDENCE LINES START ============================================== *
+ * POISSON CONFIDENCE HELPERS (creative-dashboard-confidence-lines US-001)
+ *
+ * Grades an ad as Scale, Testing or Cut from its spend, conversions and a
+ * cost-per-conversion target with a one-sided Poisson test. Reference
+ * implementation: workspace/reports/mosh-kill-line-backtest/backtest.py
+ * (pois_cdf, curve). With lam = spend / target (the conversions an ad would
+ * have if it ran exactly at target):
+ *   Cut     P(X <= k | lam) < alpha         fewer conversions than running at
+ *                                           target plausibly explains
+ *   Scale   P(X >= k | lam) < alpha, k >= 1 more conversions than running at
+ *                                           target plausibly explains
+ *   Testing otherwise
+ * alpha = 1 - confidence; the default confidence is 90% (alpha 0.10).
+ *
+ * Single source, same discipline as creativeScoreSQL: confidenceVerdictSQL
+ * emits the verdict ONCE as a BigQuery expression; confidenceVerdict is the JS
+ * mirror used for the drawn curves and the tests. Both read the same boundary
+ * function, confidenceBounds(k), so they cannot drift.
+ *
+ * BigQuery has no Poisson or gamma CDF, so the test is inverted. For a fixed k
+ * the Poisson CDF falls as lam rises, so each rule is a cut-off on lam:
+ *   Cut   iff lam > kill_k   where P(X <= k | kill_k) = alpha
+ *   Scale iff lam < scale_k  where P(X >= k | scale_k) = alpha (scale_0 = 0)
+ * kill_k and scale_k are solved by bisection on the exact CDF for
+ * k <= CONFIDENCE_TABLE_MAX and emitted into the SQL as array literals. Above
+ * that the Wilson-Hilferty gamma quantile is used, in both the SQL and the JS
+ * mirror (its error at the table edge is pinned by the tests).
+ *
+ * Unused, these helpers change nothing: no existing global, tier or score
+ * output reads them (pinned by test/confidence-lines.test.js).
+ * ========================================================================= */
+const CONFIDENCE_TABLE_MAX = 100;
+const _confidenceTables = {};
+
+/* Normalise a confidence: 0.9 and 90 both mean 90%. Defaults to 90%. */
+function _confidenceLevel(conf){
+  let c = Number(conf);
+  if (conf == null || !Number.isFinite(c) || c <= 0) c = 0.9;
+  if (c > 1) c = c / 100;
+  return Math.min(0.999999, Math.max(0.5, c));
+}
+
+/* P(X <= k) for X ~ Poisson(lam). Same result as backtest.py pois_cdf, summed
+ * in log space so a large lam does not underflow exp(-lam). */
+function poissonCdf(k, lam){
+  lam = Number(lam);
+  if (!(lam > 0)) return 1;
+  const kk = Math.floor(Number(k));
+  if (!(kk >= 0)) return 0;
+  const lnLam = Math.log(lam);
+  let logTerm = -lam;
+  let total = Math.exp(logTerm);
+  for (let i = 1; i <= kk; i++){
+    logTerm += lnLam - Math.log(i);
+    total += Math.exp(logTerm);
+  }
+  return Math.min(total, 1);
+}
+
+/* Inverse standard normal CDF (Acklam), used only for the Wilson-Hilferty
+ * fallback above the exact table. */
+function _normInv(p){
+  const a = [-39.69683028665376, 220.9460984245205, -275.9285104469687, 138.3577518672690, -30.66479806614716, 2.506628277459239];
+  const b = [-54.47609879822406, 161.5858368580409, -155.6989798598866, 66.80131188771972, -13.28068155288572];
+  const c = [-0.007784894002430293, -0.3223964580411365, -2.400758277161838, -2.549732539343734, 4.374664141464968, 2.938163982698783];
+  const d = [0.007784695709041462, 0.3224671290700398, 2.445134137142996, 3.754408661907416];
+  const lo = 0.02425, hi = 1 - lo;
+  let q, r;
+  if (p < lo){
+    q = Math.sqrt(-2 * Math.log(p));
+    return (((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5]) / ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1);
+  }
+  if (p > hi){
+    q = Math.sqrt(-2 * Math.log(1 - p));
+    return -(((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5]) / ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1);
+  }
+  q = p - 0.5; r = q * q;
+  return (((((a[0]*r+a[1])*r+a[2])*r+a[3])*r+a[4])*r+a[5])*q / (((((b[0]*r+b[1])*r+b[2])*r+b[3])*r+b[4])*r+1);
+}
+
+/* Wilson-Hilferty quantile of Gamma(shape a, scale 1) at standard normal z. */
+function _gammaQuantileWH(a, z){
+  const t = 1 - 1 / (9 * a) + z / (3 * Math.sqrt(a));
+  return a * t * t * t;
+}
+
+/* The lam where f(lam) crosses target, for f falling in lam (bisection). */
+function _solveFalling(f, target, hiGuess){
+  let lo = 0, hi = hiGuess;
+  while (f(hi) > target) hi *= 2;
+  for (let i = 0; i < 200 && (hi - lo) > 1e-12 * hi; i++){
+    const mid = (lo + hi) / 2;
+    if (f(mid) > target) lo = mid; else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+
+/* Exact kill / scale cut-offs on lam for k = 0..CONFIDENCE_TABLE_MAX, plus the
+ * Wilson-Hilferty z values for the fallback. Cached per confidence. */
+function _confidenceTable(conf){
+  const c = _confidenceLevel(conf);
+  const key = String(c);
+  if (_confidenceTables[key]) return _confidenceTables[key];
+  const alpha = 1 - c;
+  const kill = [], scale = [];
+  for (let k = 0; k <= CONFIDENCE_TABLE_MAX; k++){
+    const hiGuess = k + 10 + 10 * Math.sqrt(k + 1);
+    kill.push(_solveFalling((lam) => poissonCdf(k, lam), alpha, hiGuess));
+    scale.push(k === 0 ? 0 : _solveFalling((lam) => poissonCdf(k - 1, lam), c, hiGuess));
+  }
+  const t = { conf: c, alpha: alpha, kill: kill, scale: scale, zKill: _normInv(c), zScale: _normInv(alpha) };
+  _confidenceTables[key] = t;
+  return t;
+}
+
+/* The lam cut-offs for an ad with k conversions: { kill, scale }. Cut when
+ * spend / target > kill; Scale when spend / target < scale. */
+function confidenceBounds(k, conf){
+  const t = _confidenceTable(conf);
+  const kk = Math.max(0, Math.floor(Number(k) || 0));
+  if (kk <= CONFIDENCE_TABLE_MAX) return { kill: t.kill[kk], scale: t.scale[kk] };
+  return { kill: _gammaQuantileWH(kk + 1, t.zKill), scale: _gammaQuantileWH(kk, t.zScale) };
+}
+
+/* Options shared by the SQL emitter and the JS mirror (a bare number is read
+ * as conf):
+ *   conf    confidence, 0.9 or 90 (default 90%)
+ * To kill on one event and scale on another (Scale wins a tie, so it is
+ * tested first), confidenceVerdictSQL takes scaleConvCol / scaleTargetCol and
+ * confidenceVerdict takes the matching values scaleConv / scaleTarget. Both
+ * default to the kill inputs. */
+function _confidenceOpts(opts){
+  if (opts == null) return {};
+  if (typeof opts === 'number' || typeof opts === 'string') return { conf: opts };
+  return opts;
+}
+
+/* JS mirror of confidenceVerdictSQL: 'Cut', 'Scale' or 'Testing'. A missing or
+ * non-positive target grades Testing. */
+function confidenceVerdict(spend, conv, target, opts){
+  const o = _confidenceOpts(opts);
+  const s = Number(spend) || 0;
+  const sConv = o.scaleConv !== undefined ? o.scaleConv : conv;
+  const sTarget = o.scaleTarget !== undefined ? o.scaleTarget : target;
+  const st = Number(sTarget) || 0;
+  if (st > 0){
+    const ks = Math.max(0, Math.floor(Number(sConv) || 0));
+    if (s / st < confidenceBounds(ks, o.conf).scale) return 'Scale';
+  }
+  const kt = Number(target) || 0;
+  if (kt > 0){
+    const kk = Math.max(0, Math.floor(Number(conv) || 0));
+    if (s / kt > confidenceBounds(kk, o.conf).kill) return 'Cut';
+  }
+  return 'Testing';
+}
+
+function _sqlNum(v){ return Number(v).toPrecision(15); }
+function _sqlNumList(arr){ return '[' + arr.map(_sqlNum).join(', ') + ']'; }
+
+/* BigQuery expression for the verdict. spendCol, convCol and targetCol are
+ * column NAMES or expressions. Pure IF / IFNULL / SAFE_DIVIDE / GREATEST /
+ * FLOOR / SQRT / POW plus array SAFE_OFFSET, no CASE, so the test suite can
+ * evaluate it as arithmetic against confidenceVerdict. Every division is a
+ * SAFE_DIVIDE, so a zero target or zero conversions never raises. */
+function confidenceVerdictSQL(spendCol, convCol, targetCol, opts){
+  const o = _confidenceOpts(opts);
+  const t = _confidenceTable(o.conf);
+  const spend = `IFNULL(${spendCol}, 0)`;
+  const test = (conv, target, side) => {
+    const k = `CAST(FLOOR(GREATEST(IFNULL(${conv}, 0), 0)) AS INT64)`;
+    const tgt = `IFNULL(${target}, 0)`;
+    const lam = `SAFE_DIVIDE(${spend}, ${tgt})`;
+    const wh = side === 'kill'
+      ? `(${k} + 1) * POW(1 - SAFE_DIVIDE(1, 9 * (${k} + 1)) + SAFE_DIVIDE(${_sqlNum(t.zKill)}, 3 * SQRT(${k} + 1)), 3)`
+      : `${k} * POW(1 - SAFE_DIVIDE(1, 9 * ${k}) + SAFE_DIVIDE(${_sqlNum(t.zScale)}, 3 * SQRT(${k})), 3)`;
+    const bound = `IFNULL(${_sqlNumList(side === 'kill' ? t.kill : t.scale)}[SAFE_OFFSET(${k})], ${wh})`;
+    return side === 'kill'
+      ? `IF(${tgt} > 0, ${lam} > ${bound}, FALSE)`
+      : `IF(${tgt} > 0, ${lam} < ${bound}, FALSE)`;
+  };
+  const sConv = o.scaleConvCol || convCol;
+  const sTarget = o.scaleTargetCol || targetCol;
+  return `IF(${test(sConv, sTarget, 'scale')}, 'Scale', IF(${test(convCol, targetCol, 'kill')}, 'Cut', 'Testing'))`;
+}
+
+/* Points for drawing the kill and scale lines on a spend x cost-per-conversion
+ * chart. At each spend point:
+ *   kill       cost per conversion at or above which the ad is Cut: spend / K,
+ *              K = the most conversions that still Cut. null while only zero
+ *              conversions Cut (no finite cost per conversion cuts yet).
+ *   scale      cost per conversion at or below which the ad is Scaled:
+ *              spend / K, K = the fewest conversions that Scale. null at 0.
+ *   killConv, scaleConv   the conversion counts behind each bound.
+ * opts.steps sets the number of intervals (default 50, linear in spend). */
+function confidenceCurvePoints(target, minSpend, maxSpend, conf, opts){
+  const o = opts || {};
+  const tg = Number(target);
+  const lo = Math.max(0, Number(minSpend) || 0);
+  const hi = Math.max(lo, Number(maxSpend) || 0);
+  if (!(tg > 0)) return [];
+  const steps = Math.max(1, Math.floor(Number(o.steps) || 50));
+  const n = hi > lo ? steps : 0;
+  const pts = [];
+  for (let i = 0; i <= n; i++){
+    const spend = n ? lo + (hi - lo) * i / n : lo;
+    const lam = spend / tg;
+    let killK = -1;
+    while (lam > confidenceBounds(killK + 1, conf).kill) killK++;
+    let scaleK = null;
+    if (lam > 0){
+      scaleK = 1;
+      while (!(lam < confidenceBounds(scaleK, conf).scale)) scaleK++;
+    }
+    pts.push({
+      spend: spend,
+      kill: killK >= 1 ? spend / killK : null,
+      scale: scaleK ? spend / scaleK : null,
+      killConv: killK,
+      scaleConv: scaleK,
+    });
+  }
+  return pts;
+}
+
+if (typeof window !== 'undefined') {
+  window.poissonCdf = poissonCdf;
+  window.confidenceBounds = confidenceBounds;
+  window.confidenceVerdict = confidenceVerdict;
+  window.confidenceVerdictSQL = confidenceVerdictSQL;
+  window.confidenceCurvePoints = confidenceCurvePoints;
+}
+/* ==== CONFIDENCE LINES END ================================================ */
+
 /* ======================================================================== *
  * SHARED STRUCTURE WIREFRAME (Phase 3, US-022)
  *
