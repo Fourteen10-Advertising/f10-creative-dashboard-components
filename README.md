@@ -1366,6 +1366,11 @@ and is left out of the baseline. A campaign that matches no pattern must return
 `'Unmatched'`. Those rows are kept and flagged, so a new naming pattern is never
 silently bucketed.
 
+`SEGMENT_EXPR` is any SQL expression, so a plain column name works. Prefer a
+governed `campaign_type` column in the client's dataform marts (one definition
+every report groups by) and set `SEGMENT_EXPR: 'campaign_type'`. Keep the inline
+`CASE` only until the mart publishes that column.
+
 What it adds:
 
 - A **Campaign type** dropdown next to Product / Group. It lists the distinct
