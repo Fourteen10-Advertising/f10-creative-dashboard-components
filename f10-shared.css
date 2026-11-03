@@ -179,6 +179,12 @@ tbody tr:hover { background: rgba(75,0,15,0.03); }
 .badge-ob { background: rgba(74,144,226,0.15); color: #1a4a8a; border: 1px solid #4a90e2; }
 .badge-so { background: color-mix(in srgb, var(--stabilo-red) 11%, transparent); color: color-mix(in srgb, var(--stabilo-red) 58%, #000); border: 1px solid var(--stabilo-red); }
 .badge-un { background: rgba(114,114,114,0.12); color: #505050; border: 1px solid #b0b0b0; }
+/* Confidence verdict badges and scatter toggles (confidence-lines US-003) */
+.badge-scale { background: color-mix(in srgb, var(--stabilo) 20%, transparent); color: color-mix(in srgb, var(--stabilo) 45%, #000); border: 1px solid var(--stabilo); }
+.badge-testing { background: rgba(114,114,114,0.12); color: #505050; border: 1px solid #b0b0b0; }
+.badge-cut { background: color-mix(in srgb, var(--stabilo-red) 11%, transparent); color: color-mix(in srgb, var(--stabilo-red) 58%, #000); border: 1px solid var(--stabilo-red); }
+.cl-toggles { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; margin:6px 0 4px; font-size:12px; }
+.cl-lines-note:empty { display:none; }
 
 /* Creative Score bands (US-002). Reuse the existing palette bands so the score
  * badge shares one colour system with the classification badges: strong mirrors

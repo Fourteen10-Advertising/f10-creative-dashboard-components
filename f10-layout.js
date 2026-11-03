@@ -50,6 +50,27 @@ function prodBenchmarkHTML(){
     .map((name) => _benchTiersHTML(getGroupThresholds(name), name)).join('');
   return base + groups;
 }
+/* Verdict header hover and the scatter toggles (confidence-lines US-003). */
+function confidenceVerdictHover(){
+  const cfg = confidenceLinesConfig();
+  if (!cfg) return '';
+  return `Judged against your last ${cfg.baselineDays} days for this product and campaign type, using Meta-reported results, at ${Math.round(cfg.confidence * 100)}% confidence.`;
+}
+function confidenceScatterControlsHTML(){
+  const cfg = confidenceLinesConfig();
+  if (!cfg) return '';
+  const logOn = typeof confidenceLogAxis !== 'undefined' && confidenceLogAxis;
+  const yMode = typeof confidenceYMode !== 'undefined' && confidenceYMode === 'scale' ? 'scale' : 'kill';
+  const e = v => String(v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return `<div class="cl-toggles" id="prod-conf-toggles">
+            <label><input type="checkbox" id="cl-log-toggle"${logOn ? ' checked' : ''} /> Log spend axis</label>
+            <label for="cl-y-mode">Y axis</label>
+            <select id="cl-y-mode"><option value="kill"${yMode === 'kill' ? ' selected' : ''}>${e(cfg.killLabel)}</option><option value="scale"${yMode === 'scale' ? ' selected' : ''}>${e(cfg.scaleLabel)}</option></select>
+          </div>
+          <div class="tc-note cl-lines-note" id="prod-conf-lines-note"></div>
+`;
+}
+
 function prodThresholdLegendHTML(){
   const th = getProductionThresholds();
   if (targetMetric() === 'roas'){
@@ -1034,7 +1055,7 @@ ${confidenceLinesEnabled() ? `      <div class="threshold-controls" id="prod-bas
       <div class="two-col">
         <div class="chart-card" style="margin-bottom:0;"><h3>Lifetime Spend vs ${targetMetricDef().label} &mdash; All Ads</h3>
           <div class="threshold-legend" id="prod-threshold-legend">${prodThresholdLegendHTML()}</div>
-          <div id="scatter-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
+${confidenceLinesEnabled() ? confidenceScatterControlsHTML() : ''}          <div id="scatter-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <div class="chart-wrapper" id="scatter-wrapper" style="display:none; height:320px;"><canvas id="scatter-chart"></canvas></div>
         </div>
         <div class="chart-card" style="margin-bottom:0;"><h3>Ads Launched &amp; Hit Rates by Month</h3>
@@ -1055,7 +1076,7 @@ ${confidenceLinesEnabled() ? `      <div class="threshold-controls" id="prod-bas
         <div class="table-scroll">
           <div id="scatter-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="scatter-table" style="display:none;">
-            <thead><tr><th>Ad</th><th>Campaign</th><th>Adset</th><th>Launch Date</th><th>Lifetime Spend</th><th>Lifetime ${targetMetricDef().label}</th><th>Conversions</th><th class="num">Hold %</th><th class="num">Compl. %</th><th class="num">Out CTR</th><th>Preview</th><th>Classification</th><th>Creative Score</th></tr></thead>
+            <thead><tr><th>Ad</th><th>Campaign</th><th>Adset</th><th>Launch Date</th><th>Lifetime Spend</th><th>Lifetime ${targetMetricDef().label}</th><th>Conversions</th><th class="num">Hold %</th><th class="num">Compl. %</th><th class="num">Out CTR</th><th>Preview</th><th>Classification</th><th>Creative Score</th>${confidenceLinesEnabled() ? `<th${defAttr(confidenceVerdictHover())}>Verdict</th>` : ''}</tr></thead>
             <tbody id="scatter-table-body"></tbody>
           </table>
         </div>

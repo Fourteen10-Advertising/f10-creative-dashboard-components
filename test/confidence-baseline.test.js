@@ -27,6 +27,7 @@ const path = require('path');
 const vm = require('vm');
 const crypto = require('crypto');
 const assert = require('assert');
+const { withSqlVerdicts } = require('./helpers/confidence-sql');
 
 const ROOT = path.join(__dirname, '..');
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
@@ -165,7 +166,7 @@ function answerFor(rows){
   return (sql) => {
     if (/cost_per_kill/.test(sql)) return rows;
     if (/SELECT DISTINCT/.test(sql) && /AS segment/.test(sql)) return [{ segment: 'Prospecting' }, { segment: 'Retargeting' }, { segment: 'Unmatched' }];
-    if (/conf_segment/.test(sql)) return ADS;
+    if (/conf_segment/.test(sql)) return withSqlVerdicts(sql, ADS);
     return [];
   };
 }

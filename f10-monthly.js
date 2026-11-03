@@ -203,6 +203,8 @@ async function loadProduction(){
   if (confidenceLinesEnabled()) ensureConfidenceControls();
   fillProductionInputs();
   refreshProductionThresholdCopy();
+  /* The verdict SQL carries the targets, so the (cached) baseline loads first. */
+  if (confidenceLinesEnabled()) await loadConfidenceBaseline().catch(err => console.error('Confidence baseline error:', err));
   /* CPA is spend / conversions using the dashboard's CONV_EXPR (the same conversion
      definition every other tab uses), NOT the mart's primary-only lifetime_cpa. That
      way each ad is measured by the conversions it actually drives — e.g. SMSF ads on
@@ -219,11 +221,11 @@ async function loadProduction(){
         SUM(video_p25) AS video_p25, SUM(video_p50) AS video_p50, SUM(video_p75) AS video_p75,
         SUM(video_p100) AS video_p100, SUM(video_plays) AS video_plays, SUM(outbound_clicks) AS outbound_clicks${thresholdGroupSelect()}${confidenceAdSelect()}
       FROM \`${PROJECT}.${DATASET}.${TABLE}\`${scopeWhere('WHERE')} GROUP BY 1
-    )
+    )${confidenceScatterCTE()}
     SELECT *,
       ${classificationCaseSQL('lifetime_spend', lifetimeMetricCol())} AS classification,
-      ${creativeScoreSQL('lifetime_spend', lifetimeMetricCol(), metaScoreOpts())} AS creative_score
-    FROM per_ad ORDER BY lifetime_spend DESC`;
+      ${creativeScoreSQL('lifetime_spend', lifetimeMetricCol(), metaScoreOpts())} AS creative_score${confidenceVerdictSelect()}
+    FROM ${confidenceScatterFrom()} ORDER BY lifetime_spend DESC`;
   /* Metric-aware rollup: unique_ads carries the same per-ad lifetime metric the
      scatter uses (lifetime_cpa or lifetime_roas), classified by the single shared
      builder. period_revenue is selected ONLY in ROAS mode so CPA-mode marts are
@@ -287,7 +289,8 @@ async function loadProduction(){
     const isRoas=targetMetric()==='roas';
     const mCol=lifetimeMetricCol();
     const unknownTiers=new Set();
-    scatterData.forEach(r=>{ const mVal=Number(r[mCol])||0, spend=Number(r.lifetime_spend)||0; if(mVal>0||spend>0){ const cls=r.classification; if(!byClass[cls]){ byClass[cls]=[]; unknownTiers.add(cls); } byClass[cls].push({x:spend,y:mVal,label:r.ad_name,_key:adSearchKey(r.ad_name, r.campaign_name, r.adset_name)}); } });
+    const confMode = confidenceLinesEnabled() ? confidenceScatterMode(scatterData) : null;
+    scatterData.forEach(r=>{ const mVal=Number(r[mCol])||0, spend=Number(r.lifetime_spend)||0; if(mVal>0||spend>0){ const cls=r.classification; if(!byClass[cls]){ byClass[cls]=[]; unknownTiers.add(cls); } byClass[cls].push(confidencePoint({x:spend,y:mVal,label:r.ad_name,_key:adSearchKey(r.ad_name, r.campaign_name, r.adset_name)}, r, confMode)); } });
     if(unknownTiers.size) console.warn('Ad Production: unrecognised classification tier(s) from the query:', [...unknownTiers].join(', '));
     const scatterDatasets=Object.entries(byClass).map(([cls,pts])=>{ const col=CLASS_COLOR[cls]||'#b0b0b0'; return { label:cls, data:pts, backgroundColor:col+'bb', borderColor:col, borderWidth:1.5, pointRadius:6, pointHoverRadius:8 }; });
     hideEl('scatter-loading'); showEl('scatter-wrapper');
@@ -303,14 +306,17 @@ async function loadProduction(){
     const guideTh=getProductionThresholds();
     const guideHitSpend=guideTh.HR_SPEND, guideYThresh=isRoas?guideTh.HR_ROAS:guideTh.HR_CPA;
     const yFloor=isRoas?guideYThresh:100;
-    const maxY=Math.ceil(Math.max(...scatterData.filter(r=>Number(r[mCol])>0).map(r=>Number(r[mCol])||0),yFloor)*1.2);
+    const maxY=confMode ? confidenceScatterMaxY(scatterDatasets, confMode) : Math.ceil(Math.max(...scatterData.filter(r=>Number(r[mCol])>0).map(r=>Number(r[mCol])||0),yFloor)*1.2);
+    if (confMode) confidencePinNoConv(scatterDatasets, maxY);
+    confidenceCurveState = confMode ? confidenceCurveFor(confMode, maxSpend) : null;
+    renderConfidenceLinesNote(confMode);
     scatterChart=new Chart(document.getElementById('scatter-chart'),{ type:'scatter', data:{ datasets:scatterDatasets },
       options:{ responsive:true, maintainAspectRatio:false,
-        scales:{ x:{ title:{display:true,text:'Lifetime Spend ($)',font:{size:11}}, min:0, max:maxSpend, ticks:{callback:v=>fmt$(v)} }, y:{ title:{display:true,text:`Lifetime ${targetMetricDef().label} (${isRoas?'x':'$'})`,font:{size:11}}, min:0, max:maxY, ticks:{callback:v=>fmtMetricCell(v)} } },
-        plugins:{ legend:{position:'top',labels:{font:{size:11}}}, tooltip:{callbacks:{label:ctx=>{ const pt=ctx.raw; const mLine=isRoas?`${targetMetricDef().label}: ${fmtMetricCell(pt.y)}`:`CPA: ${pt.y>0?fmt$(pt.y):'N/A'}`; return [`${ctx.dataset.label}`,`Spend: ${fmt$(pt.x)}`,mLine]; }}} } },
+        scales:{ x:Object.assign({ title:{display:true,text:'Lifetime Spend ($)',font:{size:11}}, min:0, max:maxSpend, ticks:{callback:v=>fmt$(v)} }, confMode && confMode.log ? { type:'logarithmic', min:confMode.logMin } : {}), y:{ title:{display:true,text:confMode ? confMode.label : `Lifetime ${targetMetricDef().label} (${isRoas?'x':'$'})`,font:{size:11}}, min:0, max:maxY, ticks:{callback:v=>fmtMetricCell(v)} } },
+        plugins:{ legend:{position:'top',labels:{font:{size:11}}}, tooltip:{callbacks:{label:ctx=>{ const pt=ctx.raw; const mLine=confMode?(pt._noConv?'No conversions yet':`${confMode.label}: ${fmt$(pt.y)}`):isRoas?`${targetMetricDef().label}: ${fmtMetricCell(pt.y)}`:`CPA: ${pt.y>0?fmt$(pt.y):'N/A'}`; return [`${ctx.dataset.label}`,`Spend: ${fmt$(pt.x)}`,mLine]; }}} } },
       plugins:[{ id:'threshold-lines', afterDraw(chart){ const ctx2=chart.ctx,xAxis=chart.scales.x,yAxis=chart.scales.y;
         const xHit=xAxis.getPixelForValue(guideHitSpend); if(xHit>=xAxis.left&&xHit<=xAxis.right){ ctx2.save(); ctx2.setLineDash([5,4]); ctx2.strokeStyle=CHART_SECONDARY; ctx2.lineWidth=1.5; ctx2.beginPath(); ctx2.moveTo(xHit,yAxis.top); ctx2.lineTo(xHit,yAxis.bottom); ctx2.stroke(); ctx2.setLineDash([]); ctx2.fillStyle=CHART_SECONDARY; ctx2.font='10px Archivo, sans-serif'; ctx2.fillText('Ad Hit ('+fmt$(guideHitSpend)+')',xHit+4,yAxis.top+14); ctx2.restore(); }
-        const yThresh=guideYThresh; const yLine=yAxis.getPixelForValue(yThresh); if(yLine>=yAxis.top&&yLine<=yAxis.bottom){ ctx2.save(); ctx2.setLineDash([5,4]); ctx2.strokeStyle='#727272'; ctx2.lineWidth=1.5; ctx2.beginPath(); ctx2.moveTo(xAxis.left,yLine); ctx2.lineTo(xAxis.right,yLine); ctx2.stroke(); ctx2.setLineDash([]); ctx2.fillStyle='#727272'; ctx2.font='10px Archivo, sans-serif'; ctx2.fillText((isRoas?'ROAS Target (':'CPA Limit (')+fmtMetricCell(yThresh)+')',xAxis.left+4,yLine-4); ctx2.restore(); } } }] });
+        const yThresh=guideYThresh; const yLine=confMode?NaN:yAxis.getPixelForValue(yThresh); if(yLine>=yAxis.top&&yLine<=yAxis.bottom){ ctx2.save(); ctx2.setLineDash([5,4]); ctx2.strokeStyle='#727272'; ctx2.lineWidth=1.5; ctx2.beginPath(); ctx2.moveTo(xAxis.left,yLine); ctx2.lineTo(xAxis.right,yLine); ctx2.stroke(); ctx2.setLineDash([]); ctx2.fillStyle='#727272'; ctx2.font='10px Archivo, sans-serif'; ctx2.fillText((isRoas?'ROAS Target (':'CPA Limit (')+fmtMetricCell(yThresh)+')',xAxis.left+4,yLine-4); ctx2.restore(); } } }].concat(confMode ? [confidenceLinesPlugin()] : []) });
     followAdSearch('scatter', scatterChart);
     const months=monthlyData.map(r=>r.launch_month).reverse();
     const adsArr=monthlyData.map(r=>Number(r.ads_launched)).reverse();
@@ -331,7 +337,7 @@ async function loadProduction(){
     renderPagedTable('production-table-body', prodRows, 20, `<tr style="font-weight:600; background:var(--paper);"><td>Grand Total</td><td>${fmt$(gSpend)}</td><td>${gAds}</td><td>${gHR}</td><td>${fmtPct(gHR/gAds*100)}</td><td>${gOB}</td><td>${fmtPct(gOB/gAds*100)}</td><td>–</td><td>${fmtNum(gConv)}</td><td>${gSO}</td><td>${fmtPct(gSO/gAds*100)}</td></tr>`);
     hideEl('production-table-loading'); showEl('production-table');
     renderPagedTable('scatter-table-body', scatterData.map(r=>{ const cls=r.classification; const badgeClass=cls==='Home Run'?'badge-hr':cls==='On Base'?'badge-ob':cls==='Strike Out'?'badge-so':'badge-un'; const ce={ impressions:Number(r.impressions)||0, clicks:Number(r.clicks)||0, video_15s:Number(r.video_15s)||0, video_p25:Number(r.video_p25)||0, video_p50:Number(r.video_p50)||0, video_p75:Number(r.video_p75)||0, video_p100:Number(r.video_p100)||0, video_plays:Number(r.video_plays)||0, outbound_clicks:Number(r.outbound_clicks)||0 }; const cr=creativeRates(ce); registerAdMetrics(r.ad_id, ce, undefined, creativeScoreHover(r.creative_score, { spend:r.lifetime_spend, metric:r[mCol], hook:cr.hook, hold:cr.hold, ctr:cr.ctr, completion:cr.completion, hasVideo:cr.hasVideo, activeDays:r.active_days }, metaScoreOpts()));
-      return `<tr ${adNameAttr(r.ad_name, r.campaign_name, r.adset_name)}><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adset_name}">${r.adset_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmt$(r.lifetime_spend)}</td><td>${r[mCol]&&Number(r[mCol])>0?fmtMetricCell(r[mCol]):'–'}</td><td>${fmtNum(r.total_conversions)}</td><td class="num">${cr.hold!=null?fmtPct(cr.hold,2):'–'}</td><td class="num">${cr.completion!=null?fmtPct(cr.completion,2):'–'}</td><td class="num">${cr.outboundCtr!=null?fmtPct(cr.outboundCtr,2):'–'}</td><td>${r.creative_link?`<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.creative_link}" target="_blank">Preview</a>`:'–'}</td><td><span class="badge ${badgeClass}">${cls}</span></td><td>${creativeScoreBadge(r.creative_score)}</td></tr>`; }));
+      return `<tr ${adNameAttr(r.ad_name, r.campaign_name, r.adset_name)}><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adset_name}">${r.adset_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmt$(r.lifetime_spend)}</td><td>${r[mCol]&&Number(r[mCol])>0?fmtMetricCell(r[mCol]):'–'}</td><td>${fmtNum(r.total_conversions)}</td><td class="num">${cr.hold!=null?fmtPct(cr.hold,2):'–'}</td><td class="num">${cr.completion!=null?fmtPct(cr.completion,2):'–'}</td><td class="num">${cr.outboundCtr!=null?fmtPct(cr.outboundCtr,2):'–'}</td><td>${r.creative_link?`<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.creative_link}" target="_blank">Preview</a>`:'–'}</td><td><span class="badge ${badgeClass}">${cls}</span></td><td>${creativeScoreBadge(r.creative_score)}</td>${confidenceLinesEnabled() ? confidenceVerdictCell(r.verdict) : ''}</tr>`; }));
     hideEl('scatter-table-loading'); showEl('scatter-table');
   } catch(err){ console.error('Production error:',err); }
 }
@@ -364,6 +370,10 @@ function ensureConfidenceControls(){
     resetConfidenceTargets(confidenceSelectedKey());
     loadProduction();
   });
+  const logEl = document.getElementById('cl-log-toggle');
+  if (logEl) logEl.addEventListener('change', () => { confidenceLogAxis = !!logEl.checked; loadProduction(); });
+  const yEl = document.getElementById('cl-y-mode');
+  if (yEl) yEl.addEventListener('change', () => { confidenceYMode = yEl.value === 'scale' ? 'scale' : 'kill'; loadProduction(); });
   loadConfidenceSegments(sel);
 }
 
@@ -406,15 +416,141 @@ async function loadConfidenceBaseline(){
   return _confidenceBaselinePromise;
 }
 
-/* Grade the visible scatter rows against the selected cell's targets. */
+/* Count the visible scatter rows by their SQL verdict column. */
 function confidenceVerdictCounts(rows){
   const out = { Scale: 0, Testing: 0, Cut: 0, ungraded: 0 };
   (rows || []).forEach(r => {
-    const v = confidenceGradeAd({ group: _confStr(r.conf_group), segment: _confStr(r.conf_segment),
-      spend: r.lifetime_spend, killConv: r.kill_conv, scaleConv: r.scale_conv });
+    const v = _confStr(r.verdict);
     if (v && out[v] !== undefined) out[v]++; else out.ungraded++;
   });
   return out;
+}
+
+/* ── Verdict column and confidence lines (confidence-lines US-003) ──
+ * The verdict is computed once, in SQL: a per_ad_conf CTE attaches each ad's own
+ * group x segment kill and scale targets (session edits included) and
+ * confidenceVerdictSQL grades it. The table, the counts and the chart all read
+ * that column; nothing here recomputes a verdict. All inert without config. */
+let confidenceLogAxis = false;
+let confidenceYMode = 'kill';
+let confidenceCurveState = null;
+const CONFIDENCE_VERDICT_BADGE = { Scale: 'badge-scale', Testing: 'badge-testing', Cut: 'badge-cut' };
+
+/* CASE over every baseline cell that has a usable target for which ('kill' or
+ * 'scale'). NULL when no cell has one. */
+function confidenceTargetCaseSQL(which){
+  const whens = Object.keys(_confidenceBaseline.rows).map(k => {
+    const b = _confidenceBaseline.rows[k];
+    const t = getConfidenceTargets(k);
+    if (!t || !(t[which] > 0)) return null;
+    return `WHEN IFNULL(conf_group, '') = ${sqlQuote(b.group == null ? '' : b.group)} AND conf_segment = ${sqlQuote(b.segment)} THEN ${_sqlNum(t[which])}`;
+  }).filter(Boolean);
+  return whens.length ? `CASE ${whens.join(' ')} END` : 'CAST(NULL AS FLOAT64)';
+}
+function confidenceScatterCTE(){
+  if (!confidenceLinesConfig()) return '';
+  return `,
+    per_ad_conf AS (
+      SELECT *, ${confidenceTargetCaseSQL('kill')} AS kill_target, ${confidenceTargetCaseSQL('scale')} AS scale_target FROM per_ad
+    )`;
+}
+function confidenceScatterFrom(){ return confidenceLinesConfig() ? 'per_ad_conf' : 'per_ad'; }
+/* Scale is tested first inside confidenceVerdictSQL, so sub evidence outranks
+ * lead evidence when an ad qualifies for both. NULL when the ad's cell has no
+ * baseline. */
+function confidenceVerdictSelect(){
+  const cfg = confidenceLinesConfig();
+  if (!cfg) return '';
+  return `,
+      IF(kill_target IS NULL AND scale_target IS NULL, CAST(NULL AS STRING), ${confidenceVerdictSQL('lifetime_spend', 'kill_conv', 'kill_target', { conf: cfg.confidence, scaleConvCol: 'scale_conv', scaleTargetCol: 'scale_target' })}) AS verdict`;
+}
+function confidenceVerdictCell(v){
+  const s = _confStr(v);
+  if (!s || !CONFIDENCE_VERDICT_BADGE[s]) return '<td><span class="tc-note">No baseline</span></td>';
+  return `<td><span class="badge ${CONFIDENCE_VERDICT_BADGE[s]}">${s}</span></td>`;
+}
+
+/* Chart mode for the selected cell: which cost per conversion the y axis shows,
+ * whether spend is on a log axis, and the target the line is drawn from. */
+function confidenceScatterMode(rows){
+  const cfg = confidenceLinesConfig();
+  if (!cfg) return null;
+  const which = confidenceYMode === 'scale' ? 'scale' : 'kill';
+  const key = confidenceSelectedKey();
+  const t = key ? getConfidenceTargets(key) : null;
+  const minPos = Math.min(Infinity, ...(rows || []).map(r => Number(r.lifetime_spend) || 0).filter(v => v > 0));
+  const logMin = isFinite(minPos) ? Math.max(1, Math.pow(10, Math.floor(Math.log10(minPos)))) : 1;
+  return {
+    cfg, which, key, log: !!confidenceLogAxis,
+    target: t ? t[which] : null,
+    label: which === 'scale' ? cfg.scaleLabel : cfg.killLabel,
+    convCol: which === 'scale' ? 'scale_conv' : 'kill_conv',
+    logMin,
+  };
+}
+function confidencePoint(base, r, mode){
+  if (!mode) return base;
+  const conv = Number(r[mode.convCol]) || 0;
+  if (conv > 0) return Object.assign(base, { y: base.x / conv });
+  return Object.assign(base, { y: null, _noConv: true });
+}
+function confidenceScatterMaxY(datasets, mode){
+  const ys = [];
+  datasets.forEach(d => d.data.forEach(p => { if (p.y != null && p.y > 0) ys.push(p.y); }));
+  if (mode.target > 0) ys.push(mode.target * 2);
+  return Math.max(1, Math.ceil(Math.max(0, ...ys) * 1.2));
+}
+/* Ads with no conversions of the selected kind sit along the top edge. */
+function confidencePinNoConv(datasets, maxY){
+  datasets.forEach(d => d.data.forEach(p => { if (p._noConv) p.y = maxY; }));
+}
+function confidenceCurveFor(mode, maxSpend){
+  if (!mode || !mode.key || !(mode.target > 0)) return null;
+  const conf = mode.cfg.confidence;
+  let points;
+  if (mode.log){
+    const lo = mode.logMin, hi = Math.max(lo, Number(maxSpend) || 0), n = 80;
+    points = [];
+    for (let i = 0; i <= n; i++){
+      const s = lo * Math.pow(hi / lo, i / n);
+      points.push(confidenceCurvePoints(mode.target, s, s, conf)[0]);
+    }
+  } else {
+    points = confidenceCurvePoints(mode.target, 0, maxSpend, conf, { steps: 80 });
+  }
+  return { key: mode.key, which: mode.which, target: mode.target, log: mode.log, points };
+}
+function renderConfidenceLinesNote(mode){
+  const el = document.getElementById('prod-conf-lines-note');
+  if (!el) return;
+  if (!mode) el.textContent = '';
+  else if (!mode.key) el.textContent = 'Pick a product and campaign type to see the lines';
+  else if (!(mode.target > 0)) el.textContent = 'Not enough data for a baseline, so no lines';
+  else el.textContent = '';
+}
+/* Draws the selected line from confidenceCurveState after the points, so the
+ * ad search filter (which only touches the point datasets) never removes it. */
+function confidenceLinesPlugin(){
+  return { id: 'confidence-lines', afterDraw(chart){
+    const st = confidenceCurveState;
+    if (!st || !st.points || !st.points.length) return;
+    const ctx2 = chart.ctx, xA = chart.scales.x, yA = chart.scales.y, area = chart.chartArea;
+    const color = st.which === 'kill' ? CHART_NEGATIVE : CHART_PRIMARY;
+    ctx2.save();
+    if (area){ ctx2.beginPath(); ctx2.rect(area.left, area.top, area.right - area.left, area.bottom - area.top); ctx2.clip(); }
+    ctx2.strokeStyle = color; ctx2.lineWidth = 2; ctx2.beginPath();
+    let pen = false, last = null;
+    st.points.forEach(p => {
+      const v = p[st.which];
+      if (v == null || !(p.spend > 0)){ pen = false; return; }
+      const x = xA.getPixelForValue(p.spend), y = yA.getPixelForValue(v);
+      if (pen) ctx2.lineTo(x, y); else ctx2.moveTo(x, y);
+      pen = true; last = { x, y };
+    });
+    ctx2.stroke();
+    if (last){ ctx2.fillStyle = color; ctx2.font = '10px Archivo, sans-serif'; ctx2.fillText(st.which === 'kill' ? 'Cut line' : 'Scale line', last.x - 52, last.y - 6); }
+    ctx2.restore();
+  } };
 }
 
 function _confTargetField(id, label, value, conv){

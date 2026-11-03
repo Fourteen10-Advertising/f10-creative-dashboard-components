@@ -1385,7 +1385,8 @@ What it adds:
 - A **Your last 90 days (Meta-reported)** panel on Ad Production. Once a single
   product and campaign type are picked it shows the cost per kill and cost per
   scale targets as editable inputs, and how many visible ads grade Scale,
-  Testing and Cut at those targets (with the US-001 `confidenceVerdict`).
+  Testing and Cut at those targets. The counts read the `verdict` column of
+  the Ad Production query, so they always match the Verdict column.
   Editing a target re-grades the page for this session only; **Reset to
   baseline** or a reload puts the baseline back.
 - A cell with fewer than 50 conversions shows "Not enough data for a baseline"
@@ -1394,11 +1395,44 @@ What it adds:
   much and points to the Unmatched campaign type so the names or the mapping
   can be fixed.
 
-The Verdict column in the tables and the lines on the scatter chart come in a
-later story. Helpers (all in `f10-utils.js`): `confidenceLinesConfig`,
+### Verdict column and confidence lines
+
+With `CONFIDENCE_LINES` set, Ad Production also gets:
+
+- A sortable **Verdict** column in the per-ad table, after Creative Score. It
+  reads Scale, Testing or Cut. The verdict is computed once, in SQL: a
+  `per_ad_conf` CTE adds `kill_target` and `scale_target` for each ad's product
+  and campaign type (from the baseline, or an edited target), and
+  `confidenceVerdictSQL` turns them into a `verdict` column. Cut comes from the
+  kill conversion (plan assigned for Mosh) and Scale from the scale conversion
+  (subs for Mosh). Scale is tested first, so it wins when both qualify. An ad
+  with no baseline for its cell shows "No baseline". The header hover reads
+  "Judged against your last 90 days for this product and campaign type, using
+  Meta-reported results, at 90% confidence." (the day count and confidence come
+  from the config).
+- A **Log spend axis** checkbox and a **Y axis** select on the scatter. The y
+  axis is cost per kill conversion or cost per scale conversion. Ads with none
+  of that conversion yet sit on the top edge of the chart.
+- The matching curve for the selected product and campaign type: the Cut line
+  on the kill view, the Scale line on the scale view. Each point is
+  `confidenceCurvePoints(target, ...)`, so an ad above the Cut line grades Cut
+  and an ad below the Scale line grades Scale.
+- When Product / Group or Campaign type is All, the Verdict column still shows
+  (each ad is judged against its own cell), the curves are hidden and the chart
+  note reads "Pick a product and campaign type to see the lines".
+
+The ad search and the status filters apply to the Verdict column, the counts
+and the scatter points, because they all come from the same query. The Home
+Run / On Base / Strike Out tiers, Creative Score and the threshold panel are
+unchanged. With no `CONFIDENCE_LINES` config the page and its SQL are byte for
+byte the same as before.
+
+Helpers (all in `f10-utils.js`): `confidenceLinesConfig`,
 `confidenceBaselineSQL(endIso)`, `confidenceBaselineWindow(endIso, days)`,
 `getConfidenceTargets(key)`, `setConfidenceTarget(key, 'kill' | 'scale', v)`,
-`resetConfidenceTargets(key)` and `confidenceGradeAd(ad)`.
+`resetConfidenceTargets(key)`, `confidenceGradeAd(ad)`,
+`confidenceVerdictSQL(...)` and `confidenceCurvePoints(...)`. Tests:
+`test/confidence-production.test.js`.
 
 ## Co-branding (optional)
 
