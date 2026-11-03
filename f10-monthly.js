@@ -251,7 +251,10 @@ async function loadProduction(){
     FROM classified GROUP BY 1, 2 ORDER BY 2 DESC`;
   const term = adSearchTerm;
   try {
-    const [scatterData, monthlyData] = await Promise.all([runQuery(scatterSQL), runQuery(monthlySQL)]);
+    const reachWin = confidenceReachActive() ? confidenceReachWindow(confidenceDashboardDays()) : null;
+    const reachSQL = reachWin ? confidenceReachSQL(reachWin) : null;
+    const [scatterData, monthlyData, reachRows] = await Promise.all([runQuery(scatterSQL), runQuery(monthlySQL),
+      reachSQL ? runQuery(reachSQL).catch(err => { console.error('Reach query error:', err); return null; }) : Promise.resolve(null)]);
     if(term !== adSearchTerm) return;  /* a newer search is already reloading this tab */
     if (confidenceLinesEnabled()){
       try { await loadConfidenceBaseline(); renderConfidenceBaselinePanel(adSearchFilter(scatterData, r=>adSearchKey(r.ad_name, r.campaign_name, r.adset_name))); }
@@ -293,8 +296,11 @@ async function loadProduction(){
     scatterData.forEach(r=>{ const mVal=Number(r[mCol])||0, spend=Number(r.lifetime_spend)||0; if(mVal>0||spend>0){ const cls=r.classification; if(!byClass[cls]){ byClass[cls]=[]; unknownTiers.add(cls); } byClass[cls].push(confidencePoint({x:spend,y:mVal,label:r.ad_name,_key:adSearchKey(r.ad_name, r.campaign_name, r.adset_name)}, r, confMode)); } });
     if(unknownTiers.size) console.warn('Ad Production: unrecognised classification tier(s) from the query:', [...unknownTiers].join(', '));
     const scatterDatasets=Object.entries(byClass).map(([cls,pts])=>{ const col=CLASS_COLOR[cls]||'#b0b0b0'; return { label:cls, data:pts, backgroundColor:col+'bb', borderColor:col, borderWidth:1.5, pointRadius:6, pointHoverRadius:8 }; });
+    const reachView = (confMode && reachWin && reachRows) ? confidenceReachView(scatterData, reachRows, confMode) : null;
+    renderConfidenceReachNotes(reachView, reachWin, reachRows);
     hideEl('scatter-loading'); showEl('scatter-wrapper');
     if(scatterChart) scatterChart.destroy();
+    if (reachView){ renderConfidenceLinesNote(confMode); scatterChart = confidenceReachChart(reachView); } else {
     const topSpend=Math.max(0, ...scatterData.map(r=>Number(r.lifetime_spend)||0));
     const maxSpend=Math.round(scatterMaxSpend(topSpend));
     /* Y-axis max from the ACTIVE metric's values, not the CPA range. The floor
@@ -317,6 +323,7 @@ async function loadProduction(){
       plugins:[{ id:'threshold-lines', afterDraw(chart){ const ctx2=chart.ctx,xAxis=chart.scales.x,yAxis=chart.scales.y;
         const xHit=xAxis.getPixelForValue(guideHitSpend); if(xHit>=xAxis.left&&xHit<=xAxis.right){ ctx2.save(); ctx2.setLineDash([5,4]); ctx2.strokeStyle=CHART_SECONDARY; ctx2.lineWidth=1.5; ctx2.beginPath(); ctx2.moveTo(xHit,yAxis.top); ctx2.lineTo(xHit,yAxis.bottom); ctx2.stroke(); ctx2.setLineDash([]); ctx2.fillStyle=CHART_SECONDARY; ctx2.font='10px Archivo, sans-serif'; ctx2.fillText('Ad Hit ('+fmt$(guideHitSpend)+')',xHit+4,yAxis.top+14); ctx2.restore(); }
         const yThresh=guideYThresh; const yLine=confMode?NaN:yAxis.getPixelForValue(yThresh); if(yLine>=yAxis.top&&yLine<=yAxis.bottom){ ctx2.save(); ctx2.setLineDash([5,4]); ctx2.strokeStyle='#727272'; ctx2.lineWidth=1.5; ctx2.beginPath(); ctx2.moveTo(xAxis.left,yLine); ctx2.lineTo(xAxis.right,yLine); ctx2.stroke(); ctx2.setLineDash([]); ctx2.fillStyle='#727272'; ctx2.font='10px Archivo, sans-serif'; ctx2.fillText((isRoas?'ROAS Target (':'CPA Limit (')+fmtMetricCell(yThresh)+')',xAxis.left+4,yLine-4); ctx2.restore(); } } }].concat(confMode ? [confidenceLinesPlugin()] : []) });
+    }
     followAdSearch('scatter', scatterChart);
     const months=monthlyData.map(r=>r.launch_month).reverse();
     const adsArr=monthlyData.map(r=>Number(r.ads_launched)).reverse();
@@ -374,6 +381,8 @@ function ensureConfidenceControls(){
   if (logEl) logEl.addEventListener('change', () => { confidenceLogAxis = !!logEl.checked; loadProduction(); });
   const yEl = document.getElementById('cl-y-mode');
   if (yEl) yEl.addEventListener('change', () => { confidenceYMode = yEl.value === 'scale' ? 'scale' : 'kill'; loadProduction(); });
+  const xEl = document.getElementById('cl-x-mode');
+  if (xEl) xEl.addEventListener('change', () => { confidenceXMode = xEl.value === 'cpmr' ? 'cpmr' : 'spend'; if (logEl) logEl.disabled = confidenceXMode === 'cpmr'; loadProduction(); });
   loadConfidenceSegments(sel);
 }
 
@@ -550,6 +559,173 @@ function confidenceLinesPlugin(){
     ctx2.stroke();
     if (last){ ctx2.fillStyle = color; ctx2.font = '10px Archivo, sans-serif'; ctx2.fillText(st.which === 'kill' ? 'Cut line' : 'Scale line', last.x - 52, last.y - 6); }
     ctx2.restore();
+  } };
+}
+
+/* Cost per 1,000 reached view (confidence-lines US-007).
+ * With CONFIDENCE_LINES.REACH_TABLE set, the Ad Production scatter gets a third
+ * x axis option: each ad's Meta-reported cost per 1,000 people reached (CPMr),
+ * read from the ad_window_reach mart in the client's own marts dataset. The
+ * reach query only runs while that option is picked. The y axis stays the
+ * lifetime cost per kill or scale conversion. Lines sit at the selected cell's
+ * median CPMr and at its target, splitting the chart into four quadrants. A Cut
+ * ad in Reach play gets a marker: cheap reach may mean it is finding new people
+ * that last-click conversions do not credit. Ads with no reach row are listed
+ * and left off the chart. All inert without REACH_TABLE. */
+let confidenceXMode = 'spend';
+let confidenceQuadState = null;
+const CONFIDENCE_REACH_WINDOW_LABEL = { last_28d: '28 day', last_90d: '90 day', lifetime: 'lifetime' };
+const CONFIDENCE_QUADRANTS = { efficient: 'Efficient growth', reach: 'Reach play', precision: 'Precision', cut: 'Cut candidate' };
+const CONFIDENCE_REACH_MARK_LABEL = 'Cut, may be bringing in new people';
+const CONFIDENCE_REACH_MARK_NOTE = 'Cut on cost per conversion, but it reaches people cheaply, so it may be bringing in new people. Check before switching it off.';
+
+function confidenceReachEnabled(){ const cfg = confidenceLinesConfig(); return !!(cfg && cfg.reachTable); }
+function confidenceReachActive(){ return confidenceReachEnabled() && confidenceXMode === 'cpmr'; }
+/* The dashboard window length in days, from the window control. */
+function confidenceDashboardDays(){
+  const el = document.getElementById('ctrl-length');
+  const n = el ? parseInt(el.value, 10) : NaN;
+  return n > 0 ? n : null;
+}
+/* The reach window closest to the dashboard window: up to 59 days reads the
+ * 28 day window, up to 180 days the 90 day window, anything longer (or no
+ * window control) the lifetime row. */
+function confidenceReachWindow(days){
+  if (!(days > 0)) return 'lifetime';
+  if (days <= 59) return 'last_28d';
+  if (days <= 180) return 'last_90d';
+  return 'lifetime';
+}
+/* Latest reach row per ad for one window, limited to the ads in the page
+ * scope. Reads only the client's reach mart and the dashboard's own table. */
+function confidenceReachSQL(win){
+  const cfg = confidenceLinesConfig();
+  if (!cfg || !cfg.reachTable || !CONFIDENCE_REACH_WINDOW_LABEL[win]) return null;
+  return `SELECT CAST(ad_id AS STRING) AS ad_id, spend, impressions, reach, cpmr, as_of_date
+    FROM \`${PROJECT}.${DATASET}.${cfg.reachTable}\`
+    WHERE is_latest AND \`window\` = ${sqlQuote(win)}
+      AND CAST(ad_id AS STRING) IN (SELECT DISTINCT CAST(ad_id AS STRING) FROM \`${PROJECT}.${DATASET}.${TABLE}\`${scopeWhere('WHERE')})`;
+}
+function confidenceMedian(vals){
+  const v = vals.filter(x => x > 0).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const mid = Math.floor(v.length / 2);
+  return v.length % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2;
+}
+/* Ties count as the low side. An ad with no conversions has no cost per
+ * conversion yet, so it reads as the high side. */
+function confidenceQuadrant(p, median, target){
+  const lowX = p.x <= median;
+  const lowY = !p._noConv && p.y != null && p.y <= target;
+  if (lowX) return lowY ? CONFIDENCE_QUADRANTS.efficient : CONFIDENCE_QUADRANTS.reach;
+  return lowY ? CONFIDENCE_QUADRANTS.precision : CONFIDENCE_QUADRANTS.cut;
+}
+function confidenceReachColors(){ return { Scale: CHART_PRIMARY, Testing: '#b0b0b0', Cut: CHART_NEGATIVE, 'No baseline': '#d6d6d6' }; }
+function _confEsc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+/* Build the CPMr chart model from the scatter rows (which carry the SQL
+ * verdict) and the reach rows. Joined in the browser on ad_id. */
+function confidenceReachView(rows, reachRows, mode){
+  const byAd = {};
+  (reachRows || []).forEach(r => { const id = _confStr(r.ad_id); if (id != null) byAd[String(id)] = r; });
+  const pts = [], missing = [];
+  let asOf = null;
+  (rows || []).forEach(r => {
+    const spend = Number(_confStr(r.lifetime_spend)) || 0;
+    if (!(spend > 0)) return;
+    const key = adSearchKey(r.ad_name, r.campaign_name, r.adset_name);
+    const rr = byAd[String(_confStr(r.ad_id))];
+    const cpmr = rr ? Number(_confStr(rr.cpmr)) : NaN;
+    if (!(cpmr > 0)){ missing.push({ name: r.ad_name, _key: key }); return; }
+    const d = _confStr(rr.as_of_date);
+    if (d && (!asOf || String(d) > asOf)) asOf = String(d);
+    const conv = Number(_confStr(r[mode.convCol])) || 0;
+    pts.push({ x: cpmr, y: conv > 0 ? spend / conv : null, _noConv: !(conv > 0), label: r.ad_name, _key: key,
+      _spend: spend, _reach: Number(_confStr(rr.reach)) || 0, _verdict: _confStr(r.verdict),
+      _cell: confidenceKey(r.conf_group == null ? '' : _confStr(r.conf_group), _confStr(r.conf_segment)) });
+  });
+  /* The median is over the selected cell's ads with reach, before any ad
+   * search, so a search never moves the line. */
+  const cellPts = mode.key ? pts.filter(p => p._cell === mode.key) : [];
+  const median = confidenceMedian(cellPts.map(p => p.x));
+  const quad = (mode.key && mode.target > 0 && median != null) ? { median, target: mode.target } : null;
+  const colors = confidenceReachColors();
+  const groups = { Scale: [], Testing: [], Cut: [], 'No baseline': [] };
+  const marked = [];
+  pts.forEach(p => {
+    if (quad){
+      p._quadrant = confidenceQuadrant(p, quad.median, quad.target);
+      if (p._verdict === 'Cut' && p._quadrant === CONFIDENCE_QUADRANTS.reach){ p._newPeople = true; marked.push(p); return; }
+    }
+    (groups[p._verdict] || groups['No baseline']).push(p);
+  });
+  const datasets = Object.keys(groups).filter(k => groups[k].length).map(k => ({
+    label: k, data: groups[k], backgroundColor: colors[k] + 'bb', borderColor: colors[k], borderWidth: 1.5, pointRadius: 6, pointHoverRadius: 8 }));
+  if (marked.length) datasets.push({ label: CONFIDENCE_REACH_MARK_LABEL, data: marked, pointStyle: 'triangle',
+    backgroundColor: colors.Cut, borderColor: '#000000', borderWidth: 1.5, pointRadius: 9, pointHoverRadius: 11 });
+  const maxX = Math.max(1, Math.ceil(Math.max(0, ...pts.map(p => p.x), quad ? quad.median : 0) * 1.2));
+  const maxY = confidenceScatterMaxY(datasets, mode);
+  confidencePinNoConv(datasets, maxY);
+  return { mode, datasets, maxX, maxY, quad, missing, asOf, median, points: pts };
+}
+
+function renderConfidenceReachNotes(view, win, reachRows){
+  const note = document.getElementById('prod-reach-note');
+  const miss = document.getElementById('prod-reach-missing');
+  if (!note || !miss) return;
+  if (!win){ note.textContent = ''; miss.innerHTML = ''; return; }
+  if (!reachRows){ note.textContent = 'Could not load reach data, so the chart shows lifetime spend.'; miss.innerHTML = ''; return; }
+  if (!view){ note.textContent = ''; miss.innerHTML = ''; return; }
+  note.textContent = `Using the ${CONFIDENCE_REACH_WINDOW_LABEL[win]} reach window` + (view.asOf ? ` (as of ${view.asOf})` : '')
+    + '. Reach is Meta-reported, so read it as an index. Cost per conversion stays lifetime.';
+  const shown = adSearchFilter(view.missing, m => m._key);
+  miss.innerHTML = shown.length
+    ? `No reach data yet (${shown.length}): ` + shown.map(m => _confEsc(m.name)).join(', ')
+    : '';
+}
+
+function confidenceReachTooltip(pt, setLabel, mode){
+  const lines = [setLabel, `Cost per 1,000 reached: ${fmt$(pt.x)}`, `Spend: ${fmt$(pt._spend)}`,
+    pt._noConv ? 'No conversions yet' : `${mode.label}: ${fmt$(pt.y)}`];
+  if (pt._quadrant) lines.push(`Quadrant: ${pt._quadrant}`);
+  if (pt._newPeople) lines.push(CONFIDENCE_REACH_MARK_NOTE);
+  return lines;
+}
+
+function confidenceReachChart(view){
+  confidenceCurveState = null;
+  confidenceQuadState = view.quad;
+  const mode = view.mode;
+  return new Chart(document.getElementById('scatter-chart'), { type: 'scatter', data: { datasets: view.datasets },
+    options: { responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { title: { display: true, text: 'Cost per 1,000 reached ($)', font: { size: 11 } }, min: 0, max: view.maxX, ticks: { callback: v => fmt$(v) } },
+        y: { title: { display: true, text: mode.label, font: { size: 11 } }, min: 0, max: view.maxY, ticks: { callback: v => fmtMetricCell(v) } } },
+      plugins: { legend: { position: 'top', labels: { font: { size: 11 } } },
+        tooltip: { callbacks: { label: c => confidenceReachTooltip(c.raw, c.dataset.label, mode) } } } },
+    plugins: [confidenceQuadrantPlugin()] });
+}
+
+/* Median CPMr and target lines plus the four quadrant names. Drawn from
+ * confidenceQuadState, so the ad search filter never removes them. */
+function confidenceQuadrantPlugin(){
+  return { id: 'confidence-quadrants', afterDraw(chart){
+    const st = confidenceQuadState;
+    if (!st) return;
+    const g = chart.ctx, a = chart.chartArea;
+    const x = chart.scales.x.getPixelForValue(st.median), y = chart.scales.y.getPixelForValue(st.target);
+    g.save();
+    g.strokeStyle = '#727272'; g.lineWidth = 1.5;
+    g.beginPath(); g.moveTo(x, a.top); g.lineTo(x, a.bottom); g.stroke();
+    g.beginPath(); g.moveTo(a.left, y); g.lineTo(a.right, y); g.stroke();
+    g.fillStyle = '#727272'; g.font = '10px Archivo, sans-serif';
+    g.fillText(CONFIDENCE_QUADRANTS.efficient, a.left + 4, a.bottom - 6);
+    g.fillText(CONFIDENCE_QUADRANTS.reach, a.left + 4, a.top + 12);
+    g.fillText(CONFIDENCE_QUADRANTS.precision, a.right - 70, a.bottom - 6);
+    g.fillText(CONFIDENCE_QUADRANTS.cut, a.right - 80, a.top + 12);
+    g.fillText('Median CPMr ' + fmt$(st.median), x + 4, a.top + 26);
+    g.fillText('Target ' + fmt$(st.target), a.left + 4, y - 4);
+    g.restore();
   } };
 }
 

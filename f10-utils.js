@@ -1804,6 +1804,10 @@ function confidenceLinesConfig(){
     confidence: _confidenceLevel(c.CONFIDENCE),
     killLabel: str(c.KILL_LABEL) || 'Cost per kill conversion',
     scaleLabel: str(c.SCALE_LABEL) || 'Cost per scale conversion',
+    /* US-007: optional per-ad reach mart in the client's own marts dataset
+     * (built by f10-dataform as ad_window_reach). A bare table name only; any
+     * other value is ignored, so no CPMr option and no reach query. */
+    reachTable: (str(c.REACH_TABLE) && /^[A-Za-z_][A-Za-z0-9_]*$/.test(str(c.REACH_TABLE))) ? str(c.REACH_TABLE) : null,
   };
 }
 function confidenceLinesEnabled(){ return !!confidenceLinesConfig(); }

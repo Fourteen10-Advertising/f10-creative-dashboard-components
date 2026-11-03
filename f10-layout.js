@@ -62,12 +62,20 @@ function confidenceScatterControlsHTML(){
   const logOn = typeof confidenceLogAxis !== 'undefined' && confidenceLogAxis;
   const yMode = typeof confidenceYMode !== 'undefined' && confidenceYMode === 'scale' ? 'scale' : 'kill';
   const e = v => String(v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return `<div class="cl-toggles" id="prod-conf-toggles">
+  /* US-007: the Cost per 1,000 reached x axis, only when REACH_TABLE is set. */
+  const xMode = typeof confidenceXMode !== 'undefined' && confidenceXMode === 'cpmr' ? 'cpmr' : 'spend';
+  const xSel = cfg.reachTable ? `
+            <label for="cl-x-mode">X axis</label>
+            <select id="cl-x-mode"><option value="spend"${xMode === 'spend' ? ' selected' : ''}>Lifetime spend</option><option value="cpmr"${xMode === 'cpmr' ? ' selected' : ''}>Cost per 1,000 reached</option></select>` : '';
+  const reachNotes = cfg.reachTable ? `
+          <div class="tc-note cl-lines-note" id="prod-reach-note"></div>
+          <div class="tc-note cl-lines-note" id="prod-reach-missing"></div>` : '';
+  return `<div class="cl-toggles" id="prod-conf-toggles">${xSel}
             <label><input type="checkbox" id="cl-log-toggle"${logOn ? ' checked' : ''} /> Log spend axis</label>
             <label for="cl-y-mode">Y axis</label>
             <select id="cl-y-mode"><option value="kill"${yMode === 'kill' ? ' selected' : ''}>${e(cfg.killLabel)}</option><option value="scale"${yMode === 'scale' ? ' selected' : ''}>${e(cfg.scaleLabel)}</option></select>
           </div>
-          <div class="tc-note cl-lines-note" id="prod-conf-lines-note"></div>
+          <div class="tc-note cl-lines-note" id="prod-conf-lines-note"></div>${reachNotes}
 `;
 }
 

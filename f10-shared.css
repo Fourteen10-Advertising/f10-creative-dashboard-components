@@ -185,6 +185,8 @@ tbody tr:hover { background: rgba(75,0,15,0.03); }
 .badge-cut { background: color-mix(in srgb, var(--stabilo-red) 11%, transparent); color: color-mix(in srgb, var(--stabilo-red) 58%, #000); border: 1px solid var(--stabilo-red); }
 .cl-toggles { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; margin:6px 0 4px; font-size:12px; }
 .cl-lines-note:empty { display:none; }
+/* confidence-lines US-007: the reach window label and the No reach data yet list */
+.cl-reach-mark { color: var(--negative, #c0392b); font-weight: 600; }
 
 /* Creative Score bands (US-002). Reuse the existing palette bands so the score
  * badge shares one colour system with the classification badges: strong mirrors

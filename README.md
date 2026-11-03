@@ -209,7 +209,7 @@ lives in `test/review-list-bundles.test.js`.
 | `SHOW_STATE_FILTER` | no | Set `true` to add an ad-state dropdown that narrows the Movement Board to one state (see [Movement Board state filter](#movement-board-state-filter)) |
 | `FULL_COVERAGE_TIERS` | no | Set `true` to grade every ad into one of five tiers that sum to 100% of the ad base (see [Full-coverage tiers](#full-coverage-tiers)) |
 | `THRESHOLDS_BY_GROUP` | no | Per-product Ad Production thresholds, e.g. grade SMSF ads on a different cost scale than Trade (see [Per-product thresholds](#per-product-thresholds)) |
-| `CONFIDENCE_LINES` | no | Campaign type dropdown and an editable trailing cost-per-conversion baseline on Ad Production: `{ KILL_CONV_EXPR, SCALE_CONV_EXPR, SEGMENT_EXPR, BASELINE_DAYS?, CONFIDENCE? }`. Off when absent (see [Campaign type and moveable baseline](#campaign-type-and-moveable-baseline-confidence_lines)) |
+| `CONFIDENCE_LINES` | no | Campaign type dropdown and an editable trailing cost-per-conversion baseline on Ad Production: `{ KILL_CONV_EXPR, SCALE_CONV_EXPR, SEGMENT_EXPR, BASELINE_DAYS?, CONFIDENCE?, REACH_TABLE? }`. `REACH_TABLE` adds a Cost per 1,000 reached x axis to the scatter (see [Cost per 1,000 reached view](#cost-per-1000-reached-view-reach_table)). Off when absent (see [Campaign type and moveable baseline](#campaign-type-and-moveable-baseline-confidence_lines)) |
 | `REVIEW` | no | F10-internal Creative Review surface only. The bundle list is now **auto-discovered** via the `list-bundles` action, so this block no longer carries `BUNDLES` or `LIMIT` and is effectively optional/empty; it holds only optional overrides (`CLIENT` slug override, `ACTOR`, `FEEDBACK_FUNCTION`). Live client dashboards never define it (see [Creative review](#creative-review)) |
 
 ## Secondary-channel tab parity (TikTok + LinkedIn)
@@ -1433,6 +1433,70 @@ Helpers (all in `f10-utils.js`): `confidenceLinesConfig`,
 `resetConfidenceTargets(key)`, `confidenceGradeAd(ad)`,
 `confidenceVerdictSQL(...)` and `confidenceCurvePoints(...)`. Tests:
 `test/confidence-production.test.js`.
+
+### Cost per 1,000 reached view (`REACH_TABLE`)
+
+Set `CONFIDENCE_LINES.REACH_TABLE` to the name of the reach mart in the
+client's own marts dataset (for Mosh, `ad_window_reach`, built by
+f10-dataform). The name must be a plain table name; anything else is ignored.
+
+```js
+const CONFIDENCE_LINES = {
+  KILL_CONV_EXPR: 'plan_assigned',
+  SCALE_CONV_EXPR: 'subscriptions',
+  SEGMENT_EXPR: `CASE ... END`,
+  REACH_TABLE: 'ad_window_reach',
+};
+```
+
+With it set, the Ad Production scatter gets an **X axis** dropdown with
+"Lifetime spend" (the default) and "Cost per 1,000 reached". Picking the
+second plots each ad's Meta-reported cost per 1,000 people reached (CPMr)
+against its lifetime cost per conversion (the Y axis dropdown still picks
+the kill or scale conversion). Without `REACH_TABLE` there is no dropdown and
+no reach query.
+
+- **Reach window.** The mart holds 28 day, 90 day and lifetime reach. The view
+  reads the one closest to the dashboard window: up to 59 days reads 28 day,
+  up to 180 days reads 90 day, longer reads lifetime. A note under the chart
+  names the window and its as-of date.
+- **Quadrants.** A vertical line sits at the median CPMr of the ads in the
+  selected Product / Group and Campaign type, and a horizontal line at that
+  cell's target. The four areas are Efficient growth (cheap reach, under
+  target), Reach play (cheap reach, over target), Precision (dear reach, under
+  target) and Cut candidate (dear reach, over target). Ties count as the
+  cheap or under side. An ad with no conversions reads as over target. With
+  Product / Group or Campaign type on All there is no single target, so the
+  points show without lines.
+- **Marker.** A Cut ad that lands in Reach play is drawn as a triangle, and
+  its hover note says it may be bringing in new people. Check it before
+  switching it off.
+- **No reach data yet.** Ads with no reach row for the window are listed
+  under the chart and not plotted.
+- **Query.** One query against `` `{PROJECT}.{DATASET}.{REACH_TABLE}` ``,
+  filtered to `is_latest` and the chosen `` `window` `` (backticked, it is a
+  reserved word) and to the ads in the page scope. It runs only while the
+  Cost per 1,000 reached option is picked. It never reads raw
+  `all_clients_*` or staging tables. If it fails, the error is logged, a note
+  says so, and the chart falls back to lifetime spend.
+
+Limits:
+
+- Reach is Meta-reported, so treat CPMr as an index for comparing ads, not
+  as a measure of incremental reach.
+- The X axis uses the chosen reach window while the Y axis stays lifetime
+  cost per conversion, so a recent ad and an old ad are not on exactly the
+  same footing.
+- CPMr may sort ads by placement (for example Reels against Feed) as much as
+  by creative. This has not been measured because the mart has not run on
+  live data yet. The US-008 pilot should compare the CPMr spread inside ad
+  sets with the spread between them before the quadrants are used to make
+  cut calls.
+
+Helpers (in `f10-monthly.js`): `confidenceReachWindow(days)`,
+`confidenceReachSQL(win)`, `confidenceReachView(rows, reachRows, mode)`,
+`confidenceQuadrant(p, median, target)` and `confidenceQuadrantPlugin()`.
+Tests: `test/confidence-reach.test.js`.
 
 ## Co-branding (optional)
 
