@@ -198,6 +198,11 @@ tbody tr:hover { background: rgba(75,0,15,0.03); }
 .cl-sw-reach { background:#f08c00; }
 .cl-sw-prec { background:#4a90e2; }
 .cl-reach-empty { padding:40px 0; text-align:center; }
+/* Reach cost card: the notes sit under the chart. The No reach data yet names
+ * stay collapsed behind a Show names toggle and open as a short scroll box. */
+.cl-reach-note, .cl-reach-missing { margin-top:8px; }
+.cl-reach-toggle { font:inherit; font-size:12px; background:none; border:0; padding:0 0 0 6px; color:#4a90e2; text-decoration:underline; cursor:pointer; }
+.cl-reach-missing-list { max-height:120px; overflow-y:auto; margin:6px 0 0; padding:4px 8px 4px 22px; border:1px solid #e5e5e5; border-radius:4px; font-size:12px; }
 
 /* Creative Score bands (US-002). Reuse the existing palette bands so the score
  * badge shares one colour system with the classification badges: strong mirrors

@@ -88,10 +88,14 @@ const ADS = [
 /* CPMr by ad id. Prospecting values 4, 6, 10, 15, 20, 30: median 12.5. */
 const CPMR = { 101: 4, 102: 6, 103: 20, 104: 15, 106: 10, 107: 30, 108: 1000 };
 const AS_OF = { last_28d: '2026-10-30', last_90d: '2026-10-29', lifetime: '2026-10-28' };
+/* Ads that ran in each shorter window. Lifetime has a row for every ad in
+ * CPMR; 105 'freshad' has no row in any window. */
+const WINDOW_ADS = { last_28d: ['101', '102', '104', '108'], last_90d: ['101', '102', '103', '104', '106', '108'] };
 function reachRowsFor(sql){
   const m = /`window` = '([a-z0-9_]+)'/.exec(sql);
   const win = m ? m[1] : null;
-  return Object.keys(CPMR).map((id) => ({ ad_id: String(id), spend: 100, impressions: 50000, reach: 20000, cpmr: CPMR[id], as_of_date: AS_OF[win] }));
+  return Object.keys(CPMR).filter((id) => !WINDOW_ADS[win] || WINDOW_ADS[win].includes(id))
+    .map((id) => ({ ad_id: String(id), spend: 100, impressions: 50000, reach: 20000, cpmr: CPMR[id], as_of_date: AS_OF[win] }));
 }
 
 function boot(opts){
@@ -183,6 +187,12 @@ async function test(name, fn){
     assert.ok(!shown(ctx, 'sc-reach-wrapper'));
     assert.strictEqual(reachChart(ctx), undefined, 'no reach chart drawn');
     assert.ok(linesChart(ctx), 'the lines chart still draws');
+    const sel = ctx.doc.getElementById('sc-reach-window');
+    sel.value = 'last_28d';
+    sel.dispatch('change');
+    await flush();
+    assert.strictEqual(reachQueries(ctx).length, 0, 'changing the Reach window still runs no reach query');
+    assert.ok(shown(ctx, 'sc-reach-empty'));
     assert.deepStrictEqual(ctx.errors, []);
   });
 
@@ -192,42 +202,80 @@ async function test(name, fn){
     assert.strictEqual(ctx.sb.confidenceReachEnabled(), false);
   });
 
-  await test('reach window follows the dashboard window', async () => {
-    const ctx = boot({ config: CONFIG });
-    const w = (d) => ctx.sb.confidenceReachWindow(d);
-    assert.strictEqual(w(7), 'last_28d');
-    assert.strictEqual(w(28), 'last_28d');
-    assert.strictEqual(w(30), 'last_28d');
-    assert.strictEqual(w(59), 'last_28d');
-    assert.strictEqual(w(60), 'last_90d');
-    assert.strictEqual(w(90), 'last_90d');
-    assert.strictEqual(w(180), 'last_90d');
-    assert.strictEqual(w(181), 'lifetime');
-    assert.strictEqual(w(null), 'lifetime');
+  await test('lifetime is the default reach window, whatever the dashboard window', async () => {
+    for (const days of [7, 30, 90, 365]){
+      const ctx = await bootReach({ days });
+      const q = reachQueries(ctx);
+      assert.strictEqual(q.length, 1, 'one reach query');
+      const sql = q[0];
+      assert.ok(sql.includes('FROM `mcc-poc-477801.mosh_marts.ad_window_reach`'), sql);
+      assert.ok(sql.includes("`window` = 'lifetime'"), days + ' day window: ' + sql);
+      assert.ok(/WHERE is_latest AND/.test(sql), sql);
+      assert.ok(sql.includes('FROM `mcc-poc-477801.mosh_marts.creative_reporting`' + ctx.sb.scaleCutScopeWhere('WHERE')), 'scoped to the tab ads');
+      assert.ok(!/all_clients_|staging/.test(sql), 'reads the mart only');
+      assert.strictEqual(ctx.sb.confidenceReachWindow(), 'lifetime');
+      const note = ctx.doc.getElementById('sc-reach-note').textContent;
+      assert.ok(note.startsWith('Using lifetime reach (as of 2026-10-28). Cost per conversion is lifetime too.'), note);
+      assert.ok(note.includes('Meta-reported') && note.includes('index'), note);
+      assert.ok(!shown(ctx, 'sc-reach-empty'));
+      assert.ok(shown(ctx, 'sc-reach-wrapper'));
+      const names = allPoints(reachChart(ctx)).map((p) => p.label).sort();
+      assert.deepStrictEqual(names, ['bothcutscale', 'cutpricey', 'cutthree', 'retarg', 'scalesubs', 'steady', 'twoxlead'],
+        'every ad with spend and a lifetime row is plotted');
+      assert.deepStrictEqual(ctx.errors, []);
+    }
   });
 
-  await test('30 day window: queries the 28 day reach window and the note says so', async () => {
-    const ctx = await bootReach({ days: 30 });
+  await test('the Reach window select lists Lifetime (default), Last 90 days and Last 28 days', async () => {
+    const ctx = await bootReach();
+    const html = ctx.doc.getElementById('app').innerHTML;
+    assert.ok(html.includes('<label for="sc-reach-window">Reach window</label>'));
+    assert.ok(html.includes('<select id="sc-reach-window"><option value="lifetime" selected>Lifetime</option><option value="last_90d">Last 90 days</option><option value="last_28d">Last 28 days</option></select>'));
+    const bad = ctx.doc.getElementById('sc-reach-window');
+    bad.value = 'last_7d';
+    assert.strictEqual(ctx.sb.confidenceReachWindow(), 'lifetime', 'an unknown value falls back to lifetime');
+  });
+
+  await test('chart first in the Reach cost card at the lines card height, notes under it', async () => {
+    const ctx = await bootReach();
+    const html = ctx.doc.getElementById('app').innerHTML;
+    const card = html.slice(html.indexOf('<h3>Reach cost</h3>'));
+    const at = (id) => card.indexOf('id="' + id + '"');
+    assert.ok(at('sc-reach-wrapper') > 0);
+    assert.ok(at('sc-reach-wrapper') < at('sc-reach-note'), 'note under the chart');
+    assert.ok(at('sc-reach-note') < at('sc-reach-missing'), 'missing line under the note');
+    const h = (id) => (new RegExp('id="' + id + '" style="[^"]*height:(\\d+)px').exec(html) || [])[1];
+    assert.ok(h('sc-reach-wrapper'), 'fixed height');
+    assert.strictEqual(h('sc-reach-wrapper'), h('sc-lines-wrapper'), 'same height as the Kill and scale lines chart');
+  });
+
+  await test('28 day selection plots only ads that ran in it and does not count the rest as missing', async () => {
+    const ctx = await bootReach();
+    const sel = ctx.doc.getElementById('sc-reach-window');
+    sel.value = 'last_28d';
+    sel.dispatch('change');
+    await flush();
     const q = reachQueries(ctx);
-    assert.strictEqual(q.length, 1, 'one reach query');
-    const sql = q[0];
-    assert.ok(sql.includes('FROM `mcc-poc-477801.mosh_marts.ad_window_reach`'), sql);
-    assert.ok(sql.includes("`window` = 'last_28d'"), sql);
-    assert.ok(/WHERE is_latest AND/.test(sql), sql);
-    assert.ok(sql.includes('FROM `mcc-poc-477801.mosh_marts.creative_reporting`' + ctx.sb.scaleCutScopeWhere('WHERE')), 'scoped to the tab ads');
-    assert.ok(!/all_clients_|staging/.test(sql), 'reads the mart only');
+    assert.strictEqual(q.length, 2, 'the select reloads the reach data');
+    assert.ok(q[1].includes("`window` = 'last_28d'"), q[1]);
+    const names = allPoints(reachChart(ctx)).map((p) => p.label).sort();
+    assert.deepStrictEqual(names, ['retarg', 'scalesubs', 'twoxlead', 'cutthree'].sort());
+    ['bothcutscale', 'steady', 'cutpricey', 'freshad'].forEach((n) => assert.strictEqual(pointOf(reachChart(ctx), n), undefined, n));
+    assert.strictEqual(ctx.doc.getElementById('sc-reach-missing').innerHTML, '', 'ads that did not run are not listed as missing');
     const note = ctx.doc.getElementById('sc-reach-note').textContent;
-    assert.ok(note.startsWith('Using the 28 day reach window (as of 2026-10-30).'), note);
-    assert.ok(note.includes('Meta-reported') && note.includes('index'), note);
-    assert.ok(!shown(ctx, 'sc-reach-empty'));
-    assert.ok(shown(ctx, 'sc-reach-wrapper'));
+    assert.ok(note.startsWith('Showing 4 ads that ran in the last 28 days (reach as of 2026-10-30). Cost per conversion stays lifetime.'), note);
+    assert.ok(note.includes('Meta-reported'), note);
+    sel.value = 'last_90d';
+    sel.dispatch('change');
+    await flush();
+    assert.ok(reachQueries(ctx)[2].includes("`window` = 'last_90d'"));
+    assert.ok(ctx.doc.getElementById('sc-reach-note').textContent.startsWith('Showing 6 ads that ran in the last 90 days (reach as of 2026-10-29). Cost per conversion stays lifetime.'));
+    assert.strictEqual(ctx.doc.getElementById('sc-reach-missing').innerHTML, '');
+    sel.value = 'lifetime';
+    sel.dispatch('change');
+    await flush();
+    assert.strictEqual(allPoints(reachChart(ctx)).length, 7, 'back to every ad');
     assert.deepStrictEqual(ctx.errors, []);
-  });
-
-  await test('90 day dashboard window reads the 90 day reach window', async () => {
-    const ctx = await bootReach({ days: 90 });
-    assert.ok(reachQueries(ctx)[0].includes("`window` = 'last_90d'"));
-    assert.ok(ctx.doc.getElementById('sc-reach-note').textContent.startsWith('Using the 90 day reach window (as of 2026-10-29).'));
   });
 
   await test('axes: x is cost per 1,000 reached from $0, y is the same cost per conversion as the lines chart', async () => {
@@ -309,10 +357,36 @@ async function test(name, fn){
     ctx.run("confidenceYMode = 'kill';");
   });
 
-  await test('an ad with no reach row is listed under No reach data yet and not plotted', async () => {
+  await test('an ad with spend and no lifetime row shows as a count, names collapsed by default', async () => {
     const ctx = await bootReach();
     assert.strictEqual(pointOf(reachChart(ctx), 'freshad'), undefined);
-    assert.strictEqual(ctx.doc.getElementById('sc-reach-missing').innerHTML, 'No reach data yet (1): freshad');
+    const miss = () => ctx.doc.getElementById('sc-reach-missing').innerHTML;
+    assert.ok(miss().includes('1 ad has no reach data yet.'), miss());
+    assert.ok(miss().includes('>Show names</button>'), miss());
+    assert.ok(miss().includes('aria-expanded="false"'), miss());
+    assert.ok(!miss().includes('freshad'), 'names hidden until the toggle');
+    assert.ok(!miss().includes('No reach data yet ('), 'no wall of names');
+    ctx.run('toggleConfidenceReachMissing()');
+    assert.ok(miss().includes('<ul class="cl-reach-missing-list" id="sc-reach-missing-list"><li>freshad</li></ul>'), miss());
+    assert.ok(miss().includes('>Hide names</button>'), miss());
+    ctx.run('toggleConfidenceReachMissing()');
+    assert.ok(!miss().includes('freshad'));
+    ctx.run('toggleConfidenceReachMissing()');
+    await ctx.sb.loadScaleCut();
+    await flush();
+    assert.ok(!miss().includes('freshad'), 'collapsed again on reload');
+  });
+
+  await test('the missing count is plural and names are escaped', async () => {
+    const ctx = boot({ config: CONFIG });
+    const view = { points: [], asOf: null, missing: [{ name: 'a<b', _key: 'a<b' }, { name: 'c', _key: 'c' }] };
+    ctx.sb.renderLayout();
+    ctx.sb.renderConfidenceReachNotes(view, 'lifetime', []);
+    const miss = () => ctx.doc.getElementById('sc-reach-missing').innerHTML;
+    assert.ok(miss().includes('2 ads have no reach data yet.'), miss());
+    ctx.run('confidenceReachMissingOpen = true;');
+    ctx.sb.renderConfidenceReachNotes(view, 'lifetime', []);
+    assert.ok(miss().includes('<li>a&lt;b</li><li>c</li>'), miss());
   });
 
   await test('the ad search filters the missing list but never moves the medians', async () => {

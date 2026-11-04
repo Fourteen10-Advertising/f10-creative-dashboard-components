@@ -361,6 +361,11 @@ function ensureConfidenceControls(){
   });
   const yEl = document.getElementById('cl-y-mode');
   if (yEl) yEl.addEventListener('change', () => { confidenceYMode = yEl.value === 'scale' ? 'scale' : 'kill'; loadScaleCut(); });
+  const winEl = document.getElementById('sc-reach-window');
+  if (winEl) winEl.addEventListener('change', () => {
+    if (window.F10A) F10A.track('filter_changed', { filter: 'reach_window', value: winEl.value });
+    loadScaleCut();
+  });
   loadConfidenceSegments(sel);
 }
 
@@ -664,20 +669,22 @@ const CONFIDENCE_REACH_MARK_LABEL = 'Cut, may be bringing in new people';
 const CONFIDENCE_REACH_MARK_NOTE = 'Cut on cost per conversion, but it reaches people cheaply, so it may be bringing in new people. Check before switching it off.';
 
 function confidenceReachEnabled(){ const cfg = confidenceLinesConfig(); return !!(cfg && cfg.reachTable); }
-/* The dashboard window length in days, from the window control. */
-function confidenceDashboardDays(){
-  const el = document.getElementById('ctrl-length');
-  const n = el ? parseInt(el.value, 10) : NaN;
-  return n > 0 ? n : null;
+/* The reach window comes from the card's own Reach window select and defaults
+ * to lifetime, so the x axis (lifetime CPMr) matches the y axis (lifetime cost
+ * per conversion). It does not follow the dashboard window: most ads with
+ * lifetime spend did not run in the last 28 days and have no 28 day row. */
+const CONFIDENCE_REACH_DEFAULT_WINDOW = 'lifetime';
+const CONFIDENCE_REACH_WINDOW_SPAN = { last_28d: 'the last 28 days', last_90d: 'the last 90 days' };
+function confidenceReachWindow(){
+  const el = document.getElementById('sc-reach-window');
+  const v = el ? el.value : null;
+  return CONFIDENCE_REACH_WINDOW_LABEL[v] ? v : CONFIDENCE_REACH_DEFAULT_WINDOW;
 }
-/* The reach window closest to the dashboard window: up to 59 days reads the
- * 28 day window, up to 180 days the 90 day window, anything longer (or no
- * window control) the lifetime row. */
-function confidenceReachWindow(days){
-  if (!(days > 0)) return 'lifetime';
-  if (days <= 59) return 'last_28d';
-  if (days <= 180) return 'last_90d';
-  return 'lifetime';
+/* The No reach data yet names start collapsed on every load. */
+let confidenceReachMissingOpen = false;
+function toggleConfidenceReachMissing(){
+  confidenceReachMissingOpen = !confidenceReachMissingOpen;
+  if (scaleCutState) renderConfidenceReachNotes(scaleCutState.reachView, scaleCutState.reachWin, scaleCutState.reachRows);
 }
 /* Latest reach row per ad for one window, limited to the ads in this tab's
  * scope. Reads only the client's reach mart and the dashboard's own table. */
@@ -708,7 +715,11 @@ function _confEsc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
 
 /* Build the reach chart model from the per-ad rows (which carry the SQL
  * verdict) and the reach rows. Joined in the browser on ad_id. */
-function confidenceReachView(rows, reachRows, mode){
+function confidenceReachView(rows, reachRows, mode, win){
+  /* Lifetime: every ad with spend should have a row, so an ad without one is
+   * missing. A shorter window: an ad without a row did not run in that window,
+   * so it is left off the chart and not counted as missing. */
+  const windowed = !!win && win !== 'lifetime';
   const byAd = {};
   (reachRows || []).forEach(r => { const id = _confStr(r.ad_id); if (id != null) byAd[String(id)] = r; });
   const pts = [], missing = [];
@@ -719,7 +730,7 @@ function confidenceReachView(rows, reachRows, mode){
     const key = adSearchKey(r.ad_name, r.campaign_name, r.adset_name);
     const rr = byAd[String(_confStr(r.ad_id))];
     const cpmr = rr ? Number(_confStr(rr.cpmr)) : NaN;
-    if (!(cpmr > 0)){ missing.push({ name: r.ad_name, _key: key }); return; }
+    if (!(cpmr > 0)){ if (!(windowed && !rr)) missing.push({ name: r.ad_name, _key: key }); return; }
     const d = _confStr(rr.as_of_date);
     if (d && (!asOf || String(d) > asOf)) asOf = String(d);
     const conv = Number(_confStr(r[mode.convCol])) || 0;
@@ -764,12 +775,19 @@ function renderConfidenceReachNotes(view, win, reachRows){
   const miss = document.getElementById('sc-reach-missing');
   if (!note || !miss) return;
   if (!win || !view){ note.textContent = ''; miss.innerHTML = ''; return; }
-  note.textContent = `Using the ${CONFIDENCE_REACH_WINDOW_LABEL[win]} reach window` + (view.asOf ? ` (as of ${view.asOf})` : '')
-    + '. Reach is Meta-reported, so read it as an index. Cost per conversion stays lifetime.';
+  const n = view.points.length;
+  note.textContent = (CONFIDENCE_REACH_WINDOW_SPAN[win]
+      ? `Showing ${n} ${n === 1 ? 'ad' : 'ads'} that ran in ${CONFIDENCE_REACH_WINDOW_SPAN[win]}` + (view.asOf ? ` (reach as of ${view.asOf})` : '') + '. Cost per conversion stays lifetime.'
+      : 'Using lifetime reach' + (view.asOf ? ` (as of ${view.asOf})` : '') + '. Cost per conversion is lifetime too.')
+    + ' Reach is Meta-reported, so read it as an index.';
+  /* One line with a count and a Show names toggle; the names open as a short
+   * scroll list, never a paragraph. */
   const shown = adSearchFilter(view.missing, m => m._key);
-  miss.innerHTML = shown.length
-    ? `No reach data yet (${shown.length}): ` + shown.map(m => _confEsc(m.name)).join(', ')
-    : '';
+  if (!shown.length){ miss.innerHTML = ''; return; }
+  const open = confidenceReachMissingOpen;
+  miss.innerHTML = `<span id="sc-reach-missing-count">${shown.length} ${shown.length === 1 ? 'ad has' : 'ads have'} no reach data yet.</span>`
+    + `<button type="button" class="cl-reach-toggle" id="sc-reach-missing-toggle" aria-expanded="${open}" onclick="toggleConfidenceReachMissing()">${open ? 'Hide names' : 'Show names'}</button>`
+    + (open ? `<ul class="cl-reach-missing-list" id="sc-reach-missing-list">${shown.map(m => `<li>${_confEsc(m.name)}</li>`).join('')}</ul>` : '');
 }
 
 function confidenceReachTooltip(pt, setLabel, mode){
@@ -962,7 +980,8 @@ async function loadScaleCut(){
     renderScaleCutCounts();
 
     if (!confidenceReachEnabled()){ showScaleCutReachEmpty(); return; }
-    const win = confidenceReachWindow(confidenceDashboardDays());
+    const win = confidenceReachWindow();
+    confidenceReachMissingOpen = false;
     const empty = document.getElementById('sc-reach-empty');
     if (empty) empty.style.display = 'none';
     showEl('sc-reach-loading'); hideEl('sc-reach-wrapper');
@@ -978,7 +997,7 @@ async function loadScaleCut(){
     }
     if (seq !== _scaleCutSeq) return;
     if (!reachRows || !reachRows.length){ showScaleCutReachEmpty(); return; }
-    const rview = confidenceReachView(rows, reachRows, mode);
+    const rview = confidenceReachView(rows, reachRows, mode, win);
     Object.assign(scaleCutState, { reachView: rview, reachWin: win, reachRows });
     renderConfidenceReachNotes(rview, win, reachRows);
     hideEl('sc-reach-loading'); showEl('sc-reach-wrapper');

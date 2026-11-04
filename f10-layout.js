@@ -102,12 +102,16 @@ function scaleCutPanelHTML(){
         </div>
         <div class="chart-card" style="margin-bottom:0;"><h3>Reach cost</h3>
           <div class="cl-sub">Bubble = reach, split at the medians</div>
+          <div class="cl-toggles">
+            <label for="sc-reach-window">Reach window</label>
+            <select id="sc-reach-window"><option value="lifetime" selected>Lifetime</option><option value="last_90d">Last 90 days</option><option value="last_28d">Last 28 days</option></select>
+          </div>
           <div class="cl-legend">${qchip('cl-sw-eff', 'Efficient growth')}${qchip('cl-sw-reach', 'Reach play')}${qchip('cl-sw-prec', 'Precision')}${qchip('cl-sw-cut', 'Cut candidate')}</div>
-          <div class="tc-note cl-lines-note" id="sc-reach-note"></div>
-          <div class="tc-note cl-lines-note" id="sc-reach-missing"></div>
           <div class="tc-note cl-reach-empty" id="sc-reach-empty">Reach data is not loaded yet.</div>
           <div id="sc-reach-loading" class="loading" style="display:none;"><div class="spinner"></div>Loading&hellip;</div>
           <div class="chart-wrapper" id="sc-reach-wrapper" style="display:none; height:340px;"><canvas id="sc-reach-chart"></canvas></div>
+          <div class="tc-note cl-lines-note cl-reach-note" id="sc-reach-note"></div>
+          <div class="tc-note cl-lines-note cl-reach-missing" id="sc-reach-missing"></div>
         </div>
       </div>
       <div class="table-card" style="margin-top:20px;"><h3>Ads by verdict</h3>

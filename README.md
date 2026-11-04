@@ -1460,10 +1460,20 @@ chart). Bubbles are sized by reach and coloured by quadrant.
   rows, the card shows "Reach data is not loaded yet." Without `REACH_TABLE`
   no reach query runs at all. If the query fails the error is logged and the
   card says "Could not load reach data."
-- **Reach window.** The mart holds 28 day, 90 day and lifetime reach. The chart
-  reads the one closest to the dashboard window: up to 59 days reads 28 day,
-  up to 180 days reads 90 day, longer reads lifetime. A note under the chart
-  names the window and its as-of date.
+- **Layout.** The chart comes first in the card, at the same fixed height as
+  the Kill and scale lines chart (340px). The notes sit under it.
+- **Reach window.** The mart holds 28 day, 90 day and lifetime reach. A
+  "Reach window" select on the card picks one: Lifetime (the default), Last
+  90 days or Last 28 days. It does not follow the dashboard window. Lifetime
+  matches the y axis, which is lifetime cost per conversion. On Lifetime the
+  note reads "Using lifetime reach (as of {date}). Cost per conversion is
+  lifetime too."
+- **Shorter windows.** On Last 90 days or Last 28 days the chart plots only
+  the ads that have a reach row for that window, and the note reads "Showing
+  N ads that ran in the last 28 days (reach as of {date}). Cost per
+  conversion stays lifetime." The mart has no last-spend date per ad, so an
+  ad without a row in a shorter window is treated as not having run in it.
+  It is left off the chart and is not counted as missing.
 - **Quadrants.** Dotted lines sit at the median CPMr and the median cost per
   conversion of the ads with reach in the selected cell (all ads with reach
   when Product or Campaign type is All), with their values labelled. The
@@ -1476,8 +1486,11 @@ chart). Bubbles are sized by reach and coloured by quadrant.
 - **Marker.** A Cut ad that lands in Reach play is drawn as a triangle, and
   its hover note says it may be bringing in new people. Check it before
   switching it off.
-- **No reach row.** Ads with no reach row for the window are listed under the
-  chart and not plotted.
+- **No reach data yet.** An ad with spend and no row in the selected window
+  (on Lifetime, or a row with no CPMr in a shorter window) is not plotted.
+  These show as one line with a count, for example "12 ads have no reach data
+  yet.", and a "Show names" toggle. The names open as a short scrollable list
+  and start collapsed on every load. The list follows the ad search.
 - **Query.** One query against `` `{PROJECT}.{DATASET}.{REACH_TABLE}` ``,
   filtered to `is_latest` and the chosen `` `window` `` (backticked, it is a
   reserved word) and to the ads in the tab's scope. It never reads raw
@@ -1487,9 +1500,9 @@ Limits of the reach chart:
 
 - Reach is Meta-reported, so treat CPMr as an index for comparing ads, not
   as a measure of incremental reach.
-- The X axis uses the chosen reach window while the Y axis stays lifetime
-  cost per conversion, so a recent ad and an old ad are not on exactly the
-  same footing.
+- On Last 90 days or Last 28 days the X axis uses that window while the Y
+  axis stays lifetime cost per conversion, so a recent ad and an old ad are
+  not on exactly the same footing. Lifetime avoids this and is the default.
 - CPMr may sort ads by placement (for example Reels against Feed) as much as
   by creative. This has not been measured because the mart has not run on
   live data yet. Compare the CPMr spread inside ad sets with the spread
@@ -1501,8 +1514,10 @@ Helpers: `confidenceLinesConfig`, `confidenceBaselineSQL(endIso)`,
 `confidenceVerdictSQL(...)`, `confidenceCurvePoints(...)` and
 `scaleCutScopeWhere(lead)` in `f10-utils.js`; `loadScaleCut()`,
 `scaleCutSQL()`, `confidenceCurveFor(mode, maxSpend)`,
-`confidenceLinesView(rows, mode)`, `confidenceReachWindow(days)`,
-`confidenceReachSQL(win)`, `confidenceReachView(rows, reachRows, mode)`,
+`confidenceLinesView(rows, mode)`, `confidenceReachWindow()`,
+`confidenceReachSQL(win)`, `confidenceReachView(rows, reachRows, mode, win)`,
+`renderConfidenceReachNotes(view, win, reachRows)`,
+`toggleConfidenceReachMissing()`,
 `confidenceQuadrant(p, medianCpmr, medianCpa)` and
 `confidenceQuadrantPlugin()` in `f10-monthly.js`. Tests:
 `test/confidence-baseline.test.js`, `test/confidence-production.test.js` and
