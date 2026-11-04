@@ -72,9 +72,15 @@ function boot(config){
 }
 
 let passed = 0, failed = 0;
+const pending = [];
 function test(name, fn){
-  try { fn(); passed++; console.log('  ok  ' + name); }
-  catch (e){ failed++; console.error('  FAIL ' + name + '\n       ' + (e && e.stack || e)); }
+  const ok = () => { passed++; console.log('  ok  ' + name); };
+  const fail = (e) => { failed++; console.error('  FAIL ' + name + '\n       ' + (e && e.stack || e)); };
+  try {
+    const r = fn();
+    if (r && typeof r.then === 'function') pending.push(r.then(ok, fail));
+    else ok();
+  } catch (e){ fail(e); }
 }
 
 const RANGE = { from: '2026-08-02', to: '2026-10-31' };
@@ -271,6 +277,42 @@ test('older lens uses the configured confidence, not a fixed 90%', () => {
   assert.ok(!sql.includes(at95.confidenceVerdictSQL('recent_spend', 'recent_conv', 'SAFE_DIVIDE(life_spend, NULLIF(life_conv, 0))', { conf: 0.9 })));
   assert.strictEqual(boot(CONFIG).sb.mapOlderConfidence(), 0.9);
 });
+function zoneLabels(sb, run, conf){
+  run('confidenceCurveState = ' + JSON.stringify({ key: 'k', which: 'kill', target: 50, conf, cut: [{ spend: 100, cpa: 80 }], scale: [{ spend: 100, cpa: 30 }] }));
+  const texts = [];
+  const g = { save(){}, restore(){}, beginPath(){}, rect(){}, clip(){}, moveTo(){}, lineTo(){}, closePath(){}, fill(){}, stroke(){},
+    setLineDash(){}, roundRect(){}, measureText: () => ({ width: 40 }), fillText(t){ texts.push(String(t)); } };
+  const ax = { getPixelForValue: (v) => v };
+  sb.confidenceLinesPlugin().beforeDatasetsDraw({ ctx: g, chartArea: { top: 0, left: 0, right: 500, bottom: 300 }, scales: { x: ax, y: ax } });
+  return texts;
+}
+async function olderNote(sb, run, doc){
+  run("WIN = { curEnd: '2026-10-31' }");
+  doc.getElementById('map-lens').value = 'older';
+  await sb.renderMapOlder();
+  return doc.getElementById('map-lens-note').textContent;
+}
+test('a 0.8 config shows 80% in the Verdict hover, CUT and SCALE zone labels and the Older ads note', async () => {
+  const { sb, run, doc } = boot(Object.assign({}, CONFIG, { CONFIDENCE: 0.8 }));
+  const hover = sb.confidenceVerdictHover();
+  assert.ok(hover.endsWith('at 80% confidence.'), hover);
+  assert.ok(run('scaleCutPanelHTML()').includes('at 80% confidence.'), 'Verdict header title');
+  const zones = zoneLabels(sb, run, sb.confidenceLinesConfig().confidence);
+  assert.ok(zones.includes('80% sure it misses target'), zones.join(' | '));
+  assert.ok(zones.includes('80% sure it beats target'), zones.join(' | '));
+  assert.ok(!zones.some((t) => t.includes('90%')), zones.join(' | '));
+  const note = await olderNote(sb, run, doc);
+  assert.ok(note.includes('below the lifetime rate at 80% confidence.'), note);
+  assert.ok(!note.includes('90%'), note);
+});
+test('the default config still shows 90% in the same labels', async () => {
+  const { sb, run, doc } = boot(Object.assign({}, CONFIG, { CONFIDENCE: undefined }));
+  assert.strictEqual(sb.confidenceLinesConfig().confidence, 0.9);
+  assert.ok(sb.confidenceVerdictHover().endsWith('at 90% confidence.'));
+  const zones = zoneLabels(sb, run, sb.confidenceLinesConfig().confidence);
+  assert.ok(zones.includes('90% sure it misses target') && zones.includes('90% sure it beats target'), zones.join(' | '));
+  assert.ok((await olderNote(sb, run, doc)).includes('below the lifetime rate at 90% confidence.'));
+});
 test('older lens view: wearing out vs holding up, no-conversion ads at the top edge', () => {
   const { sb } = boot(CONFIG);
   const v = sb.mapOlderView([
@@ -337,5 +379,7 @@ test('no em or en dashes in the round 2 code or its output', () => {
   assert.ok(!DASH.test(read('test/scale-cut-round2.test.js')), 'this test file');
 });
 
-console.log(`\n${passed} passed, ${failed} failed`);
-if (failed) process.exit(1);
+Promise.all(pending).then(() => {
+  console.log(`\n${passed} passed, ${failed} failed`);
+  if (failed) process.exit(1);
+});

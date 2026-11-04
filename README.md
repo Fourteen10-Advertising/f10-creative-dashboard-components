@@ -1407,10 +1407,11 @@ The tab has, top to bottom:
 - Two charts side by side: **Kill and scale lines** and **Reach cost** (below).
 - An **Ads by verdict** table: one row per ad with lifetime spend, conversions,
   cost per conversion, a **Status** column (Live or Paused) and a sortable
-  **Verdict** column. The Verdict header
+  **Verdict** column. With the default config the Verdict header
   hover reads "Judged against your last 90 days for this product and campaign
-  type, using Meta-reported results, at 90% confidence." (the day count and
-  confidence come from the config).
+  type, using Meta-reported results, at 90% confidence." The day count and the
+  percent come from the config, so `CONFIDENCE: 0.8` reads "at 80%
+  confidence."
 - A **New ad flow** table (below).
 
 **Verdict, computed once in SQL.** The tab sends one per-ad query
@@ -1435,7 +1436,9 @@ type on All, each ad is still judged against its own cell.
 - For the selected product and campaign type it draws the **CUT** curve and the
   **SCALE** curve from that cell's target, with the area above CUT and below
   SCALE shaded, a **target** pill on the target line and a **TESTING** label in
-  the band between. Each curve point comes from `confidenceBounds(k, conf)`:
+  the band between. The zone labels read "90% sure it misses target" under
+  CUT and "90% sure it beats target" under SCALE at the default confidence;
+  the percent is the configured `CONFIDENCE`, so 0.8 shows "80% sure". Each curve point comes from `confidenceBounds(k, conf)`:
   an ad with k conversions turns Cut once its spend passes target x the kill
   bound, and stays Scale while its spend is under target x the scale bound.
 - Dots are coloured by the SQL verdict and sized by spend. A filled dot is
@@ -1563,7 +1566,9 @@ spent in the last 14 days. X is spend in the last 14 days. Y is recent cost
 per conversion as a % of the ad's lifetime cost per conversion (100% means the
 same as lifetime). An ad is **Wearing out** when `confidenceVerdictSQL` grades
 its last 14 days Cut against its own lifetime cost per conversion at the
-configured confidence; otherwise it is **Holding up**. Ads with no recent
+configured confidence; otherwise it is **Holding up**. The lens note names that
+percent ("at 90% confidence" by default, "at 80% confidence" with
+`CONFIDENCE: 0.8`). Ads with no recent
 conversions sit on the top edge as triangles. Ads with no lifetime conversions
 have no baseline and are left off. Without `CONFIDENCE_LINES` the Movement Map
 markup and behaviour are unchanged.
@@ -1592,9 +1597,12 @@ Released in v1.34.0 (v1.33.0 put this on Ad Production; v1.34.0 moved it to its 
   product and campaign type is the trailing 90 day Meta-reported cost per
   conversion. If the whole account got worse over those 90 days, the bar is
   lower too. Edit the target in the panel when the business target differs.
-- **90% confidence, one ad at a time.** Each ad is tested on its own. Across
-  a page of many ads a few will grade Scale or Cut by chance, so treat a
-  borderline call as a prompt to look, not a decision.
+- **Configured confidence (default 90%), one ad at a time.** Each ad is
+  tested on its own. Across a page of many ads a few will grade Scale or Cut
+  by chance, so treat a borderline call as a prompt to look, not a decision.
+  A lower confidence calls more ads sooner and wrongly more often: at 80% an
+  ad running exactly at target has up to a 1 in 5 chance of a Scale or Cut
+  call on each side, against 1 in 10 at 90%.
 - **Poisson assumption.** The test treats conversions as independent events
   at a steady rate. Bursty delivery, a learning phase or a tracking outage
   breaks that, and the verdict can be confidently wrong.
