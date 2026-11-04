@@ -166,6 +166,19 @@ function applyControlsVisibility(){
   document.getElementById('controls-bar').style.display = 'flex';
   const wc = document.getElementById('weekly-controls');
   if(wc) wc.style.display = showWeekly ? 'flex' : 'none';
+  applyScaleCutControlsVisibility();
+}
+/* Scale & Cut: its filter bar shows only on that tab, and the Ad status
+ * dropdown hides there (live or paused shows on the dots). No-op without
+ * CONFIDENCE_LINES, because #sc-controls is never rendered. */
+function applyScaleCutControlsVisibility(){
+  const sc = document.getElementById('sc-controls');
+  if(!sc) return;
+  const on = activeTab === 'scalecut';
+  sc.style.display = on ? 'flex' : 'none';
+  const st = document.getElementById('ctrl-status');
+  const wrap = st && st.closest ? st.closest('.ctrl') : null;
+  if(wrap) wrap.style.display = on ? 'none' : '';
 }
 
 /* ── Ad status filter (currently-active ads) ── */

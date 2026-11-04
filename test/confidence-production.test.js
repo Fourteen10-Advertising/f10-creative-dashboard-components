@@ -283,11 +283,9 @@ async function test(name, fn){
     assert.ok(tip.includes('Verdict: Cut') && tip.some((t) => t.startsWith('Spend: ')), tip.join(' / '));
   });
 
-  await test('y-axis toggle: cost per scale conversion and the scale target', async () => {
+  await test('Judge on Subs: cost per scale conversion and the scale target', async () => {
     const ctx = await bootEnabled();
-    const sel = ctx.doc.getElementById('cl-y-mode');
-    sel.value = 'scale';
-    sel.dispatch('change');
+    ctx.doc.getElementById('sc-judge-scale').dispatch('click');
     await flush();
     const chart = linesChart(ctx);
     assert.strictEqual(chart.options.scales.y.title.text, 'Cost per scale conversion');
@@ -325,7 +323,7 @@ async function test(name, fn){
     const ctx = boot();
     ctx.sb.renderLayout();
     const html = ctx.doc.getElementById('app').innerHTML;
-    ['data-tab="scalecut"', 'tab-scalecut', '>Verdict</th>', 'cl-y-mode', 'sc-lines-note'].forEach((s) => assert.ok(!html.includes(s), s));
+    ['data-tab="scalecut"', 'tab-scalecut', '>Verdict</th>', 'sc-judge', 'sc-controls', 'sc-lines-note'].forEach((s) => assert.ok(!html.includes(s), s));
     await ctx.sb.loadScaleCut();
     await ctx.sb.loadProduction();
     await flush();

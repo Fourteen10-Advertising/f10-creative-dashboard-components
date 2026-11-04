@@ -242,15 +242,17 @@ const countsText = (c) => `<strong>${c.Scale}</strong> Scale, <strong>${c.Testin
     assert.deepStrictEqual(ctx.errors, []);
   });
 
-  await test('Campaign type dropdown and baseline panel sit in the Scale & Cut tab and scope only its queries', async () => {
+  await test('Campaign type dropdown sits in the Scale & Cut filter bar, targets line in the tab, and scope only its queries', async () => {
     const ctx = await bootEnabled(baselineRows(100, 60));
     const html = ctx.doc.getElementById('app').innerHTML;
     const tab = html.indexOf('id="tab-scalecut"');
     const end = html.indexOf('class="tab-panel"', tab + 1);
     const panel = html.slice(tab, end < 0 ? html.length : end);
     assert.ok(tab > 0, 'Scale & Cut panel renders');
-    assert.ok(panel.includes('id="sc-baseline-controls"') && panel.includes('id="ctrl-segment"'), 'dropdown and panel live in the tab');
-    assert.ok(panel.includes('Your last 90 days (Meta-reported)'));
+    assert.ok(panel.includes('id="sc-baseline-controls"'), 'targets line lives in the tab');
+    const bar = html.slice(html.indexOf('id="sc-controls"'), html.indexOf('id="ctrl-scope"'));
+    assert.ok(bar.includes('id="ctrl-segment"'), 'Campaign type lives in the Scale & Cut filter bar');
+    assert.ok(ctx.doc.getElementById('sc-targets-line').innerHTML.includes('from your last 90 days (Meta-reported).'));
     assert.strictEqual(html.split('id="ctrl-segment"').length, 2, 'one Campaign type dropdown on the page');
     const prod = html.indexOf('id="tab-production"');
     const prodPanel = html.slice(prod, html.indexOf('class="tab-panel"', prod + 1));
@@ -278,9 +280,9 @@ const countsText = (c) => `<strong>${c.Scale}</strong> Scale, <strong>${c.Testin
     const confHtml = conf.doc.getElementById('app').innerHTML;
     assert.ok(conf.sb.mapLensHTML().includes('id="map-lens"'), 'config adds the Movement Map lens');
     assert.strictEqual(plain.sb.mapLensHTML(), '', 'no lens without config');
-    const stripped = confHtml.replace(conf.sb.scaleCutNavHTML(), '').replace(conf.sb.scaleCutPanelHTML(), '').replace(conf.sb.mapLensHTML(), '');
+    const stripped = confHtml.replace(conf.sb.scaleCutNavHTML(), '').replace(conf.sb.scaleCutPanelHTML(), '').replace(conf.sb.mapLensHTML(), '').replace(conf.sb.scaleCutControlsHTML(), '');
     assert.notStrictEqual(stripped, confHtml, 'config adds the Scale & Cut tab');
-    assert.strictEqual(stripped, plain.doc.getElementById('app').innerHTML, 'layout differs only by the Scale & Cut nav link, panel and Movement Map lens');
+    assert.strictEqual(stripped, plain.doc.getElementById('app').innerHTML, 'layout differs only by the Scale & Cut nav link, panel, filter bar and Movement Map lens');
     conf.run("groupSelections['group_name'] = 'Hair';");
     for (const seg of ['Prospecting', 'Retargeting', '__all__']){
       conf.sb.setSegmentSelection(seg);
@@ -331,7 +333,9 @@ const countsText = (c) => `<strong>${c.Scale}</strong> Scale, <strong>${c.Testin
   await test('40 conversions: Not enough data for a baseline, no inputs, no lines', async () => {
     const ctx = await bootEnabled(baselineRows(40, 20));
     const body = ctx.doc.getElementById('sc-baseline-body').innerHTML;
-    assert.ok(body.includes('Not enough data for a baseline'), body);
+    const line = ctx.doc.getElementById('sc-targets-line').innerHTML;
+    assert.ok(line.includes('Not enough data for a baseline'), line);
+    assert.ok(!line.includes('sc-targets-edit-btn'), 'no Edit without a baseline');
     assert.ok(!body.includes('<input'), 'no target inputs');
     assert.ok(!ctx.doc.getElementById('app').innerHTML.includes('sc-baseline-verdicts'), 'no baseline verdict line');
     assert.strictEqual(ctx.doc.getElementById('cl-reset').style.display, 'none');
@@ -364,7 +368,8 @@ const countsText = (c) => `<strong>${c.Scale}</strong> Scale, <strong>${c.Testin
     ctx.sb.setSegmentSelection('__all__');
     await ctx.sb.loadScaleCut();
     const body = ctx.doc.getElementById('sc-baseline-body').innerHTML;
-    assert.ok(body.includes('Pick a product and campaign type'), body);
+    const line = ctx.doc.getElementById('sc-targets-line').innerHTML;
+    assert.ok(line.includes('Pick a product and campaign type'), line);
     assert.ok(!body.includes('<input'));
   });
 

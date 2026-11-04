@@ -312,11 +312,9 @@ async function test(name, fn){
     assert.strictEqual(typeof ds.pointRadius, 'function');
   });
 
-  await test('scale y axis uses the scale target for the reference line', async () => {
+  await test('Judge on Subs: the reach chart uses the scale target for the reference line', async () => {
     const ctx = await bootReach();
-    const y = ctx.doc.getElementById('cl-y-mode');
-    y.value = 'scale';
-    y.dispatch('change');
+    ctx.doc.getElementById('sc-judge-scale').dispatch('click');
     await flush();
     assert.strictEqual(ctx.run('confidenceQuadState').target, SCALE_T);
     assert.strictEqual(reachChart(ctx).options.scales.y.title.text, 'Cost per scale conversion');

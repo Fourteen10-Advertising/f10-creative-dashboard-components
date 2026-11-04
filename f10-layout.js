@@ -71,8 +71,24 @@ function confidenceConvNoun(label){
 function mapLensHTML(){
   if (!confidenceLinesConfig()) return '';
   return `
-        <div class="cl-toggles"><label for="map-lens">Lens</label><select id="map-lens"><option value="all" selected>All ads</option><option value="older">Older ads (launched over 90 days ago)</option></select></div>
+        <div class="cl-toggles"><label for="map-lens">Lens</label><select id="map-lens" class="f10-ctl"><option value="all" selected>All ads</option><option value="older">Older ads (launched over 90 days ago)</option></select></div>
         <div class="tc-note cl-lines-note" id="map-lens-note"></div>`;
+}
+/* Scale & Cut filter bar. Sits in the global controls bar between Product
+ * (#ctrl-groups) and Search, and only shows on the Scale & Cut tab. Empty
+ * without CONFIDENCE_LINES so every other dashboard is byte-identical. */
+function scaleCutControlsHTML(){
+  const cfg = confidenceLinesConfig();
+  if (!cfg) return '';
+  const e = v => String(v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return `
+      <div id="sc-controls" class="ctrl-groups sc-controls" style="display:none;">
+        <div class="ctrl"><label for="ctrl-segment">Campaign type</label><select id="ctrl-segment" class="f10-ctl"><option value="${GROUP_ALL}" selected>All campaign types</option></select></div>
+        <div class="ctrl"><label for="sc-launch-preset">Launched</label><select id="sc-launch-preset" class="f10-ctl"><option value="30">Last 30 days</option><option value="60">Last 60 days</option><option value="90" selected>Last 90 days</option><option value="custom">Custom</option></select></div>
+        <div class="ctrl sc-custom" id="sc-launch-custom" hidden><label for="sc-launch-from">From</label><input type="date" id="sc-launch-from" class="f10-ctl"></div>
+        <div class="ctrl sc-custom" id="sc-launch-custom-to" hidden><label for="sc-launch-to">To</label><input type="date" id="sc-launch-to" class="f10-ctl"></div>
+        <div class="ctrl"><label>Judge on</label><div class="seg" id="sc-judge" role="group" aria-label="Judge on"><button type="button" id="sc-judge-kill" data-judge="kill" class="active" aria-pressed="true">${e(confidenceConvNoun(cfg.killLabel))}</button><button type="button" id="sc-judge-scale" data-judge="scale" aria-pressed="false">${e(confidenceConvNoun(cfg.scaleLabel))}</button></div></div>
+      </div>`;
 }
 function scaleCutPanelHTML(){
   const cfg = confidenceLinesConfig();
@@ -85,37 +101,19 @@ function scaleCutPanelHTML(){
     <!-- MONTHLY: SCALE & CUT (CONFIDENCE_LINES only) -->
     <div class="tab-panel" id="tab-scalecut">
       ${howToNote('scalecut')}
-      <div class="cl-toggles sc-launch-range" id="sc-launch-range">
-        <label for="sc-launch-from">Launched from</label><input type="date" id="sc-launch-from">
-        <label for="sc-launch-to">to</label><input type="date" id="sc-launch-to">
-        <span class="tc-note">Launch date is the first day with spend. The range picks which ads show; spend, results and verdicts stay counted from each ad's launch.</span>
-      </div>
-      <div class="threshold-controls" id="sc-baseline-controls">
-        <div class="tc-header">
-          <strong>Your last ${days} days (Meta-reported)</strong>
-          <span class="tc-note">Targets come from this product and campaign type over the ${days} days before the window end. Edit a target to re-grade this tab for this session; a reload also reverts.</span>
+      <div class="sc-targets" id="sc-baseline-controls" data-days="${days}">
+        <div class="sc-targets-line" id="sc-targets-line"><span class="tc-note">Loading baseline&hellip;</span></div>
+        <div class="sc-targets-edit" id="sc-targets-edit" hidden>
+          <div id="sc-baseline-body"></div>
+          <button type="button" class="f10-ctl" id="cl-reset">Reset to baseline</button>
         </div>
-        <div class="cl-toggles"><label for="ctrl-segment">Campaign type</label><select id="ctrl-segment"><option value="${GROUP_ALL}" selected>All campaign types</option></select></div>
         <div id="sc-baseline-unmatched"></div>
-        <div id="sc-baseline-body"><span class="tc-note">Loading baseline&hellip;</span></div>
-        <div class="tc-actions"><button class="tc-reset" id="cl-reset">Reset to baseline</button></div>
+        <div class="tc-note">Launch date is the first day with spend. Launched picks which ads show; spend, results and verdicts stay counted from each ad's launch. Target edits last for this session only.</div>
       </div>
       <div class="two-col">
         <div class="chart-card" style="margin-bottom:0;"><h3>Kill and scale lines</h3>
           <div class="cl-sub" id="sc-lines-sub">Spend (log) against ${e(cfg.killLabel).toLowerCase()}</div>
-          <div class="cl-toggles">
-            <label for="cl-y-mode">Y axis</label>
-            <select id="cl-y-mode"><option value="kill" selected>${e(cfg.killLabel)}</option><option value="scale">${e(cfg.scaleLabel)}</option></select>
-          </div>
-          <div class="cl-legend" id="sc-lines-legend">${chip('cl-sw-scale', 'Scale', 'sc-count-scale')}${chip('cl-sw-testing', 'Testing', 'sc-count-testing')}${chip('cl-sw-cut', 'Cut', 'sc-count-cut')}${qchip('cl-sw-live', 'Live')}${qchip('cl-sw-paused', 'Paused')}<span class="cl-chip" title="Paused in Meta while the verdict is still Testing"><span class="cl-swatch cl-sw-flag"></span>Paused while Testing <strong id="sc-count-paused-testing">0</strong></span><span class="cl-chip" title="Still live in Meta while the verdict is Cut"><span class="cl-swatch cl-sw-flag"></span>Live in Cut <strong id="sc-count-live-cut">0</strong></span></div>
-          <div class="cl-toggles sc-play" id="sc-play-controls">
-            <button type="button" class="tc-reset" id="sc-play">Play</button>
-            <label for="sc-play-speed">Speed</label><select id="sc-play-speed"><option value="1" selected>1x</option><option value="2">2x</option><option value="4">4x</option></select>
-            <input type="range" id="sc-play-date" min="0" max="0" value="0" step="1" aria-label="Playback date">
-            <span id="sc-play-label"></span>
-            <label><input type="checkbox" id="sc-trails"> Trails</label>
-          </div>
-          <div class="tc-note cl-lines-note" id="sc-play-cap"></div>
+          <div class="cl-legend" id="sc-lines-legend">${chip('cl-sw-scale', 'Scale', 'sc-count-scale')}${chip('cl-sw-testing', 'Testing', 'sc-count-testing')}${chip('cl-sw-cut', 'Cut', 'sc-count-cut')}<span class="cl-chip tc-note" id="sc-live-note">Filled = live, hollow = paused</span></div>
           <div class="tc-note cl-lines-note" id="sc-lines-note"></div>
           <div id="sc-lines-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <div class="chart-wrapper" id="sc-lines-wrapper" style="display:none; height:340px;"><canvas id="sc-lines-chart"></canvas></div>
@@ -129,6 +127,18 @@ function scaleCutPanelHTML(){
           <div class="tc-note cl-lines-note cl-reach-note" id="sc-reach-note"></div>
           <div class="tc-note cl-lines-note cl-reach-missing" id="sc-reach-missing"></div>
         </div>
+      </div>
+      <div class="sc-play" id="sc-play-controls">
+        <button type="button" class="f10-ctl" id="sc-play">Play</button>
+        <input type="range" id="sc-play-date" min="0" max="0" value="0" step="1" aria-label="Playback date">
+        <span id="sc-play-label"></span>
+        <label for="sc-play-speed">Speed</label><select class="f10-ctl" id="sc-play-speed"><option value="1" selected>1x</option><option value="2">2x</option><option value="4">4x</option></select>
+        <label><input type="checkbox" id="sc-trails"> Trails</label>
+      </div>
+      <div class="tc-note cl-lines-note" id="sc-play-cap"></div>
+      <div class="sc-look" id="sc-look">Needs a look:
+        <button type="button" class="f10-ctl sc-look-btn" id="sc-look-paused-testing" data-look="pausedTesting" aria-pressed="false"><strong id="sc-count-paused-testing">0</strong> paused while Testing</button>
+        <button type="button" class="f10-ctl sc-look-btn" id="sc-look-live-cut" data-look="liveCut" aria-pressed="false"><strong id="sc-count-live-cut">0</strong> live in Cut</button>
       </div>
       <div class="table-card" style="margin-top:20px;"><h3>Ads by verdict</h3>
         <div class="table-scroll">
@@ -998,7 +1008,7 @@ function renderLayout(){
 
     <!-- Global controls: group filters (all tabs) + weekly-only controls -->
     <div class="controls-bar" id="controls-bar" style="display:none;">
-      <div id="ctrl-groups" class="ctrl-groups"></div>
+      <div id="ctrl-groups" class="ctrl-groups"></div>${scaleCutControlsHTML()}
       <div id="ctrl-scope" class="ctrl-groups">
         <div class="ctrl"><label>Search ad</label><input type="search" id="ctrl-adsearch" class="ctrl-search" placeholder="Ad or campaign name&hellip;" autocomplete="off" /></div>
         <div class="ctrl"><label>Ad status</label><select id="ctrl-status"><option value="all" selected>All ads</option><option value="active">Active only</option></select></div>

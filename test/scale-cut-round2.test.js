@@ -126,7 +126,7 @@ test('is_active comes from the newest row and drives the mismatch flags', () => 
   assert.strictEqual(sb.confidenceStatusText(true), 'Live');
   assert.strictEqual(sb.confidenceStatusText(false), 'Paused');
   const html = run('scaleCutPanelHTML()');
-  ['sc-count-paused-testing', 'sc-count-live-cut', 'Paused while Testing', 'Live in Cut', '>Status</th>'].forEach((s) => assert.ok(html.includes(s), s));
+  ['sc-count-paused-testing', 'sc-count-live-cut', 'paused while Testing', 'live in Cut', '>Status</th>'].forEach((s) => assert.ok(html.includes(s), s));
 });
 
 // 3. Maturity playback
@@ -348,10 +348,11 @@ test('removed: reach window select, Show names list, At these targets line', () 
   assert.strictEqual(run('typeof toggleConfidenceReachMissing'), 'undefined');
   assert.strictEqual(run('confidenceReachWindow()'), 'lifetime');
 });
-test('kept: baseline panel, y-axis toggle and the verdict logic', () => {
+test('kept: targets line, Judge on switch and the verdict logic', () => {
   const { sb, run } = boot(CONFIG);
   const html = run('scaleCutPanelHTML()');
-  ['id="sc-baseline-controls"', 'id="sc-baseline-body"', 'id="cl-y-mode"'].forEach((s) => assert.ok(html.includes(s), s));
+  ['id="sc-baseline-controls"', 'id="sc-baseline-body"', 'id="sc-targets-line"'].forEach((s) => assert.ok(html.includes(s), s));
+  assert.ok(run('scaleCutControlsHTML()').includes('id="sc-judge"'));
   assert.ok(sb.scaleCutSQL(RANGE).includes('per_ad_conf'));
 });
 test('no CONFIDENCE_LINES: no Scale & Cut SQL, panel or lens', () => {
@@ -377,6 +378,64 @@ test('no em or en dashes in the round 2 code or its output', () => {
   });
   assert.ok(!DASH.test(run('scaleCutPanelHTML()') + sb.mapLensHTML()), 'panel markup');
   assert.ok(!DASH.test(read('test/scale-cut-round2.test.js')), 'this test file');
+});
+
+// Simplified controls (Zac's agreed layout)
+test('filter bar: Campaign type, then Launched, then Judge on', () => {
+  const { run } = boot(CONFIG);
+  const bar = run('scaleCutControlsHTML()');
+  const a = bar.indexOf('id="ctrl-segment"'), b = bar.indexOf('id="sc-launch-preset"'), c = bar.indexOf('id="sc-judge"');
+  assert.ok(a >= 0 && b > a && c > b, 'order');
+  assert.ok(bar.includes('<option value="90" selected>'), '90 days is the default');
+  ['30', '60', 'custom'].forEach((v) => assert.ok(bar.includes('<option value="' + v + '"'), v));
+  assert.ok(/id="sc-launch-custom"[^>]*hidden/.test(bar), 'custom dates start hidden');
+});
+test('Launched presets: Custom dates show only on Custom', () => {
+  const { doc, run } = boot(CONFIG);
+  run('applyScaleCutPreset("custom")');
+  assert.strictEqual(run('scaleCutPreset'), 'custom');
+  assert.strictEqual(doc.getElementById('sc-launch-custom').hidden, false);
+  assert.strictEqual(doc.getElementById('sc-launch-custom-to').hidden, false);
+  run('applyScaleCutPreset("30")');
+  assert.strictEqual(run('scaleCutPreset'), '30');
+  assert.strictEqual(doc.getElementById('sc-launch-custom').hidden, true);
+  assert.strictEqual(doc.getElementById('sc-launch-custom-to').hidden, true);
+  run('applyScaleCutPreset("bogus")');
+  assert.strictEqual(run('scaleCutPreset'), '90');
+});
+test('Judge on sets the one mode that drives both charts and the table', () => {
+  const { run } = boot(CONFIG);
+  assert.strictEqual(run('confidenceYMode'), 'kill');
+  run('setScaleCutJudge("scale")');
+  assert.strictEqual(run('confidenceYMode'), 'scale');
+  run('setScaleCutJudge("kill")');
+  assert.strictEqual(run('confidenceYMode'), 'kill');
+});
+test('Scale & Cut filter bar shows only on the Scale & Cut tab', () => {
+  const { doc, run } = boot(CONFIG);
+  run('activeTab = "scalecut"; applyScaleCutControlsVisibility()');
+  assert.strictEqual(doc.getElementById('sc-controls').style.display, 'flex');
+  run('activeTab = "summary"; applyScaleCutControlsVisibility()');
+  assert.strictEqual(doc.getElementById('sc-controls').style.display, 'none');
+});
+test('targets line with an Edit toggle; one playback bar outside the lines card', () => {
+  const { run } = boot(CONFIG);
+  const html = run('scaleCutPanelHTML()');
+  assert.ok(/id="sc-targets-edit"[^>]*hidden/.test(html), 'edit panel starts hidden');
+  assert.strictEqual(html.split('id="sc-play-controls"').length - 1, 1, 'exactly one playback bar');
+  assert.ok(html.includes('Filled = live, hollow = paused'));
+});
+test('Needs a look toggles on and off and filters the table rows', () => {
+  const { run } = boot(CONFIG);
+  run('globalThis.__rows = [{ is_live: false, verdict: "Testing" }, { is_live: true, verdict: "Cut" }, { is_live: true, verdict: "Testing" }]');
+  assert.strictEqual(run('scaleCutLookRows(__rows).length'), 3, 'off by default');
+  run('toggleScaleCutLook("pausedTesting")');
+  assert.strictEqual(run('scaleCutLookRows(__rows).length'), 1);
+  run('toggleScaleCutLook("liveCut")');
+  assert.strictEqual(run('scaleCutLookRows(__rows)[0].verdict'), 'Cut');
+  run('toggleScaleCutLook("liveCut")');
+  assert.strictEqual(run('scaleCutLook'), null);
+  assert.strictEqual(run('scaleCutLookRows(__rows).length'), 3);
 });
 
 Promise.all(pending).then(() => {

@@ -359,8 +359,16 @@ function ensureConfidenceControls(){
     resetConfidenceTargets(confidenceSelectedKey());
     loadScaleCut();
   });
-  const yEl = document.getElementById('cl-y-mode');
-  if (yEl) yEl.addEventListener('change', () => { confidenceYMode = yEl.value === 'scale' ? 'scale' : 'kill'; loadScaleCut(); });
+  [['sc-judge-kill', 'kill'], ['sc-judge-scale', 'scale']].forEach(([id, v]) => {
+    const b = document.getElementById(id);
+    if (b) b.addEventListener('click', () => { setScaleCutJudge(v); loadScaleCut(); });
+  });
+  const preset = document.getElementById('sc-launch-preset');
+  if (preset) preset.addEventListener('change', () => {
+    applyScaleCutPreset(preset.value);
+    if (window.F10A) F10A.track('filter_changed', { filter: 'launch_range', value: preset.value });
+    loadScaleCut();
+  });
   ['sc-launch-from', 'sc-launch-to'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('change', () => {
@@ -368,6 +376,10 @@ function ensureConfidenceControls(){
       if (window.F10A) F10A.track('filter_changed', { filter: 'launch_range', value: el.value });
       loadScaleCut();
     });
+  });
+  [['sc-look-paused-testing', 'pausedTesting'], ['sc-look-live-cut', 'liveCut']].forEach(([id, v]) => {
+    const b = document.getElementById(id);
+    if (b) b.addEventListener('click', () => { toggleScaleCutLook(v); loadScaleCut(); });
   });
   const playBtn = document.getElementById('sc-play');
   if (playBtn) playBtn.addEventListener('click', () => { if (scaleCutPlay.timer != null) stopScaleCutPlay(); else startScaleCutPlay(); });
@@ -480,6 +492,50 @@ function confidenceVerdictCell(v){
  * 90 days to the window end. Dates the user typed are kept until reload. */
 let scaleCutRangeTouched = false;
 const SCALE_CUT_DEFAULT_RANGE_DAYS = 90;
+/* Launched preset: '30' | '60' | '90' (default) | 'custom'. Custom shows the
+ * two date inputs and reads them; a preset counts back from the window end. */
+let scaleCutPreset = String(SCALE_CUT_DEFAULT_RANGE_DAYS);
+function applyScaleCutPreset(v){
+  scaleCutPreset = ['30', '60', '90', 'custom'].includes(String(v)) ? String(v) : String(SCALE_CUT_DEFAULT_RANGE_DAYS);
+  scaleCutRangeTouched = scaleCutPreset === 'custom';
+  ['sc-launch-custom', 'sc-launch-custom-to'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.hidden = scaleCutPreset !== 'custom';
+  });
+}
+/* Judge on: 'kill' (Plans) or 'scale' (Subs). Drives both charts and the table. */
+function setScaleCutJudge(v){
+  confidenceYMode = v === 'scale' ? 'scale' : 'kill';
+  [['sc-judge-kill', 'kill'], ['sc-judge-scale', 'scale']].forEach(([id, v]) => {
+    const b = document.getElementById(id);
+    if (!b) return;
+    const on = v === confidenceYMode;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+/* Needs a look: null, 'pausedTesting' or 'liveCut'. Clicking a count rings
+ * those ads on both charts and filters the table; clicking again clears it. */
+let scaleCutLook = null;
+function toggleScaleCutLook(which){
+  scaleCutLook = (which && which === scaleCutLook) ? null : (SCALE_CUT_MISMATCH[which] ? which : null);
+  [['sc-look-paused-testing', 'pausedTesting'], ['sc-look-live-cut', 'liveCut']].forEach(([id, v]) => {
+    const b = document.getElementById(id);
+    if (!b) return;
+    const on = v === scaleCutLook;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+function scaleCutLookFlag(live, verdict){
+  if (!scaleCutLook) return null;
+  const m = scaleCutMismatch(live, verdict);
+  return m && m === SCALE_CUT_MISMATCH[scaleCutLook] ? m : null;
+}
+function scaleCutLookRows(rows){
+  if (!scaleCutLook) return rows;
+  return (rows || []).filter(r => scaleCutLookFlag(confidenceIsLive(r), _confStr(r.verdict)));
+}
 function _isoDate(v){ return /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null; }
 function _isoAddDays(iso, n){
   const d = new Date(iso + 'T00:00:00Z');
@@ -493,7 +549,8 @@ function scaleCutLaunchRange(){
   let to = scaleCutRangeTouched && tEl ? _isoDate(tEl.value) : null;
   if (!to) to = end;
   if (!to) return null;
-  if (!from) from = _isoAddDays(to, -SCALE_CUT_DEFAULT_RANGE_DAYS);
+  const days = scaleCutPreset === 'custom' ? SCALE_CUT_DEFAULT_RANGE_DAYS : Number(scaleCutPreset) || SCALE_CUT_DEFAULT_RANGE_DAYS;
+  if (!from) from = _isoAddDays(to, -days);
   if (from > to){ const x = from; from = to; to = x; }
   if (fEl) fEl.value = from;
   if (tEl) tEl.value = to;
@@ -747,7 +804,7 @@ function confidenceLinesPoint(r, mode, noMismatch){
   const live = confidenceIsLive(r);
   return { x: Math.max(spend, mode.logMin), y: conv > 0 ? spend / conv : null, _cpa: conv > 0 ? spend / conv : null,
     _conv: conv, _spend: spend, label: _confStr(r.ad_name), _verdict: verdict,
-    _live: live, _mismatch: noMismatch ? null : scaleCutMismatch(live, verdict), _trail: r._trail || null,
+    _live: live, _mismatch: noMismatch ? null : scaleCutLookFlag(live, verdict), _trail: r._trail || null,
     _key: adSearchKey(r.ad_name, r.campaign_name, r.adset_name) };
 }
 function confidenceLinesView(rows, mode, fixed){
@@ -892,7 +949,7 @@ function confidenceReachView(rows, reachRows, mode){
     const live = confidenceIsLive(r);
     pts.push({ x: cpmr, y: conv > 0 ? spend / conv : null, _cpa: conv > 0 ? spend / conv : null, _noConv: !(conv > 0),
       label: _confStr(r.ad_name), _key: key, _spend: spend, _reach: Number(_confStr(rr.reach)) || 0,
-      _verdict: verdict, _live: live, _mismatch: scaleCutMismatch(live, verdict),
+      _verdict: verdict, _live: live, _mismatch: scaleCutLookFlag(live, verdict),
       _cell: confidenceKey(r.conf_group == null ? '' : _confStr(r.conf_group), _confStr(r.conf_segment)) });
   });
   /* The medians are over the selected cell's ads with reach (every ad with
@@ -1021,6 +1078,15 @@ function _confTargetField(id, label, value, conv){
 
 /* Fill the baseline panel for the selected Product x Campaign type and wire the
  * target inputs. Edits are session-only and re-grade this tab. */
+/* "Target $X per plan and $Y per sub, from your last 90 days (Meta-reported). Edit" */
+let scaleCutTargetsOpen = false;
+function scaleCutTargetsLineHTML(cfg, t){
+  const unit = label => String(label || '').replace(/^cost /i, '').trim();
+  const parts = [];
+  if (t.kill != null) parts.push(`${fmt$(t.kill)} ${_confEsc(unit(cfg.killLabel))}`);
+  if (t.scale != null) parts.push(`${fmt$(t.scale)} ${_confEsc(unit(cfg.scaleLabel))}`);
+  return `<span id="sc-targets-text">Target ${parts.join(' and ')}, from your last ${cfg.baselineDays} days (Meta-reported).</span> <button type="button" class="f10-ctl f10-ctl-link" id="sc-targets-edit-btn" aria-expanded="${scaleCutTargetsOpen ? 'true' : 'false'}" aria-controls="sc-targets-edit">Edit</button>`;
+}
 function renderConfidenceBaselinePanel(){
   const cfg = confidenceLinesConfig();
   const body = document.getElementById('sc-baseline-body');
@@ -1033,16 +1099,31 @@ function renderConfidenceBaselinePanel(){
     : '';
   const key = confidenceSelectedKey();
   const t = key ? getConfidenceTargets(key) : null;
+  const line = document.getElementById('sc-targets-line');
+  const edit = document.getElementById('sc-targets-edit');
+  const setLine = html => { if (line) line.innerHTML = html; };
   if (!key){
-    body.innerHTML = '<span class="tc-note">Pick a product and campaign type to see its baseline.</span>';
+    setLine('<span class="tc-note">Pick a product and campaign type to see its targets.</span>');
+    body.innerHTML = '';
+    if (edit) edit.hidden = true;
     if (resetBtn) resetBtn.style.display = 'none';
     return;
   }
   if (!t || (t.kill == null && t.scale == null)){
-    body.innerHTML = '<span class="tc-note" id="cl-not-enough">Not enough data for a baseline</span>';
+    setLine('<span class="tc-note" id="cl-not-enough">Not enough data for a baseline</span>');
+    body.innerHTML = '';
+    if (edit) edit.hidden = true;
     if (resetBtn) resetBtn.style.display = 'none';
     return;
   }
+  setLine(scaleCutTargetsLineHTML(cfg, t));
+  const editBtn = document.getElementById('sc-targets-edit-btn');
+  if (editBtn) editBtn.addEventListener('click', () => {
+    scaleCutTargetsOpen = !scaleCutTargetsOpen;
+    if (edit) edit.hidden = !scaleCutTargetsOpen;
+    editBtn.setAttribute('aria-expanded', scaleCutTargetsOpen ? 'true' : 'false');
+  });
+  if (edit) edit.hidden = !scaleCutTargetsOpen;
   body.innerHTML = `<div class="tc-grid">${_confTargetField('cl-target-kill', cfg.killLabel, t.kill, t.killConv)}${_confTargetField('cl-target-scale', cfg.scaleLabel, t.scale, t.scaleConv)}</div>`;
   if (resetBtn) resetBtn.style.display = '';
   [['cl-target-kill', 'kill'], ['cl-target-scale', 'scale']].forEach(([id, which]) => {
@@ -1410,7 +1491,7 @@ async function loadScaleCut(){
     followAdSearch('sc-lines', scaleCutLinesChart);
 
     scaleCutState = { rows, mode, range, reachView: null, reachRows: null, flowRows: null, flowError: false };
-    renderScaleCutTable(rows, mode);
+    renderScaleCutTable(scaleCutLookRows(rows), mode);
     renderScaleCutCounts();
     renderScaleCutFlow();
     scaleCutState.history = loadScaleCutHistory(seq, rows, view, range);
