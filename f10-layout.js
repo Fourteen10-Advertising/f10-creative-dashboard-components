@@ -66,6 +66,14 @@ function confidenceConvNoun(label){
   const n = String(label || '').replace(/^cost per /i, '').trim() || 'conversion';
   return n.charAt(0).toUpperCase() + n.slice(1) + 's';
 }
+/* Movement Map lens select (Scale & Cut round 2). Empty without CONFIDENCE_LINES
+ * so the weekly layout stays byte-identical for every other dashboard. */
+function mapLensHTML(){
+  if (!confidenceLinesConfig()) return '';
+  return `
+        <div class="cl-toggles"><label for="map-lens">Lens</label><select id="map-lens"><option value="all" selected>All ads</option><option value="older">Older ads (launched over 90 days ago)</option></select></div>
+        <div class="tc-note cl-lines-note" id="map-lens-note"></div>`;
+}
 function scaleCutPanelHTML(){
   const cfg = confidenceLinesConfig();
   if (!cfg) return '';
@@ -77,6 +85,11 @@ function scaleCutPanelHTML(){
     <!-- MONTHLY: SCALE & CUT (CONFIDENCE_LINES only) -->
     <div class="tab-panel" id="tab-scalecut">
       ${howToNote('scalecut')}
+      <div class="cl-toggles sc-launch-range" id="sc-launch-range">
+        <label for="sc-launch-from">Launched from</label><input type="date" id="sc-launch-from">
+        <label for="sc-launch-to">to</label><input type="date" id="sc-launch-to">
+        <span class="tc-note">Launch date is the first day with spend. The range picks which ads show; spend, results and verdicts stay counted from each ad's launch.</span>
+      </div>
       <div class="threshold-controls" id="sc-baseline-controls">
         <div class="tc-header">
           <strong>Your last ${days} days (Meta-reported)</strong>
@@ -85,7 +98,6 @@ function scaleCutPanelHTML(){
         <div class="cl-toggles"><label for="ctrl-segment">Campaign type</label><select id="ctrl-segment"><option value="${GROUP_ALL}" selected>All campaign types</option></select></div>
         <div id="sc-baseline-unmatched"></div>
         <div id="sc-baseline-body"><span class="tc-note">Loading baseline&hellip;</span></div>
-        <div id="sc-baseline-verdicts"></div>
         <div class="tc-actions"><button class="tc-reset" id="cl-reset">Reset to baseline</button></div>
       </div>
       <div class="two-col">
@@ -95,17 +107,21 @@ function scaleCutPanelHTML(){
             <label for="cl-y-mode">Y axis</label>
             <select id="cl-y-mode"><option value="kill" selected>${e(cfg.killLabel)}</option><option value="scale">${e(cfg.scaleLabel)}</option></select>
           </div>
-          <div class="cl-legend" id="sc-lines-legend">${chip('cl-sw-scale', 'Scale', 'sc-count-scale')}${chip('cl-sw-testing', 'Testing', 'sc-count-testing')}${chip('cl-sw-cut', 'Cut', 'sc-count-cut')}</div>
+          <div class="cl-legend" id="sc-lines-legend">${chip('cl-sw-scale', 'Scale', 'sc-count-scale')}${chip('cl-sw-testing', 'Testing', 'sc-count-testing')}${chip('cl-sw-cut', 'Cut', 'sc-count-cut')}${qchip('cl-sw-live', 'Live')}${qchip('cl-sw-paused', 'Paused')}<span class="cl-chip" title="Paused in Meta while the verdict is still Testing"><span class="cl-swatch cl-sw-flag"></span>Paused while Testing <strong id="sc-count-paused-testing">0</strong></span><span class="cl-chip" title="Still live in Meta while the verdict is Cut"><span class="cl-swatch cl-sw-flag"></span>Live in Cut <strong id="sc-count-live-cut">0</strong></span></div>
+          <div class="cl-toggles sc-play" id="sc-play-controls">
+            <button type="button" class="tc-reset" id="sc-play">Play</button>
+            <label for="sc-play-speed">Speed</label><select id="sc-play-speed"><option value="1" selected>1x</option><option value="2">2x</option><option value="4">4x</option></select>
+            <input type="range" id="sc-play-date" min="0" max="0" value="0" step="1" aria-label="Playback date">
+            <span id="sc-play-label"></span>
+            <label><input type="checkbox" id="sc-trails"> Trails</label>
+          </div>
+          <div class="tc-note cl-lines-note" id="sc-play-cap"></div>
           <div class="tc-note cl-lines-note" id="sc-lines-note"></div>
           <div id="sc-lines-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <div class="chart-wrapper" id="sc-lines-wrapper" style="display:none; height:340px;"><canvas id="sc-lines-chart"></canvas></div>
         </div>
         <div class="chart-card" style="margin-bottom:0;"><h3>Reach cost</h3>
           <div class="cl-sub">Bubble = reach, split at the medians</div>
-          <div class="cl-toggles">
-            <label for="sc-reach-window">Reach window</label>
-            <select id="sc-reach-window"><option value="lifetime" selected>Lifetime</option><option value="last_90d">Last 90 days</option><option value="last_28d">Last 28 days</option></select>
-          </div>
           <div class="cl-legend">${qchip('cl-sw-eff', 'Efficient growth')}${qchip('cl-sw-reach', 'Reach play')}${qchip('cl-sw-prec', 'Precision')}${qchip('cl-sw-cut', 'Cut candidate')}</div>
           <div class="tc-note cl-reach-empty" id="sc-reach-empty">Reach data is not loaded yet.</div>
           <div id="sc-reach-loading" class="loading" style="display:none;"><div class="spinner"></div>Loading&hellip;</div>
@@ -118,8 +134,17 @@ function scaleCutPanelHTML(){
         <div class="table-scroll">
           <div id="sc-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="sc-table" style="display:none;">
-            <thead><tr><th>Ad</th><th>Campaign</th><th>Campaign type</th><th>Lifetime spend</th><th id="sc-th-conv">${e(confidenceConvNoun(cfg.killLabel))}</th><th id="sc-th-cpa">${e(cfg.killLabel)}</th><th${defAttr(confidenceVerdictHover())}>Verdict</th></tr></thead>
+            <thead><tr><th>Ad</th><th>Campaign</th><th>Campaign type</th><th>Lifetime spend</th><th id="sc-th-conv">${e(confidenceConvNoun(cfg.killLabel))}</th><th id="sc-th-cpa">${e(cfg.killLabel)}</th><th title="Latest Meta delivery status in the data. It can lag Meta by up to a day.">Status</th><th${defAttr(confidenceVerdictHover())}>Verdict</th></tr></thead>
             <tbody id="sc-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="table-card" id="sc-flow" style="margin-top:20px;"><h3>New ad flow</h3>
+        <div class="cl-sub">One row per launch week. Verdicts are as of today; days and spend to first verdict use each ad's own history.</div>
+        <div class="table-scroll">
+          <table id="sc-flow-table">
+            <thead><tr><th>Launch week</th><th>Ads launched</th><th>Now Scale</th><th>Now Testing</th><th>Now Cut</th><th>% with a verdict</th><th>Spend on ads now Cut</th><th>Median days to first verdict</th><th>Median spend to first verdict</th></tr></thead>
+            <tbody id="sc-flow-body"><tr><td colspan="9" class="tc-note">Loading&hellip;</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -1043,7 +1068,7 @@ ${liControls}
       ${howToNote('map')}
       <div class="insight-box"><strong>Movement Map:</strong> each qualifying ad plotted by current spend (x, how much it carries) against how its efficiency changed versus the prior window (y, up = better). Bubble size = current spend. Heroes sit top-right, drags bottom-right.</div>
       <div class="window-note" id="map-window-note"></div>
-      <div class="chart-card"><h3>Spend vs Efficiency Change</h3>
+      <div class="chart-card"><h3>Spend vs Efficiency Change</h3>${mapLensHTML()}
         <div id="map-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
         <div class="chart-wrapper" id="map-wrapper" style="display:none; height:440px;"><canvas id="map-chart"></canvas></div>
       </div>

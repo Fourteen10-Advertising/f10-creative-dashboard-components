@@ -276,9 +276,11 @@ const countsText = (c) => `<strong>${c.Scale}</strong> Scale, <strong>${c.Testin
     const conf = boot(ROOT, { config: CONFIG, answer: answerFor(baselineRows(100, 60)), errors });
     conf.sb.renderLayout();
     const confHtml = conf.doc.getElementById('app').innerHTML;
-    const stripped = confHtml.replace(conf.sb.scaleCutNavHTML(), '').replace(conf.sb.scaleCutPanelHTML(), '');
+    assert.ok(conf.sb.mapLensHTML().includes('id="map-lens"'), 'config adds the Movement Map lens');
+    assert.strictEqual(plain.sb.mapLensHTML(), '', 'no lens without config');
+    const stripped = confHtml.replace(conf.sb.scaleCutNavHTML(), '').replace(conf.sb.scaleCutPanelHTML(), '').replace(conf.sb.mapLensHTML(), '');
     assert.notStrictEqual(stripped, confHtml, 'config adds the Scale & Cut tab');
-    assert.strictEqual(stripped, plain.doc.getElementById('app').innerHTML, 'layout differs only by the Scale & Cut nav link and panel');
+    assert.strictEqual(stripped, plain.doc.getElementById('app').innerHTML, 'layout differs only by the Scale & Cut nav link, panel and Movement Map lens');
     conf.run("groupSelections['group_name'] = 'Hair';");
     for (const seg of ['Prospecting', 'Retargeting', '__all__']){
       conf.sb.setSegmentSelection(seg);
@@ -293,12 +295,13 @@ const countsText = (c) => `<strong>${c.Scale}</strong> Scale, <strong>${c.Testin
     const ctx = await bootEnabled(baselineRows(100, 60));
     const { doc, sb } = ctx;
     const body = () => doc.getElementById('sc-baseline-body').innerHTML;
-    const counts = () => doc.getElementById('sc-baseline-verdicts').innerHTML;
+    const counts = () => ({ Scale: +doc.getElementById('sc-count-scale').textContent, Testing: +doc.getElementById('sc-count-testing').textContent, Cut: +doc.getElementById('sc-count-cut').textContent });
+    const html = doc.getElementById('app').innerHTML;
+    assert.ok(!html.includes('sc-baseline-verdicts') && !html.includes('At these targets'), 'the baseline verdict line is removed (round 2)');
     assert.ok(body().includes('id="cl-target-kill"') && body().includes('value="766"'), body());
     const at766 = expectedCounts(sb, 766), at600 = expectedCounts(sb, 600);
     assert.notDeepStrictEqual(at766, at600, 'fixture ads straddle the two lines');
-    assert.ok(counts().includes(countsText(at766)), counts());
-    assert.ok(!counts().includes('edited'));
+    assert.deepStrictEqual(counts(), at766, 'legend counts follow the baseline target');
     assert.notStrictEqual(doc.getElementById('cl-reset').style.display, 'none');
 
     const input = doc.getElementById('cl-target-kill');
@@ -306,8 +309,7 @@ const countsText = (c) => `<strong>${c.Scale}</strong> Scale, <strong>${c.Testin
     input.dispatch('change');
     await flush();
     assert.ok(body().includes('value="600"'), body());
-    assert.ok(counts().includes(countsText(at600)), counts());
-    assert.ok(counts().includes('(edited for this session)'));
+    assert.deepStrictEqual(counts(), at600, 'legend counts re-grade on edit');
     assert.strictEqual(sb.getConfidenceTargets('Hair|Prospecting').kill, 600);
     assert.strictEqual(sb.getConfidenceTargets('Hair|Prospecting').killBaseline, 766);
     assert.strictEqual(ctx.queries.filter((q) => /cost_per_kill/.test(q)).length, 1, 'an edit does not re-query the baseline');
@@ -321,8 +323,7 @@ const countsText = (c) => `<strong>${c.Scale}</strong> Scale, <strong>${c.Testin
     doc.getElementById('cl-reset').click();
     await flush();
     assert.ok(body().includes('value="766"'), body());
-    assert.ok(counts().includes(countsText(at766)), counts());
-    assert.ok(!counts().includes('edited'));
+    assert.deepStrictEqual(counts(), at766, 'Reset restores the counts');
     assert.strictEqual(sb.getConfidenceTargets('Hair|Prospecting').kill, 766);
     assert.deepStrictEqual(ctx.errors, []);
   });
@@ -332,7 +333,7 @@ const countsText = (c) => `<strong>${c.Scale}</strong> Scale, <strong>${c.Testin
     const body = ctx.doc.getElementById('sc-baseline-body').innerHTML;
     assert.ok(body.includes('Not enough data for a baseline'), body);
     assert.ok(!body.includes('<input'), 'no target inputs');
-    assert.strictEqual(ctx.doc.getElementById('sc-baseline-verdicts').innerHTML, '');
+    assert.ok(!ctx.doc.getElementById('app').innerHTML.includes('sc-baseline-verdicts'), 'no baseline verdict line');
     assert.strictEqual(ctx.doc.getElementById('cl-reset').style.display, 'none');
     const t = ctx.sb.getConfidenceTargets('Hair|Prospecting');
     assert.strictEqual(t.kill, null); assert.strictEqual(t.scale, null);

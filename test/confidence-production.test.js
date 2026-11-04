@@ -194,8 +194,7 @@ async function test(name, fn){
     assert.ok(!/confidenceGradeAd\(|confidenceVerdict\(/.test(block), 'display never re-grades');
     const want = { Scale: 0, Testing: 0, Cut: 0 };
     ['cutthree', 'twoxlead', 'bothcutscale', 'scalesubs', 'freshad', 'steady'].forEach((n) => { want[verdictOf(ctx, n)]++; });
-    const counts = ctx.doc.getElementById('sc-baseline-verdicts').innerHTML;
-    assert.ok(counts.includes(`<strong>${want.Scale}</strong> Scale, <strong>${want.Testing}</strong> Testing, <strong>${want.Cut}</strong> Cut`), counts);
+    assert.ok(!ctx.doc.getElementById('app').innerHTML.includes('sc-baseline-verdicts'), 'the At these targets line is removed; the legend chips carry the counts');
     assert.strictEqual(ctx.doc.getElementById('sc-count-scale').textContent, String(want.Scale));
     assert.strictEqual(ctx.doc.getElementById('sc-count-testing').textContent, String(want.Testing));
     assert.strictEqual(ctx.doc.getElementById('sc-count-cut').textContent, String(want.Cut));
