@@ -1342,8 +1342,8 @@ change is a **Scale & Cut** tab after Ad Production. Ad Production itself
 renders and queries exactly as v1.31.0 did, whatever Campaign type is picked.
 `test/confidence-baseline.test.js` pins both: the layout without config and the
 Ad Production SQL are hashed against v1.31.0, and with config the layout must
-equal the plain layout once the Scale & Cut nav link, the panel and the
-Movement Map lens select are taken out.
+equal the plain layout once the Scale & Cut nav link, the panel, the
+Scale & Cut filter bar and the Movement Map lens select are taken out.
 
 ```js
 const CONFIDENCE_LINES = {
@@ -1378,33 +1378,43 @@ every report groups by) and set `SEGMENT_EXPR: 'campaign_type'`. Keep the inline
 
 The tab has, top to bottom:
 
-- A **Launched from / to** date range. It picks which ads show, by launch
-  date (the first day with spend). The default is the 90 days that end on the
-  dashboard window end, for example 2026-08-02 to 2026-10-31. Once you change a
-  date it is kept for the session; a reversed range is swapped. The range only
-  filters ads (a `HAVING` on the launch date). Spend, conversions and verdicts
-  are still counted from each ad's launch, so an ad's evidence is never cut
-  off by the range. Ads that never spent have no launch date and do not show.
-- A **Campaign type** dropdown. It lists the distinct `SEGMENT_EXPR` values
-  (Unmatched shows as "Unmatched (check naming)") and scopes only this tab's
-  queries, through `scaleCutScopeWhere()`. Every other tab keeps using
-  `scopeWhere()`, which has no campaign type clause. Product / Group and the
-  status filters still apply as usual.
-- A **Your last 90 days (Meta-reported)** baseline panel. One baseline query
-  per window end: Meta-reported spend, kill and scale conversions and cost per
-  each, for every group x campaign type, over the `BASELINE_DAYS` that end the
-  day before the window end. For 90 days and a window ending 2026-10-31 that is
-  `date_start BETWEEN '2026-08-01' AND '2026-10-30'`, `GROUP BY 1, 2`. The group
-  is the per-product thresholds column, else the first `GROUP_FILTERS` column,
-  else one account-wide group. Once a single product and campaign type are
-  picked the panel shows the cost per kill and cost per scale targets as
-  editable inputs. The Scale, Testing and Cut counts sit on the chart legend
-  chips. Editing a target re-grades the tab for this session only; **Reset to baseline** or a
-  reload puts the baseline back. A cell with fewer than 50 conversions shows
-  "Not enough data for a baseline" and gets no input and no line (kill and
-  scale are checked separately). When window spend sits on `'Unmatched'`
-  campaigns, the panel says how much so the names or the mapping can be fixed.
+- **One filter bar.** On Scale & Cut the global bar gains, in order after
+  Product: **Campaign type**, **Launched** and **Judge on**, then Search. It
+  shows only on this tab (`applyScaleCutControlsVisibility()`), and the Ad
+  status dropdown is hidden on this tab only. Every control uses the shared
+  `.f10-ctl` style (30px high, same border, font and radius), which the
+  Movement Map lens select also uses.
+  - **Campaign type** lists the distinct `SEGMENT_EXPR` values (Unmatched
+    shows as "Unmatched (check naming)") and scopes only this tab's queries,
+    through `scaleCutScopeWhere()`. Every other tab keeps using `scopeWhere()`,
+    which has no campaign type clause.
+  - **Launched** is a preset: last 30, 60 or 90 days (default 90), or
+    **Custom**. The from and to dates show inline only on Custom. It picks
+    which ads show, by launch date (the first day with spend), ending on the
+    dashboard window end. The range only filters ads (a `HAVING` on the launch
+    date). Spend, conversions and verdicts are still counted from each ad's
+    launch. Ads that never spent do not show.
+  - **Judge on** is a two-button switch: the kill conversion (Plans for Mosh)
+    or the scale conversion (Subs for Mosh). It sets `confidenceYMode`, which
+    drives both charts and the table. It replaces the old Y axis select.
+- **A targets line** in place of the baseline panel: "Target $X per plan and
+  $Y per subscription, from your last 90 days (Meta-reported)." with an
+  **Edit** link. Edit opens the target inputs and **Reset to baseline**. The
+  baseline query is unchanged: Meta-reported spend, kill and scale
+  conversions for every group x campaign type, over the `BASELINE_DAYS` that
+  end the day before the window end (`GROUP BY 1, 2`). Editing a target
+  re-grades the tab for this session only. A cell with fewer than 50
+  conversions shows "Not enough data for a baseline" on the line and gets no
+  Edit, input or line. With Product or Campaign type on All the line asks you
+  to pick both. Spend on `'Unmatched'` campaigns is still called out.
 - Two charts side by side: **Kill and scale lines** and **Reach cost** (below).
+  One legend shows the Scale, Testing and Cut chips with their counts, plus
+  "Filled = live, hollow = paused". One playback bar (play, slider, speed,
+  trails) sits under both charts and moves both.
+- **Needs a look**: two toggle buttons, "N paused while Testing" and "N live in
+  Cut". Turning one on rings the matching ads on both charts and filters the
+  table to them (`scaleCutLookRows()`); turning it off shows every ad again.
+  Rings are off by default.
 - An **Ads by verdict** table: one row per ad with lifetime spend, conversions,
   cost per conversion, a **Status** column (Live or Paused) and a sortable
   **Verdict** column. With the default config the Verdict header
@@ -1431,7 +1441,7 @@ type on All, each ad is still judged against its own cell.
 #### Kill and scale lines chart
 
 - X axis is lifetime spend per ad on a log scale. Y axis is cost per kill
-  conversion or cost per scale conversion, picked with the **Y axis** select.
+  conversion or cost per scale conversion, picked with **Judge on**.
   Ads with none of that conversion yet sit on the top edge.
 - For the selected product and campaign type it draws the **CUT** curve and the
   **SCALE** curve from that cell's target, with the area above CUT and below
