@@ -295,7 +295,9 @@ async function test(name, fn){
     assert.strictEqual(st.target, SCALE_T);
     const pts = linePoints(ctx);
     assert.strictEqual(pts.find((x) => x.label === 'scalesubs').y, 2000 / 8, 'y is spend per sub');
-    assert.ok(ctx.doc.getElementById('sc-lines-note').textContent.startsWith('The Scale line is exact here.'));
+    assert.strictEqual(ctx.doc.getElementById('sc-lines-note').textContent,
+      'Scale line is exact. Switch Judge on to Kill conversions to see the exact Cut line.');
+    assert.strictEqual(ctx.run('confidenceConvNoun(confidenceLinesConfig().killLabel)'), 'Kill conversions', 'note names the Judge on button');
     ctx.run("confidenceYMode = 'kill';");
   });
 

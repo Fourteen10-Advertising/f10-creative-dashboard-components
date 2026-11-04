@@ -296,8 +296,15 @@ async function test(name, fn){
     const calls = [];
     plugin.beforeDatasetsDraw(fakeChart(calls));
     assert.strictEqual(calls.filter((c) => c === 'fillRect').length, 4, 'four tinted quadrants');
-    ['REACH PLAY', 'cheap reach, higher CPA', 'CUT CANDIDATE', 'pricey reach, higher CPA', 'EFFICIENT GROWTH', 'cheap reach, lower CPA',
-      'PRECISION', 'pricey reach, lower CPA', 'cheaper reach'].forEach((l) => assert.ok(calls.includes('fillText:' + l), l));
+    assert.ok(calls.includes('fillText:cheaper reach'));
+    const corners = ['REACH PLAY', 'cheap reach, higher CPA', 'CUT CANDIDATE', 'pricey reach, higher CPA', 'EFFICIENT GROWTH', 'cheap reach, lower CPA',
+      'PRECISION', 'pricey reach, lower CPA'];
+    corners.forEach((l) => assert.ok(!calls.includes('fillText:' + l), l + ' is not drawn under the bubbles'));
+    const after = [];
+    plugin.afterDatasetsDraw(fakeChart(after));
+    corners.forEach((l) => assert.ok(after.includes('fillText:' + l), l + ' is drawn over the bubbles'));
+    assert.strictEqual(after.filter((c) => c === 'fillRect').length, 4, 'a light panel behind each corner label');
+    assert.ok(after.indexOf('fillRect') < after.indexOf('fillText:EFFICIENT GROWTH'), 'panel drawn before the label');
     assert.ok(calls.includes('fillText:median ' + ctx.sb.fmt$(12.5)));
     assert.ok(calls.includes('fillText:median ' + ctx.sb.fmt$(medCpa)));
     assert.ok(calls.includes('fillText:target ' + ctx.sb.fmt$(KILL_T)), 'faint target line labelled');

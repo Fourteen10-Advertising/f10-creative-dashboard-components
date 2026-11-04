@@ -1408,6 +1408,9 @@ The tab has, top to bottom:
   Edit, input or line. With Product or Campaign type on All the line asks you
   to pick both. Spend on `'Unmatched'` campaigns is still called out.
 - Two charts side by side: **Kill and scale lines** and **Reach cost** (below).
+  Each card's note (for example "Cut line is exact. Switch Judge on to
+  Subscriptions to see the exact Scale line." and the lifetime reach note)
+  uses the same small grey caption style as the card subtitle.
   One legend shows the Scale, Testing and Cut chips with their counts, plus
   "Filled = live, hollow = paused". One playback bar (play, slider, speed,
   trails) sits under both charts and moves both.
@@ -1416,7 +1419,8 @@ The tab has, top to bottom:
   table to them (`scaleCutLookRows()`); turning it off shows every ad again.
   Rings are off by default.
 - An **Ads by verdict** table: one row per ad with lifetime spend, conversions,
-  cost per conversion, a **Status** column (Live or Paused) and a sortable
+  cost per conversion, a **Status** column (Live or Paused, plus a small
+  "Paused while Testing" or "Live in Cut" badge only on those mismatches) and a sortable
   **Verdict** column. With the default config the Verdict header
   hover reads "Judged against your last 90 days for this product and campaign
   type, using Meta-reported results, at 90% confidence." The day count and the
@@ -1513,7 +1517,8 @@ chart). Bubbles are sized by reach and coloured by quadrant.
   The cell's target shows as a faint dashed line for reference; it does not
   split the quadrants. The corner labels are Efficient growth (cheap reach,
   low cost), Reach play (cheap reach, high cost), Precision (dear reach, low
-  cost) and Cut candidate (dear reach, high cost). Ties count as the cheap or
+  cost) and Cut candidate (dear reach, high cost). They are drawn on top of
+  the bubbles on a light panel so they stay readable. Ties count as the cheap or
   low side. An ad with no conversions reads as high cost.
 - **Marker.** A Cut ad that lands in Reach play is drawn as a triangle, and
   its hover note says it may be bringing in new people. Check it before

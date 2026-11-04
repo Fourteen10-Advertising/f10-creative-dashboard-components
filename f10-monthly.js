@@ -706,9 +706,11 @@ function renderConfidenceLinesNote(mode){
   if (!(mode.target > 0)) { el.textContent = 'Not enough data for a baseline, so no lines'; return; }
   const cfg = mode.cfg;
   if (cfg.killConvExpr !== cfg.scaleConvExpr){
+    /* Same noun as the Judge on buttons: 'Cost per subscription' reads Subscriptions. */
+    const noun = l => { const n = String(l || '').replace(/^cost per /i, '').trim() || 'conversion'; return n.charAt(0).toUpperCase() + n.slice(1) + 's'; };
     el.textContent = mode.which === 'kill'
-      ? `The Cut line is exact here. Scale is judged on ${cfg.scaleLabel.toLowerCase()}, so switch the y axis to see the exact Scale line.`
-      : `The Scale line is exact here. Cut is judged on ${cfg.killLabel.toLowerCase()}, so switch the y axis to see the exact Cut line.`;
+      ? `Cut line is exact. Switch Judge on to ${noun(cfg.scaleLabel)} to see the exact Scale line.`
+      : `Scale line is exact. Switch Judge on to ${noun(cfg.killLabel)} to see the exact Cut line.`;
   } else el.textContent = '';
 }
 
@@ -1021,9 +1023,10 @@ function confidenceReachChart(view){
     plugins: [confidenceQuadrantPlugin()] });
 }
 
-/* Tinted quadrants, dotted median lines with their values, corner labels, the
- * faint target line and the "cheaper reach" note. Drawn from
- * confidenceQuadState before the bubbles, so the ad search never removes them. */
+/* Tinted quadrants, dotted median lines with their values, the faint target
+ * line and the "cheaper reach" note are drawn from confidenceQuadState before
+ * the bubbles, so the ad search never removes them. The corner labels are
+ * drawn after the bubbles. */
 function confidenceQuadrantPlugin(){
   return { id: 'confidence-quadrants', beforeDatasetsDraw(chart){
     const st = confidenceQuadState;
@@ -1055,11 +1058,20 @@ function confidenceQuadrantPlugin(){
     g.fillStyle = '#4a4a4a';
     g.fillText('median ' + fmt$(st.median), x + 4, a.bottom - 6);
     g.fillText('median ' + fmt$(st.medianCpa), a.left + 4, y - 4);
+    g.restore();
+  },
+  /* Corner labels go on top of the bubbles, on a light panel, so a crowded
+   * corner never hides them. */
+  afterDatasetsDraw(chart){
+    const g = chart.ctx, a = chart.chartArea;
+    if (!confidenceQuadState || !a) return;
+    g.save();
     const corner = (title, sub, col, left, top) => {
       g.font = 'bold 10px Archivo, sans-serif';
       const w = Math.max(g.measureText(title).width, (g.font = '10px Archivo, sans-serif', g.measureText(sub).width));
       const tx = left ? a.left + 6 : a.right - w - 6;
       const ty = top ? a.top + 14 : a.bottom - 34;
+      g.fillStyle = 'rgba(255, 255, 255, 0.85)'; g.fillRect(tx - 3, ty - 11, w + 6, 27);
       g.fillStyle = col; g.font = 'bold 10px Archivo, sans-serif'; g.fillText(title, tx, ty);
       g.font = '10px Archivo, sans-serif'; g.fillText(sub, tx, ty + 12);
     };
@@ -1182,7 +1194,7 @@ function renderScaleCutTable(rows, mode){
 function confidenceStatusCell(r){
   const live = confidenceIsLive(r);
   const flag = scaleCutMismatch(live, _confStr(r.verdict));
-  return `<td>${confidenceStatusText(live)}${flag ? ` <span class="tc-note sc-mismatch" title="${flag}">(${flag})</span>` : ''}</td>`;
+  return `<td>${confidenceStatusText(live)}${flag ? ` <span class="sc-mismatch-badge" title="${flag}">${flag}</span>` : ''}</td>`;
 }
 
 /* ── Maturity playback ──

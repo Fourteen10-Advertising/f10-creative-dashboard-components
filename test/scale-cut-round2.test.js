@@ -438,6 +438,28 @@ test('Needs a look toggles on and off and filters the table rows', () => {
   assert.strictEqual(run('scaleCutLookRows(__rows).length'), 3);
 });
 
+test('Status column: Live or Paused, with a badge only on a mismatch', () => {
+  const { run } = boot(CONFIG);
+  const paused = run('confidenceStatusCell({ is_live: false, verdict: "Testing" })');
+  assert.ok(paused.startsWith('<td>Paused <span class="sc-mismatch-badge"'), paused);
+  assert.ok(paused.includes('>Paused while Testing</span>'), paused);
+  assert.ok(!paused.includes('('), 'no brackets around the badge');
+  const liveCut = run('confidenceStatusCell({ is_live: true, verdict: "Cut" })');
+  assert.ok(liveCut.startsWith('<td>Live <span class="sc-mismatch-badge"') && liveCut.includes('>Live in Cut</span>'), liveCut);
+  assert.strictEqual(run('confidenceStatusCell({ is_live: true, verdict: "Testing" })'), '<td>Live</td>');
+  assert.strictEqual(run('confidenceStatusCell({ is_live: false, verdict: "Cut" })'), '<td>Paused</td>');
+});
+
+test('card notes use the small caption style and the short Cut line note', () => {
+  const css = require('fs').readFileSync(require('path').join(__dirname, '..', 'f10-shared.css'), 'utf8');
+  assert.ok(/\.chart-card \.cl-lines-note \{[^}]*font-size:12px;[^}]*color:#727272;/.test(css), 'notes match .cl-sub');
+  assert.ok(/\.cl-sub \{[^}]*font-size:12px;[^}]*color:#727272;/.test(css), 'card subtitle style');
+  assert.ok(/\.sc-mismatch-badge \{[^}]*font-size:11px;/.test(css), 'small badge');
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'f10-monthly.js'), 'utf8');
+  assert.ok(src.includes('`Cut line is exact. Switch Judge on to ${noun(cfg.scaleLabel)} to see the exact Scale line.`'));
+  assert.ok(!src.includes('The Cut line is exact here'));
+});
+
 Promise.all(pending).then(() => {
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);
