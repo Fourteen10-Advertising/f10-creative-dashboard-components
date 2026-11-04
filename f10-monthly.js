@@ -740,18 +740,22 @@ function confidenceStatusStyle(fill, border, width){
  * verdict, sized gently by spend and clamped to the top edge when their cost
  * per conversion is off the chart or they have no conversions yet. fixed
  * ({ maxY, maxSpend, noMismatch }) holds the axes still during playback. */
+function confidenceLinesPoint(r, mode, noMismatch){
+  const spend = Number(_confStr(r.lifetime_spend)) || 0;
+  const conv = Number(_confStr(r[mode.convCol])) || 0;
+  const verdict = _confStr(r.verdict) || 'No baseline';
+  const live = confidenceIsLive(r);
+  return { x: Math.max(spend, mode.logMin), y: conv > 0 ? spend / conv : null, _cpa: conv > 0 ? spend / conv : null,
+    _conv: conv, _spend: spend, label: _confStr(r.ad_name), _verdict: verdict,
+    _live: live, _mismatch: noMismatch ? null : scaleCutMismatch(live, verdict), _trail: r._trail || null,
+    _key: adSearchKey(r.ad_name, r.campaign_name, r.adset_name) };
+}
 function confidenceLinesView(rows, mode, fixed){
   const pts = [];
   (rows || []).forEach(r => {
     const spend = Number(_confStr(r.lifetime_spend)) || 0;
     if (!(spend > 0)) return;
-    const conv = Number(_confStr(r[mode.convCol])) || 0;
-    const verdict = _confStr(r.verdict) || 'No baseline';
-    const live = confidenceIsLive(r);
-    pts.push({ x: Math.max(spend, mode.logMin), y: conv > 0 ? spend / conv : null, _cpa: conv > 0 ? spend / conv : null,
-      _conv: conv, _spend: spend, label: _confStr(r.ad_name), _verdict: verdict,
-      _live: live, _mismatch: fixed && fixed.noMismatch ? null : scaleCutMismatch(live, verdict), _trail: r._trail || null,
-      _key: adSearchKey(r.ad_name, r.campaign_name, r.adset_name) });
+    pts.push(confidenceLinesPoint(r, mode, !!(fixed && fixed.noMismatch)));
   });
   const maxSpend = fixed ? fixed.maxSpend : Math.max(0, ...pts.map(p => p._spend));
   const maxY = fixed ? fixed.maxY : confidenceYMax(mode.target, pts.map(p => p._cpa).filter(v => v != null));
@@ -788,7 +792,7 @@ function scaleCutTrailsPlugin(){
     g.beginPath(); g.rect(a.left, a.top, a.right - a.left, a.bottom - a.top); g.clip();
     g.lineWidth = 1;
     chart.data.datasets.forEach(d => (d.data || []).forEach(p => {
-      if (!p || !p._trail || p._trail.length < 2) return;
+      if (!p || !p._trail || p._trail.length < 2 || p._hide || p._searchOut) return;
       g.strokeStyle = (CONFIDENCE_VERDICT_COLOR[p._verdict] || '#999999') + '55';
       g.beginPath();
       p._trail.forEach((t, i) => {
@@ -809,8 +813,9 @@ function confidenceLinesChart(view){
           afterBuildTicks: ax => { ax.ticks = confidenceLogTicks(view.minX, view.maxX).map(v => ({ value: v })); },
           ticks: { callback: v => confidenceShortMoney(v) } },
         y: { min: 0, max: view.maxY, title: { display: true, text: mode.label, font: { size: 11 } }, ticks: { callback: v => fmt$(v) } } },
+      transitions: { [SCALE_CUT_PLAY_MODE]: { animation: { duration: 180, easing: 'linear' } } },
       plugins: { legend: { display: false },
-        tooltip: { callbacks: { label: c => confidenceLinesTooltip(c.raw, mode) } } } },
+        tooltip: { filter: c => !scaleCutDotHidden(c.raw), callbacks: { label: c => confidenceLinesTooltip(c.raw, mode) } } } },
     plugins: [confidenceLinesPlugin(), scaleCutTrailsPlugin()] });
 }
 
@@ -1121,27 +1126,116 @@ function scaleCutHistoryIndex(dailyRows){
   Object.keys(byAd).forEach(k => byAd[k].sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0)));
   return byAd;
 }
-/* The rows for one playback date: the ad's latest history row on or before it.
- * Ads not yet launched are left out. */
+/* One ad's row for a playback date: its latest history row on or before it.
+ * Before launch the row holds the first day and is marked _unlaunched. */
+function scaleCutFrameRow(r, h, date, trails, mode){
+  let last = -1;
+  for (let i = 0; i < h.length && h[i].day <= date; i++) last = i;
+  const e = h[Math.max(0, last)];
+  const row = Object.assign({}, r, { lifetime_spend: e.spend, kill_conv: e.kill, scale_conv: e.scale, verdict: e.verdict });
+  if (last < 0) return Object.assign(row, { _unlaunched: true });
+  if (trails && mode){
+    row._trail = h.slice(0, last + 1).map(t => {
+      const conv = mode.which === 'scale' ? t.scale : t.kill;
+      return { x: Math.max(t.spend, mode.logMin), y: Math.min(conv > 0 ? t.spend / conv : scaleCutPlay.fixed.maxY, scaleCutPlay.fixed.maxY) };
+    });
+  }
+  return row;
+}
+/* The rows for one playback date. Ads not yet launched are left out. */
 function scaleCutFrameRows(rows, byAd, date, trails, mode){
   const out = [];
   (rows || []).forEach(r => {
     const h = byAd[String(_confStr(r.ad_id))];
-    if (!h) return;
-    let last = -1;
-    for (let i = 0; i < h.length && h[i].day <= date; i++) last = i;
-    if (last < 0) return;
-    const e = h[last];
-    const row = Object.assign({}, r, { lifetime_spend: e.spend, kill_conv: e.kill, scale_conv: e.scale, verdict: e.verdict });
-    if (trails && mode){
-      row._trail = h.slice(0, last + 1).map(t => {
-        const conv = mode.which === 'scale' ? t.scale : t.kill;
-        return { x: Math.max(t.spend, mode.logMin), y: Math.min(conv > 0 ? t.spend / conv : scaleCutPlay.fixed.maxY, scaleCutPlay.fixed.maxY) };
-      });
-    }
-    out.push(row);
+    if (!h || !h.length) return;
+    const row = scaleCutFrameRow(r, h, date, trails, mode);
+    if (!row._unlaunched) out.push(row);
   });
   return out;
+}
+/* ── Playback dots ──
+ * While playing, every ad with history holds one slot in a single dataset, in
+ * the same order on every frame. Each frame updates the points in place and
+ * Chart.js tweens each dot from where it was, so nothing jumps from the axis.
+ * Colour and fill come from each point's own verdict and live status. Ads not
+ * yet launched (or with no spend yet) sit at their first-day position with
+ * radius 0. The last frame goes back to the grouped static view. */
+const SCALE_CUT_PLAY_MODE = 'sc-play';
+function scaleCutFrameMs(){
+  const sp = document.getElementById('sc-play-speed');
+  return 200 / Math.max(1, Number(sp && sp.value) || 1);
+}
+function scaleCutDotColor(p){ return CONFIDENCE_VERDICT_COLOR[p && p._verdict] || CONFIDENCE_VERDICT_COLOR['No baseline']; }
+function scaleCutDotHidden(p){ return !!(p && (p._hide || p._searchOut)); }
+function scaleCutPlayDataset(){
+  const r = c => (c.raw && c.raw._r) || 3;
+  return { label: 'Ads', data: [], _scaleCutPlay: true, borderWidth: 1,
+    backgroundColor: c => scaleCutDotColor(c.raw) + 'cc', borderColor: c => scaleCutDotColor(c.raw),
+    pointBackgroundColor: c => (c.raw && c.raw._live === false) ? '#ffffff' : scaleCutDotColor(c.raw) + 'cc',
+    pointBorderColor: c => scaleCutDotColor(c.raw),
+    pointBorderWidth: c => (c.raw && c.raw._live === false) ? 1.5 : 1,
+    pointRadius: c => scaleCutDotHidden(c.raw) ? 0 : r(c),
+    pointHoverRadius: c => scaleCutDotHidden(c.raw) ? 0 : r(c) + 2,
+    pointHitRadius: c => scaleCutDotHidden(c.raw) ? 0 : 1 };
+}
+/* One point per ad with history, in rows order. y is never 0: no conversions
+ * or off the chart sits at the top edge, like the static view. */
+function scaleCutPlayPoints(rows, byAd, date, trails, mode, fixed){
+  const out = [];
+  (rows || []).forEach(r => {
+    const id = String(_confStr(r.ad_id)), h = byAd[id];
+    if (!h || !h.length) return;
+    const row = scaleCutFrameRow(r, h, date, trails, mode);
+    const p = confidenceLinesPoint(row, mode, true);
+    p._adId = id;
+    p._hide = !!row._unlaunched || !(p._spend > 0);
+    if (p._hide) p._trail = null;
+    p._clamped = false;
+    if (!(p.y > 0) || p.y > fixed.maxY){ p.y = fixed.maxY; p._clamped = true; }
+    p._r = 2.5 + 3.5 * Math.sqrt(fixed.maxSpend > 0 ? Math.min(1, p._spend / fixed.maxSpend) : 0);
+    out.push(p);
+  });
+  return out;
+}
+function renderScaleCutPlayFrame(chart, st, date, trails){
+  const cur = chart.data.datasets;
+  let ds = cur.length === 1 && cur[0] && cur[0]._scaleCutPlay ? cur[0] : null;
+  const fresh = !ds;
+  if (fresh){ ds = scaleCutPlayDataset(); chart.data.datasets = [ds]; }
+  const pts = scaleCutPlayPoints(st.rows, scaleCutPlay.byAd, date, trails, st.mode, scaleCutPlay.fixed);
+  pts.forEach((p, k) => {
+    if (ds.data[k] && ds.data[k]._adId === p._adId) Object.assign(ds.data[k], p); else ds.data[k] = p;
+  });
+  ds.data.length = pts.length;
+  const tokens = adSearchTokens(adSearchTerm);
+  ds.data.forEach(p => { p._searchOut = !!tokens.length && !adSearchMatches(String(p._key || ''), tokens); });
+  chart._adSearch = { apply: keep => ds.data.forEach(p => { p._searchOut = !keep(p._key); }) };
+  _adSearchCharts['sc-lines'] = chart;
+  if (fresh){ chart.update('none'); return; }
+  const tr = chart.options && chart.options.transitions && chart.options.transitions[SCALE_CUT_PLAY_MODE];
+  if (tr && tr.animation) tr.animation.duration = Math.round(0.9 * scaleCutFrameMs());
+  chart.update(SCALE_CUT_PLAY_MODE);
+}
+/* The last frame is today's view: the grouped static datasets, with trails
+ * ending at each ad's lifetime position when Trails is on. */
+function renderScaleCutLastFrame(chart, st, date, trails){
+  const frameRows = trails
+    ? scaleCutFrameRows(st.rows, scaleCutPlay.byAd, date, true, st.mode).concat(st.rows.filter(r => !scaleCutPlay.byAd[String(_confStr(r.ad_id))]))
+    : st.rows;
+  if (trails){
+    /* Lifetime position for the last dot; the trail ends there. */
+    const life = {};
+    st.rows.forEach(r => { life[String(_confStr(r.ad_id))] = r; });
+    frameRows.forEach((r, k) => {
+      const l = life[String(_confStr(r.ad_id))];
+      if (l && r._trail) frameRows[k] = Object.assign({}, l, { _trail: r._trail });
+    });
+  }
+  const view = confidenceLinesView(frameRows, st.mode, Object.assign({}, scaleCutPlay.fixed, { noMismatch: false }));
+  /* Coming from a playback frame, swap in the static view without animating. */
+  const fromPlay = chart.data.datasets.some(d => d && d._scaleCutPlay);
+  chart.data.datasets = view.datasets;
+  followAdSearch('sc-lines', chart, null, fromPlay ? 'none' : undefined);
 }
 function renderScaleCutFrame(i){
   const st = scaleCutState, chart = scaleCutLinesChart, n = scaleCutPlay.frames.length;
@@ -1152,21 +1246,8 @@ function renderScaleCutFrame(i){
   const trailsEl = document.getElementById('sc-trails');
   const trails = !!(trailsEl && trailsEl.checked);
   const isLast = idx === n - 1;
-  const frameRows = isLast
-    ? (trails ? scaleCutFrameRows(st.rows, scaleCutPlay.byAd, date, true, st.mode).concat(st.rows.filter(r => !scaleCutPlay.byAd[String(_confStr(r.ad_id))])) : st.rows)
-    : scaleCutFrameRows(st.rows, scaleCutPlay.byAd, date, trails, st.mode);
-  if (isLast && trails){
-    /* Lifetime position for the last dot; the trail ends there. */
-    const life = {};
-    st.rows.forEach(r => { life[String(_confStr(r.ad_id))] = r; });
-    frameRows.forEach((r, k) => {
-      const l = life[String(_confStr(r.ad_id))];
-      if (l && r._trail) frameRows[k] = Object.assign({}, l, { _trail: r._trail });
-    });
-  }
-  const view = confidenceLinesView(frameRows, st.mode, Object.assign({}, scaleCutPlay.fixed, { noMismatch: !isLast }));
-  chart.data.datasets = view.datasets;
-  followAdSearch('sc-lines', chart);
+  if (isLast) renderScaleCutLastFrame(chart, st, date, trails);
+  else renderScaleCutPlayFrame(chart, st, date, trails);
   const slider = document.getElementById('sc-play-date');
   if (slider){ slider.max = String(n - 1); slider.value = String(idx); }
   const label = document.getElementById('sc-play-label');
@@ -1188,12 +1269,9 @@ function startScaleCutPlay(){
   const tick = () => {
     if (scaleCutPlay.index >= scaleCutPlay.frames.length - 1){ stopScaleCutPlay(); return; }
     renderScaleCutFrame(scaleCutPlay.index + 1);
-    const sp = document.getElementById('sc-play-speed');
-    const speed = Math.max(1, Number(sp && sp.value) || 1);
-    scaleCutPlay.timer = setTimeout(tick, 200 / speed);
+    scaleCutPlay.timer = setTimeout(tick, scaleCutFrameMs());
   };
-  const sp = document.getElementById('sc-play-speed');
-  scaleCutPlay.timer = setTimeout(tick, 200 / Math.max(1, Number(sp && sp.value) || 1));
+  scaleCutPlay.timer = setTimeout(tick, scaleCutFrameMs());
 }
 function resetScaleCutPlay(){
   stopScaleCutPlay();

@@ -165,6 +165,66 @@ test('a frame shows each launched ad at its latest running position, with trails
   ['id="sc-play-date"', 'id="sc-play"', 'id="sc-play-speed"', 'id="sc-trails"', 'id="sc-play-cap"'].forEach((s) => assert.ok(html.includes(s), s));
   ['value="1"', 'value="2"', 'value="4"'].forEach((s) => assert.ok(html.includes(s), 'speed ' + s));
 });
+test('playback keeps one dataset and each ad in its slot; unlaunched ads never sit at y 0', () => {
+  const { sb, run } = boot(CONFIG);
+  sb.document.getElementById('ctrl-enddate').value = '2026-09-06';
+  run(`
+    var updates = [];
+    scaleCutLinesChart = { data: { datasets: [{ label: 'Scale', data: [] }] },
+      options: { transitions: { [SCALE_CUT_PLAY_MODE]: { animation: { duration: 180, easing: 'linear' } } } },
+      update(m){ updates.push({ mode: m, duration: this.options.transitions[SCALE_CUT_PLAY_MODE].animation.duration }); } };
+    scaleCutState = { rows: [{ ad_id: '1', ad_name: 'a', lifetime_spend: 300, kill_conv: 3, verdict: 'Scale', is_live: true },
+                             { ad_id: '2', ad_name: 'b', lifetime_spend: 80, kill_conv: 0, verdict: 'Testing', is_live: false }],
+      mode: { which: 'kill', convCol: 'kill_conv', logMin: 1, label: 'Cost per plan' } };
+  `);
+  sb.setupScaleCutPlay([
+    { ad_id: '1', day: '2026-09-01', cum_spend: 100, cum_kill: 0, cum_scale: 0, day_verdict: 'Testing' },
+    { ad_id: '1', day: '2026-09-03', cum_spend: 300, cum_kill: 3, cum_scale: 1, day_verdict: 'Scale' },
+    { ad_id: '2', day: '2026-09-05', cum_spend: 50, cum_kill: 0, cum_scale: 0, day_verdict: 'Testing' },
+  ], { maxY: 400, maxSpend: 300 }, { from: '2026-09-01', to: '2026-09-06' }, 2);
+  const frames = run('scaleCutPlay.frames');
+  assert.strictEqual(frames.length, 6);
+  const ids = (ds) => ds.data.map((p) => p._adId).join(',');
+  const radius = (ds, k) => ds.pointRadius({ raw: ds.data[k] });
+
+  sb.renderScaleCutFrame(0);
+  const sets0 = run('scaleCutLinesChart.data.datasets');
+  assert.strictEqual(sets0.length, 1, 'one ad dataset while playing');
+  const ds = sets0[0], p1 = ds.data[0], p2 = ds.data[1];
+  assert.strictEqual(ids(ds), '1,2');
+  assert.ok(radius(ds, 0) > 0, 'ad 1 launched on day one');
+  assert.strictEqual(radius(ds, 1), 0, 'ad 2 not launched yet is hidden');
+  assert.strictEqual(p2.x, 50, 'unlaunched ad waits at its first-day spend');
+  assert.strictEqual(p2.y, 400, 'unlaunched ad with no conversions waits at the top edge');
+  assert.strictEqual(run('updates[0].mode'), 'none', 'the switch into playback does not animate');
+
+  for (let f = 1; f < 4; f++){
+    sb.renderScaleCutFrame(f);
+    const sets = run('scaleCutLinesChart.data.datasets');
+    assert.strictEqual(sets.length, 1);
+    assert.strictEqual(sets[0], ds, 'frame ' + f + ' keeps the dataset object');
+    assert.strictEqual(sets[0].data[0], p1, 'frame ' + f + ' keeps ad 1 in slot 0');
+    assert.strictEqual(sets[0].data[1], p2, 'frame ' + f + ' keeps ad 2 in slot 1');
+    assert.strictEqual(ids(sets[0]), '1,2');
+    sets[0].data.forEach((p) => assert.ok(p.y > 0, 'frame ' + f + ' ad ' + p._adId + ' y ' + p.y));
+  }
+  assert.strictEqual(p1.x, 300); assert.strictEqual(p1.y, 100); assert.strictEqual(p1._verdict, 'Scale');
+  assert.strictEqual(ds.pointBorderColor({ raw: p1 }), run("CONFIDENCE_VERDICT_COLOR.Scale"));
+  assert.strictEqual(radius(ds, 1), 0, 'ad 2 still hidden on 4 Sep');
+  const tween = run('updates.slice(1)');
+  assert.strictEqual(tween.length, 3);
+  tween.forEach((u) => { assert.strictEqual(u.mode, 'sc-play'); assert.strictEqual(u.duration, 180, '90% of a 200ms frame'); });
+
+  sb.renderScaleCutFrame(4);
+  assert.ok(radius(ds, 1) > 0, 'ad 2 shows from its launch day');
+  assert.strictEqual(ds.pointBackgroundColor({ raw: p2 }), '#ffffff', 'paused ad is hollow');
+
+  sb.renderScaleCutFrame(5);
+  const last = run('scaleCutLinesChart.data.datasets');
+  assert.strictEqual(last.map((d) => d.label).join(','), 'Scale,Testing', 'last frame is the grouped static view');
+  assert.strictEqual(run('updates[updates.length - 1].mode'), 'none');
+  assert.strictEqual(last[0].data[0].x, 300); assert.strictEqual(last[1].data[0].x, 80, 'lifetime position on the last frame');
+});
 
 // 4. New ad flow
 test('flow rows: one per launch week, summing to the ads in range', () => {
