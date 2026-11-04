@@ -194,8 +194,7 @@ async function test(name, fn){
     assert.ok(!/confidenceGradeAd\(|confidenceVerdict\(/.test(block), 'display never re-grades');
     const want = { Scale: 0, Testing: 0, Cut: 0 };
     ['cutthree', 'twoxlead', 'bothcutscale', 'scalesubs', 'freshad', 'steady'].forEach((n) => { want[verdictOf(ctx, n)]++; });
-    const counts = ctx.doc.getElementById('sc-baseline-verdicts').innerHTML;
-    assert.ok(counts.includes(`<strong>${want.Scale}</strong> Scale, <strong>${want.Testing}</strong> Testing, <strong>${want.Cut}</strong> Cut`), counts);
+    assert.ok(!ctx.doc.getElementById('app').innerHTML.includes('sc-baseline-verdicts'), 'the At these targets line is removed; the legend chips carry the counts');
     assert.strictEqual(ctx.doc.getElementById('sc-count-scale').textContent, String(want.Scale));
     assert.strictEqual(ctx.doc.getElementById('sc-count-testing').textContent, String(want.Testing));
     assert.strictEqual(ctx.doc.getElementById('sc-count-cut').textContent, String(want.Cut));
@@ -284,11 +283,9 @@ async function test(name, fn){
     assert.ok(tip.includes('Verdict: Cut') && tip.some((t) => t.startsWith('Spend: ')), tip.join(' / '));
   });
 
-  await test('y-axis toggle: cost per scale conversion and the scale target', async () => {
+  await test('Judge on Subs: cost per scale conversion and the scale target', async () => {
     const ctx = await bootEnabled();
-    const sel = ctx.doc.getElementById('cl-y-mode');
-    sel.value = 'scale';
-    sel.dispatch('change');
+    ctx.doc.getElementById('sc-judge-scale').dispatch('click');
     await flush();
     const chart = linesChart(ctx);
     assert.strictEqual(chart.options.scales.y.title.text, 'Cost per scale conversion');
@@ -298,7 +295,9 @@ async function test(name, fn){
     assert.strictEqual(st.target, SCALE_T);
     const pts = linePoints(ctx);
     assert.strictEqual(pts.find((x) => x.label === 'scalesubs').y, 2000 / 8, 'y is spend per sub');
-    assert.ok(ctx.doc.getElementById('sc-lines-note').textContent.startsWith('The Scale line is exact here.'));
+    assert.strictEqual(ctx.doc.getElementById('sc-lines-note').textContent,
+      'Scale line is exact. Switch Judge on to Kill conversions to see the exact Cut line.');
+    assert.strictEqual(ctx.run('confidenceConvNoun(confidenceLinesConfig().killLabel)'), 'Kill conversions', 'note names the Judge on button');
     ctx.run("confidenceYMode = 'kill';");
   });
 
@@ -326,7 +325,7 @@ async function test(name, fn){
     const ctx = boot();
     ctx.sb.renderLayout();
     const html = ctx.doc.getElementById('app').innerHTML;
-    ['data-tab="scalecut"', 'tab-scalecut', '>Verdict</th>', 'cl-y-mode', 'sc-lines-note'].forEach((s) => assert.ok(!html.includes(s), s));
+    ['data-tab="scalecut"', 'tab-scalecut', '>Verdict</th>', 'sc-judge', 'sc-controls', 'sc-lines-note'].forEach((s) => assert.ok(!html.includes(s), s));
     await ctx.sb.loadScaleCut();
     await ctx.sb.loadProduction();
     await flush();

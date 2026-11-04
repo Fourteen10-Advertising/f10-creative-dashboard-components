@@ -166,6 +166,19 @@ function applyControlsVisibility(){
   document.getElementById('controls-bar').style.display = 'flex';
   const wc = document.getElementById('weekly-controls');
   if(wc) wc.style.display = showWeekly ? 'flex' : 'none';
+  applyScaleCutControlsVisibility();
+}
+/* Scale & Cut: its filter bar shows only on that tab, and the Ad status
+ * dropdown hides there (live or paused shows on the dots). No-op without
+ * CONFIDENCE_LINES, because #sc-controls is never rendered. */
+function applyScaleCutControlsVisibility(){
+  const sc = document.getElementById('sc-controls');
+  if(!sc) return;
+  const on = activeTab === 'scalecut';
+  sc.style.display = on ? 'flex' : 'none';
+  const st = document.getElementById('ctrl-status');
+  const wrap = st && st.closest ? st.closest('.ctrl') : null;
+  if(wrap) wrap.style.display = on ? 'none' : '';
 }
 
 /* ── Ad status filter (currently-active ads) ── */
@@ -405,7 +418,113 @@ function renderBoard(movers, c){
 
 /* ── Movement Map ── */
 
+/* ── Movement Map: Older ads lens ──
+ * Only when CONFIDENCE_LINES is set. Ads launched (first day with spend) more
+ * than 90 days before the window end that spent in the last 14 days. x is that
+ * recent spend, y is recent cost per conversion as a % of the ad's lifetime
+ * cost per conversion (100% = as good as ever), bubble size is recent spend.
+ * "Wearing out" is the SQL verdict Cut from confidenceVerdictSQL at the
+ * configured CONFIDENCE_LINES.CONFIDENCE (90% by default): recent
+ * conversions are below the lifetime rate by more than chance explains. */
+const MAP_OLDER_DAYS = 90, MAP_RECENT_DAYS = 14;
+const MAP_WEAR_COLOR = '#f08c00', MAP_OK_COLOR = '#4a90e2';
+function mapOlderConfidence(){ const c = confidenceLinesConfig(); return c ? c.confidence : 0.9; }
+function _mapIsoAdd(iso, n){ const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+function mapOlderSQL(end){
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(end || ''))) return null;
+  const recentFrom = _mapIsoAdd(end, -(MAP_RECENT_DAYS - 1));
+  const launchedBefore = _mapIsoAdd(end, -MAP_OLDER_DAYS);
+  return `WITH older_ads AS (
+      SELECT ad_id, ANY_VALUE(ad_name) AS ad_name, ANY_VALUE(campaign_name) AS campaign_name,
+        MIN(IF(spend > 0, date_start, NULL)) AS launch_date,
+        SUM(spend) AS life_spend, SUM(${CONV_EXPR}) AS life_conv,
+        SUM(IF(date_start BETWEEN DATE '${recentFrom}' AND DATE '${end}', spend, 0)) AS recent_spend,
+        SUM(IF(date_start BETWEEN DATE '${recentFrom}' AND DATE '${end}', ${CONV_EXPR}, 0)) AS recent_conv
+      FROM \`${PROJECT}.${DATASET}.${TABLE}\`
+      WHERE date_start <= DATE '${end}'${scopeWhere()}
+      GROUP BY 1
+      HAVING MIN(IF(spend > 0, date_start, NULL)) < DATE '${launchedBefore}'
+    )
+    SELECT ad_id, ad_name, campaign_name, CAST(launch_date AS STRING) AS launch_date, life_spend, life_conv, recent_spend, recent_conv,
+      SAFE_DIVIDE(life_spend, NULLIF(life_conv, 0)) AS lifetime_cpa,
+      ${confidenceVerdictSQL('recent_spend', 'recent_conv', 'SAFE_DIVIDE(life_spend, NULLIF(life_conv, 0))', { conf: mapOlderConfidence() })} = 'Cut' AS wearing_out
+    FROM older_ads
+    WHERE recent_spend > 0
+    ORDER BY recent_spend DESC`;
+}
+function _mapNum(v){ const n = Number(v && typeof v === 'object' && 'value' in v ? v.value : v); return Number.isFinite(n) ? n : 0; }
+function _mapBool(v){ const x = v && typeof v === 'object' && 'value' in v ? v.value : v; return x === true || x === 'true' || x === 1 || x === '1'; }
+/* Points for the Older lens. Ads with recent spend but no recent conversions
+ * sit at the top edge as triangles. */
+function mapOlderView(rows){
+  const pts = [];
+  (rows || []).forEach(r => {
+    const rs = _mapNum(r.recent_spend), rc = _mapNum(r.recent_conv), lc = _mapNum(r.life_conv), ls = _mapNum(r.life_spend);
+    if (!(rs > 0) || !(lc > 0) || !(ls > 0)) return;
+    const life = ls / lc;
+    const pct = rc > 0 ? (rs / rc) / life * 100 : null;
+    pts.push({ x: rs, yRaw: pct, _spend: rs, _conv: rc, _lifeCpa: life, _recentCpa: rc > 0 ? rs / rc : null,
+      _name: r.ad_name, _launch: r.launch_date && typeof r.launch_date === 'object' ? r.launch_date.value : r.launch_date,
+      _wear: _mapBool(r.wearing_out), _noConv: !(rc > 0), _key: adSearchKey(r.ad_name, r.campaign_name) });
+  });
+  const finite = pts.map(p => p.yRaw).filter(v => v != null);
+  const yMax = Math.max(200, Math.ceil(Math.min(400, Math.max(100, ...finite)) / 50) * 50);
+  const maxSpend = Math.max(1, ...pts.map(p => p._spend));
+  pts.forEach(p => { p.y = p.yRaw == null ? yMax : Math.min(p.yRaw, yMax); p.r = 6 + 22 * Math.sqrt(p._spend / maxSpend); });
+  const wear = pts.filter(p => p._wear), ok = pts.filter(p => !p._wear);
+  const ds = (label, data, color) => ({ label, data, backgroundColor: color + 'bb', borderColor: color, borderWidth: 1.5,
+    pointStyle: c => (c.raw && c.raw._noConv) ? 'triangle' : 'circle' });
+  const datasets = [];
+  if (wear.length) datasets.push(ds('Wearing out', wear, MAP_WEAR_COLOR));
+  if (ok.length) datasets.push(ds('Holding up', ok, MAP_OK_COLOR));
+  return { pts, datasets, yMax, wearing: wear.length };
+}
+let _mapOlderCache = { key: null, rows: null };
+async function renderMapOlder(c){
+  const note = document.getElementById('map-lens-note');
+  const end = WIN && WIN.curEnd;
+  const sql = mapOlderSQL(end);
+  hideEl('map-loading'); showEl('map-wrapper');
+  if (charts.map){ charts.map.destroy(); charts.map = null; }
+  if (!sql){ document.getElementById('map-wrapper').innerHTML = '<div class="no-data">No window end date to measure from.</div>'; return; }
+  const key = sql;
+  let rows = _mapOlderCache.key === key ? _mapOlderCache.rows : null;
+  if (!rows){
+    document.getElementById('map-wrapper').innerHTML = '<div class="loading"><div class="spinner"></div>Loading&hellip;</div>';
+    try { rows = await runQuery(sql); }
+    catch (err){
+      console.warn('Older ads lens error:', err);
+      document.getElementById('map-wrapper').innerHTML = '<div class="no-data">Could not load older ads.</div>';
+      return;
+    }
+    _mapOlderCache = { key, rows };
+    const lensEl = document.getElementById('map-lens');
+    if (!lensEl || lensEl.value !== 'older') return;
+  }
+  const v = mapOlderView(rows);
+  if (note) note.textContent = `Ads launched more than ${MAP_OLDER_DAYS} days before ${fmtDate(end)} that spent in the last ${MAP_RECENT_DAYS} days: ${v.pts.length}, of which ${v.wearing} wearing out. `
+    + 'y is recent cost per conversion as a % of the ad\'s lifetime cost per conversion (100% = same as lifetime). Wearing out means recent conversions are below the lifetime rate at ' + Math.round(mapOlderConfidence() * 100) + '% confidence. Triangles have no recent conversions.';
+  if (!v.pts.length){ document.getElementById('map-wrapper').innerHTML = '<div class="no-data">No older ads spent in the last ' + MAP_RECENT_DAYS + ' days.</div>'; return; }
+  document.getElementById('map-wrapper').innerHTML = '<canvas id="map-chart"></canvas>';
+  charts.map = new Chart(document.getElementById('map-chart'), { type: 'bubble', data: { datasets: v.datasets },
+    options: { responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { title: { display: true, text: `Spend, last ${MAP_RECENT_DAYS} days ($)`, font: { size: 11 } }, min: 0, ticks: { callback: x => '$' + x.toLocaleString() } },
+        y: { title: { display: true, text: 'Recent cost per conversion, % of lifetime (down = better)', font: { size: 11 } }, min: 0, max: v.yMax, ticks: { callback: y => y + '%' } },
+      },
+      plugins: { legend: { position: 'top', labels: { font: { size: 11 } } }, tooltip: { callbacks: { label: ctx => { const p = ctx.raw; return [p._name || '',
+        p._wear ? 'Wearing out' : 'Holding up', `Launched: ${p._launch ? fmtDate(p._launch) : '-'}`, `Spend, last ${MAP_RECENT_DAYS} days: $${p._spend.toLocaleString()}`,
+        p._noConv ? 'No conversions in the last ' + MAP_RECENT_DAYS + ' days' : `Recent cost per conversion: $${p._recentCpa.toFixed(2)} (${p.yRaw.toFixed(0)}% of lifetime)`,
+        `Lifetime cost per conversion: $${p._lifeCpa.toFixed(2)}`]; } } } } },
+    plugins: [{ id: 'hundredLine', afterDraw(chart){ const yA = chart.scales.y, xA = chart.scales.x; const y0 = yA.getPixelForValue(100); if (y0 >= yA.top && y0 <= yA.bottom){ const g = chart.ctx; g.save(); g.setLineDash([5, 4]); g.strokeStyle = '#727272'; g.lineWidth = 1.5; g.beginPath(); g.moveTo(xA.left, y0); g.lineTo(xA.right, y0); g.stroke(); g.setLineDash([]); g.fillStyle = '#727272'; g.font = '10px Archivo'; g.fillText('same as lifetime', xA.left + 4, y0 - 4); g.restore(); } } }] });
+  followAdSearch('map', charts.map);
+}
+
 function renderMap(movers, c){
+  const lensEl = document.getElementById('map-lens');
+  if (lensEl && lensEl.value === 'older') return renderMapOlder(c);
+  const note = document.getElementById('map-lens-note');
+  if (note) note.textContent = '';
   const m   = c.metric;
   const pts = applyZeroSpendFilter(movers).filter(a => a.improvePct!=null && a.sCur>0);
   const byState = {};
@@ -485,6 +604,12 @@ function wireControls(){
    * control exists only when the dashboard sets SHOW_STATE_FILTER. */
   const stateSel = document.getElementById('ctrl-state');
   if(stateSel) stateSel.addEventListener('change', onStateChange);
+  /* Movement Map lens (only when CONFIDENCE_LINES is set) = redraw the map */
+  const lensSel = document.getElementById('map-lens');
+  if(lensSel) lensSel.addEventListener('change', () => {
+    if (window.F10A) F10A.track('control_changed', { control: 'map_lens', value: lensSel.value });
+    refreshWeeklyBoard({ map: true });
+  });
   /* Ad search = client-side filter of the current view (debounced) */
   wireAdSearchInput(document.getElementById('ctrl-adsearch'), applyAdSearch);
   document.getElementById('refresh-btn').addEventListener('click', () => {

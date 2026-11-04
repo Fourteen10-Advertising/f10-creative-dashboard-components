@@ -450,10 +450,12 @@ function wireAdSearchInput(input, onApply){
  * (adSearchKey), or followAdSearch(slot, chart, keys) for a category chart,
  * where keys[i] belongs to labels[i] and to index i of every dataset. The full
  * data is kept on the chart and each search change re-filters from it, so no
- * re-query is needed. A redraw into the same slot replaces the old chart. */
+ * re-query is needed. A redraw into the same slot replaces the old chart.
+ * mode is passed to chart.update ('none' skips the animation). A chart can set
+ * chart._adSearch.apply(keep) to filter in place instead of replacing data. */
 const _adSearchCharts = {};
 
-function followAdSearch(slot, chart, keys){
+function followAdSearch(slot, chart, keys, mode){
   if(!chart || !chart.data) return;
   chart._adSearch = {
     keys: keys || null,
@@ -461,21 +463,23 @@ function followAdSearch(slot, chart, keys){
     data: chart.data.datasets.map(d => d.data.slice()),
   };
   _adSearchCharts[slot] = chart;
-  applyAdSearchToChart(chart);
+  applyAdSearchToChart(chart, mode);
 }
 
-function applyAdSearchToChart(chart){
+function applyAdSearchToChart(chart, mode){
   const src = chart._adSearch;
   const tokens = adSearchTokens(adSearchTerm);
   const keep = key => !tokens.length || adSearchMatches(String(key || ''), tokens);
-  if(src.keys){
+  if(src.apply){
+    src.apply(keep);
+  } else if(src.keys){
     const idx = src.keys.map((k, i) => keep(k) ? i : -1).filter(i => i !== -1);
     chart.data.labels = idx.map(i => src.labels[i]);
     chart.data.datasets.forEach((d, j) => { d.data = idx.map(i => src.data[j][i]); });
   } else {
     chart.data.datasets.forEach((d, j) => { d.data = src.data[j].filter(p => keep(p && p._key)); });
   }
-  chart.update();
+  chart.update(mode);
 }
 
 /* Re-filter every live chart registered with followAdSearch. A destroyed or

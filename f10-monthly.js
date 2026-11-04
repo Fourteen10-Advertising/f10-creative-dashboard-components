@@ -359,8 +359,34 @@ function ensureConfidenceControls(){
     resetConfidenceTargets(confidenceSelectedKey());
     loadScaleCut();
   });
-  const yEl = document.getElementById('cl-y-mode');
-  if (yEl) yEl.addEventListener('change', () => { confidenceYMode = yEl.value === 'scale' ? 'scale' : 'kill'; loadScaleCut(); });
+  [['sc-judge-kill', 'kill'], ['sc-judge-scale', 'scale']].forEach(([id, v]) => {
+    const b = document.getElementById(id);
+    if (b) b.addEventListener('click', () => { setScaleCutJudge(v); loadScaleCut(); });
+  });
+  const preset = document.getElementById('sc-launch-preset');
+  if (preset) preset.addEventListener('change', () => {
+    applyScaleCutPreset(preset.value);
+    if (window.F10A) F10A.track('filter_changed', { filter: 'launch_range', value: preset.value });
+    loadScaleCut();
+  });
+  ['sc-launch-from', 'sc-launch-to'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', () => {
+      scaleCutRangeTouched = true;
+      if (window.F10A) F10A.track('filter_changed', { filter: 'launch_range', value: el.value });
+      loadScaleCut();
+    });
+  });
+  [['sc-look-paused-testing', 'pausedTesting'], ['sc-look-live-cut', 'liveCut']].forEach(([id, v]) => {
+    const b = document.getElementById(id);
+    if (b) b.addEventListener('click', () => { toggleScaleCutLook(v); loadScaleCut(); });
+  });
+  const playBtn = document.getElementById('sc-play');
+  if (playBtn) playBtn.addEventListener('click', () => { if (scaleCutPlay.timer != null) stopScaleCutPlay(); else startScaleCutPlay(); });
+  const slider = document.getElementById('sc-play-date');
+  if (slider) slider.addEventListener('input', () => { stopScaleCutPlay(); renderScaleCutFrame(Number(slider.value)); });
+  const trails = document.getElementById('sc-trails');
+  if (trails) trails.addEventListener('change', () => { if (scaleCutPlay.frames.length) renderScaleCutFrame(scaleCutPlay.index); });
   loadConfidenceSegments(sel);
 }
 
@@ -459,17 +485,157 @@ function confidenceVerdictCell(v){
   if (!s || !CONFIDENCE_VERDICT_BADGE[s]) return '<td><span class="tc-note">No baseline</span></td>';
   return `<td><span class="badge ${CONFIDENCE_VERDICT_BADGE[s]}">${s}</span></td>`;
 }
+/* ── Launch date range ──
+ * Launch date is an ad's first day with spend. The range picks which ads the
+ * tab shows (both charts, the table, the counts and the flow table); spend,
+ * results and verdicts stay counted from each ad's launch. The default is the
+ * 90 days to the window end. Dates the user typed are kept until reload. */
+let scaleCutRangeTouched = false;
+const SCALE_CUT_DEFAULT_RANGE_DAYS = 90;
+/* Launched preset: '30' | '60' | '90' (default) | 'custom'. Custom shows the
+ * two date inputs and reads them; a preset counts back from the window end. */
+let scaleCutPreset = String(SCALE_CUT_DEFAULT_RANGE_DAYS);
+function applyScaleCutPreset(v){
+  scaleCutPreset = ['30', '60', '90', 'custom'].includes(String(v)) ? String(v) : String(SCALE_CUT_DEFAULT_RANGE_DAYS);
+  scaleCutRangeTouched = scaleCutPreset === 'custom';
+  ['sc-launch-custom', 'sc-launch-custom-to'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.hidden = scaleCutPreset !== 'custom';
+  });
+}
+/* Judge on: 'kill' (Plans) or 'scale' (Subs). Drives both charts and the table. */
+function setScaleCutJudge(v){
+  confidenceYMode = v === 'scale' ? 'scale' : 'kill';
+  [['sc-judge-kill', 'kill'], ['sc-judge-scale', 'scale']].forEach(([id, v]) => {
+    const b = document.getElementById(id);
+    if (!b) return;
+    const on = v === confidenceYMode;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+/* Needs a look: null, 'pausedTesting' or 'liveCut'. Clicking a count rings
+ * those ads on both charts and filters the table; clicking again clears it. */
+let scaleCutLook = null;
+function toggleScaleCutLook(which){
+  scaleCutLook = (which && which === scaleCutLook) ? null : (SCALE_CUT_MISMATCH[which] ? which : null);
+  [['sc-look-paused-testing', 'pausedTesting'], ['sc-look-live-cut', 'liveCut']].forEach(([id, v]) => {
+    const b = document.getElementById(id);
+    if (!b) return;
+    const on = v === scaleCutLook;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+function scaleCutLookFlag(live, verdict){
+  if (!scaleCutLook) return null;
+  const m = scaleCutMismatch(live, verdict);
+  return m && m === SCALE_CUT_MISMATCH[scaleCutLook] ? m : null;
+}
+function scaleCutLookRows(rows){
+  if (!scaleCutLook) return rows;
+  return (rows || []).filter(r => scaleCutLookFlag(confidenceIsLive(r), _confStr(r.verdict)));
+}
+function _isoDate(v){ return /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null; }
+function _isoAddDays(iso, n){
+  const d = new Date(iso + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+function scaleCutLaunchRange(){
+  const fEl = document.getElementById('sc-launch-from'), tEl = document.getElementById('sc-launch-to');
+  const end = _isoDate(confidenceWindowEnd());
+  let from = scaleCutRangeTouched && fEl ? _isoDate(fEl.value) : null;
+  let to = scaleCutRangeTouched && tEl ? _isoDate(tEl.value) : null;
+  if (!to) to = end;
+  if (!to) return null;
+  const days = scaleCutPreset === 'custom' ? SCALE_CUT_DEFAULT_RANGE_DAYS : Number(scaleCutPreset) || SCALE_CUT_DEFAULT_RANGE_DAYS;
+  if (!from) from = _isoAddDays(to, -days);
+  if (from > to){ const x = from; from = to; to = x; }
+  if (fEl) fEl.value = from;
+  if (tEl) tEl.value = to;
+  return { from, to };
+}
+function _launchHaving(range){
+  return range ? `
+      HAVING MIN(IF(spend > 0, date_start, NULL)) BETWEEN DATE ${sqlQuote(range.from)} AND DATE ${sqlQuote(range.to)}` : '';
+}
+/* Columns every per-ad query shares: names, lifetime spend, launch date and the
+ * latest delivery status (is_active on the newest row, which can lag Meta by
+ * up to a day). */
+function _scaleCutAdCols(){
+  return `ANY_VALUE(ad_name) AS ad_name, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(adset_name) AS adset_name,
+        ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend, MIN(IF(spend > 0, date_start, NULL)) AS launch_date,
+        ARRAY_AGG(is_active IGNORE NULLS ORDER BY date_start DESC LIMIT 1)[SAFE_OFFSET(0)] AS is_live`;
+}
 /* The per-ad query for the tab: one row per ad in scope (Product, Campaign
- * type, status), with its SQL verdict. */
-function scaleCutSQL(){
+ * type, status) launched in the range, with its SQL verdict. */
+function scaleCutSQL(range){
   if (!confidenceLinesConfig()) return null;
   return `WITH per_ad AS (
-      SELECT ad_id, ANY_VALUE(ad_name) AS ad_name, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(adset_name) AS adset_name,
-        ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend ${confidenceAdSelect()}
+      SELECT ad_id, ${_scaleCutAdCols()} ${confidenceAdSelect()}
       FROM \`${PROJECT}.${DATASET}.${TABLE}\`${scaleCutScopeWhere('WHERE')}
-      GROUP BY 1
+      GROUP BY 1${_launchHaving(range)}
     )${confidenceScatterCTE()}
     SELECT * ${confidenceVerdictSelect()} FROM per_ad_conf ORDER BY lifetime_spend DESC`;
+}
+
+/* ── Daily history (maturity playback and the new ad flow) ──
+ * One row per ad per day with spend or results: running spend and results
+ * from launch, and the verdict as of that day from confidenceVerdictSQL over
+ * those running sums, against the same targets as the lifetime view. cap keeps
+ * the playback to the top ads by lifetime spend. */
+const SCALE_CUT_PLAY_CAP = 600;
+function scaleCutDailyCTE(range, cap){
+  const cfg = confidenceLinesConfig();
+  if (!cfg) return null;
+  return `WITH sc_ads AS (
+      SELECT ad_id, ${_scaleCutAdCols()} ${confidenceAdSelect()}
+      FROM \`${PROJECT}.${DATASET}.${TABLE}\`${scaleCutScopeWhere('WHERE')}
+      GROUP BY 1${_launchHaving(range)}${cap ? `
+      ORDER BY lifetime_spend DESC LIMIT ${Math.floor(cap)}` : ''}
+    ),
+    sc_day AS (
+      SELECT ad_id, date_start, SUM(spend) AS d_spend, SUM(${cfg.killConvExpr}) AS d_kill, SUM(${cfg.scaleConvExpr}) AS d_scale
+      FROM \`${PROJECT}.${DATASET}.${TABLE}\`
+      WHERE ad_id IN (SELECT ad_id FROM sc_ads)${scaleCutScopeWhere('AND')}
+      GROUP BY 1, 2
+    ),
+    sc_cum AS (
+      SELECT ad_id, date_start, d_spend, d_kill, d_scale,
+        SUM(d_spend) OVER w AS cum_spend, SUM(d_kill) OVER w AS cum_kill, SUM(d_scale) OVER w AS cum_scale
+      FROM sc_day
+      WINDOW w AS (PARTITION BY ad_id ORDER BY date_start ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+    ),
+    sc_targets AS (
+      SELECT c.*, a.launch_date, a.conf_group, a.conf_segment FROM sc_cum c JOIN sc_ads a USING (ad_id)
+    ),
+    sc_graded AS (
+      SELECT *, IF(kill_target IS NULL AND scale_target IS NULL, CAST(NULL AS STRING), ${confidenceVerdictSQL('cum_spend', 'cum_kill', 'kill_target', { conf: cfg.confidence, scaleConvCol: 'cum_scale', scaleTargetCol: 'scale_target' })}) AS day_verdict
+      FROM (SELECT *, ${confidenceTargetCaseSQL('kill')} AS kill_target, ${confidenceTargetCaseSQL('scale')} AS scale_target FROM sc_targets)
+    )`;
+}
+function scaleCutPlaybackSQL(range){
+  const cte = scaleCutDailyCTE(range, SCALE_CUT_PLAY_CAP);
+  if (!cte) return null;
+  return `${cte}
+    SELECT CAST(ad_id AS STRING) AS ad_id, CAST(date_start AS STRING) AS day, cum_spend, cum_kill, cum_scale, day_verdict
+    FROM sc_graded
+    WHERE (d_spend > 0 OR d_kill > 0 OR d_scale > 0)${range ? ` AND date_start >= DATE ${sqlQuote(range.from)}` : ''}
+    ORDER BY ad_id, date_start`;
+}
+/* First day each ad reached Scale or Cut, how many days after launch, and its
+ * running spend that day. Every ad in the range, no cap. */
+function scaleCutFlowSQL(range){
+  const cte = scaleCutDailyCTE(range, null);
+  if (!cte) return null;
+  return `${cte}
+    SELECT CAST(ad_id AS STRING) AS ad_id,
+      CAST(MIN(IF(day_verdict IN ('Scale', 'Cut'), date_start, NULL)) AS STRING) AS first_verdict_date,
+      DATE_DIFF(MIN(IF(day_verdict IN ('Scale', 'Cut'), date_start, NULL)), ANY_VALUE(launch_date), DAY) AS days_to_verdict,
+      ARRAY_AGG(IF(day_verdict IN ('Scale', 'Cut'), cum_spend, NULL) IGNORE NULLS ORDER BY date_start LIMIT 1)[SAFE_OFFSET(0)] AS spend_to_verdict
+    FROM sc_graded
+    GROUP BY 1`;
 }
 
 /* Chart mode for the selected cell: which cost per conversion the y axis
@@ -540,9 +706,11 @@ function renderConfidenceLinesNote(mode){
   if (!(mode.target > 0)) { el.textContent = 'Not enough data for a baseline, so no lines'; return; }
   const cfg = mode.cfg;
   if (cfg.killConvExpr !== cfg.scaleConvExpr){
+    /* Same noun as the Judge on buttons: 'Cost per subscription' reads Subscriptions. */
+    const noun = l => { const n = String(l || '').replace(/^cost per /i, '').trim() || 'conversion'; return n.charAt(0).toUpperCase() + n.slice(1) + 's'; };
     el.textContent = mode.which === 'kill'
-      ? `The Cut line is exact here. Scale is judged on ${cfg.scaleLabel.toLowerCase()}, so switch the y axis to see the exact Scale line.`
-      : `The Scale line is exact here. Cut is judged on ${cfg.killLabel.toLowerCase()}, so switch the y axis to see the exact Cut line.`;
+      ? `Cut line is exact. Switch Judge on to ${noun(cfg.scaleLabel)} to see the exact Scale line.`
+      : `Scale line is exact. Switch Judge on to ${noun(cfg.killLabel)} to see the exact Cut line.`;
   } else el.textContent = '';
 }
 
@@ -601,21 +769,55 @@ function confidenceLinesPlugin(){
   } };
 }
 
+/* ── Live or paused ──
+ * From is_active on the ad's newest row: true live, false paused, null unknown.
+ * A mismatch is an ad paused while still Testing, or live while Cut. */
+const SCALE_CUT_MISMATCH = { pausedTesting: 'Paused while Testing', liveCut: 'Live in Cut' };
+const SCALE_CUT_FLAG_COLOR = '#f08c00';
+function confidenceIsLive(r){
+  const v = r ? _confStr(r.is_live) : null;
+  if (v === true || v === 'true' || v === 1 || v === '1') return true;
+  if (v === false || v === 'false' || v === 0 || v === '0') return false;
+  return null;
+}
+function scaleCutMismatch(live, verdict){
+  if (live === false && verdict === 'Testing') return SCALE_CUT_MISMATCH.pausedTesting;
+  if (live === true && verdict === 'Cut') return SCALE_CUT_MISMATCH.liveCut;
+  return null;
+}
+function confidenceStatusText(live){ return live === true ? 'Live' : live === false ? 'Paused' : 'Unknown'; }
+/* Filled dot for live, hollow for paused, an orange ring on a mismatch. */
+function confidenceStatusStyle(fill, border, width){
+  return {
+    pointBackgroundColor: c => (c.raw && c.raw._live === false) ? '#ffffff' : fill,
+    pointBorderColor: c => (c.raw && c.raw._mismatch) ? SCALE_CUT_FLAG_COLOR : border,
+    pointBorderWidth: c => (c.raw && c.raw._mismatch) ? 2.5 : (c.raw && c.raw._live === false ? 1.5 : width),
+  };
+}
+
 /* Build the lines chart model from the SQL rows. Dots are coloured by the SQL
  * verdict, sized gently by spend and clamped to the top edge when their cost
- * per conversion is off the chart or they have no conversions yet. */
-function confidenceLinesView(rows, mode){
+ * per conversion is off the chart or they have no conversions yet. fixed
+ * ({ maxY, maxSpend, noMismatch }) holds the axes still during playback. */
+function confidenceLinesPoint(r, mode, noMismatch){
+  const spend = Number(_confStr(r.lifetime_spend)) || 0;
+  const conv = Number(_confStr(r[mode.convCol])) || 0;
+  const verdict = _confStr(r.verdict) || 'No baseline';
+  const live = confidenceIsLive(r);
+  return { x: Math.max(spend, mode.logMin), y: conv > 0 ? spend / conv : null, _cpa: conv > 0 ? spend / conv : null,
+    _conv: conv, _spend: spend, label: _confStr(r.ad_name), _verdict: verdict,
+    _live: live, _mismatch: noMismatch ? null : scaleCutLookFlag(live, verdict), _trail: r._trail || null,
+    _key: adSearchKey(r.ad_name, r.campaign_name, r.adset_name) };
+}
+function confidenceLinesView(rows, mode, fixed){
   const pts = [];
   (rows || []).forEach(r => {
     const spend = Number(_confStr(r.lifetime_spend)) || 0;
     if (!(spend > 0)) return;
-    const conv = Number(_confStr(r[mode.convCol])) || 0;
-    pts.push({ x: Math.max(spend, mode.logMin), y: conv > 0 ? spend / conv : null, _cpa: conv > 0 ? spend / conv : null,
-      _conv: conv, _spend: spend, label: _confStr(r.ad_name), _verdict: _confStr(r.verdict) || 'No baseline',
-      _key: adSearchKey(r.ad_name, r.campaign_name, r.adset_name) });
+    pts.push(confidenceLinesPoint(r, mode, !!(fixed && fixed.noMismatch)));
   });
-  const maxSpend = Math.max(0, ...pts.map(p => p._spend));
-  const maxY = confidenceYMax(mode.target, pts.map(p => p._cpa).filter(v => v != null));
+  const maxSpend = fixed ? fixed.maxSpend : Math.max(0, ...pts.map(p => p._spend));
+  const maxY = fixed ? fixed.maxY : confidenceYMax(mode.target, pts.map(p => p._cpa).filter(v => v != null));
   pts.forEach(p => {
     if (p.y == null || p.y > maxY){ p.y = maxY; p._clamped = true; }
     p._r = 2.5 + 3.5 * Math.sqrt(maxSpend > 0 ? p._spend / maxSpend : 0);
@@ -624,12 +826,42 @@ function confidenceLinesView(rows, mode){
   pts.forEach(p => (groups[p._verdict] || groups['No baseline']).push(p));
   const datasets = Object.keys(groups).filter(k => groups[k].length).map(k => ({
     label: k, data: groups[k], backgroundColor: CONFIDENCE_VERDICT_COLOR[k] + 'cc', borderColor: CONFIDENCE_VERDICT_COLOR[k], borderWidth: 1,
+    ...confidenceStatusStyle(CONFIDENCE_VERDICT_COLOR[k] + 'cc', CONFIDENCE_VERDICT_COLOR[k], 1),
     pointRadius: c => (c.raw && c.raw._r) || 3, pointHoverRadius: c => ((c.raw && c.raw._r) || 3) + 2 }));
   return { mode, datasets, maxY, minX: mode.logMin, maxX: confidenceLogMax(maxSpend), maxSpend };
 }
+function confidenceStatusTooltip(pt){
+  const out = [`Status: ${confidenceStatusText(pt._live)}`];
+  if (pt._mismatch) out.push(pt._mismatch);
+  return out;
+}
 function confidenceLinesTooltip(pt, mode){
   return [pt.label || '', `Spend: ${fmt$(pt._spend)}`, `${confidenceConvNoun(mode.label)}: ${fmtNum(pt._conv)}`,
-    pt._cpa == null ? `${mode.label}: no conversions yet` : `${mode.label}: ${fmt$(pt._cpa)}`, `Verdict: ${pt._verdict}`];
+    pt._cpa == null ? `${mode.label}: no conversions yet` : `${mode.label}: ${fmt$(pt._cpa)}`, `Verdict: ${pt._verdict}`]
+    .concat(confidenceStatusTooltip(pt));
+}
+/* Faint path of each ad's earlier positions, drawn under the dots when Trails
+ * is on. Reads the dots on the chart, so the ad search filters trails too. */
+function scaleCutTrailsPlugin(){
+  return { id: 'scale-cut-trails', beforeDatasetsDraw(chart){
+    const a = chart.chartArea;
+    if (!a) return;
+    const xA = chart.scales.x, yA = chart.scales.y, g = chart.ctx;
+    g.save();
+    g.beginPath(); g.rect(a.left, a.top, a.right - a.left, a.bottom - a.top); g.clip();
+    g.lineWidth = 1;
+    chart.data.datasets.forEach(d => (d.data || []).forEach(p => {
+      if (!p || !p._trail || p._trail.length < 2 || p._hide || p._searchOut) return;
+      g.strokeStyle = (CONFIDENCE_VERDICT_COLOR[p._verdict] || '#999999') + '55';
+      g.beginPath();
+      p._trail.forEach((t, i) => {
+        const x = xA.getPixelForValue(t.x), y = yA.getPixelForValue(t.y);
+        if (i) g.lineTo(x, y); else g.moveTo(x, y);
+      });
+      g.stroke();
+    }));
+    g.restore();
+  } };
 }
 function confidenceLinesChart(view){
   const mode = view.mode;
@@ -640,9 +872,10 @@ function confidenceLinesChart(view){
           afterBuildTicks: ax => { ax.ticks = confidenceLogTicks(view.minX, view.maxX).map(v => ({ value: v })); },
           ticks: { callback: v => confidenceShortMoney(v) } },
         y: { min: 0, max: view.maxY, title: { display: true, text: mode.label, font: { size: 11 } }, ticks: { callback: v => fmt$(v) } } },
+      transitions: { [SCALE_CUT_PLAY_MODE]: { animation: { duration: 180, easing: 'linear' } } },
       plugins: { legend: { display: false },
-        tooltip: { callbacks: { label: c => confidenceLinesTooltip(c.raw, mode) } } } },
-    plugins: [confidenceLinesPlugin()] });
+        tooltip: { filter: c => !scaleCutDotHidden(c.raw), callbacks: { label: c => confidenceLinesTooltip(c.raw, mode) } } } },
+    plugins: [confidenceLinesPlugin(), scaleCutTrailsPlugin()] });
 }
 
 /* ── Reach cost chart (confidence-lines US-007, reworked in US-008) ──
@@ -664,21 +897,10 @@ const CONFIDENCE_REACH_MARK_LABEL = 'Cut, may be bringing in new people';
 const CONFIDENCE_REACH_MARK_NOTE = 'Cut on cost per conversion, but it reaches people cheaply, so it may be bringing in new people. Check before switching it off.';
 
 function confidenceReachEnabled(){ const cfg = confidenceLinesConfig(); return !!(cfg && cfg.reachTable); }
-/* The dashboard window length in days, from the window control. */
-function confidenceDashboardDays(){
-  const el = document.getElementById('ctrl-length');
-  const n = el ? parseInt(el.value, 10) : NaN;
-  return n > 0 ? n : null;
-}
-/* The reach window closest to the dashboard window: up to 59 days reads the
- * 28 day window, up to 180 days the 90 day window, anything longer (or no
- * window control) the lifetime row. */
-function confidenceReachWindow(days){
-  if (!(days > 0)) return 'lifetime';
-  if (days <= 59) return 'last_28d';
-  if (days <= 180) return 'last_90d';
-  return 'lifetime';
-}
+/* Reach is always lifetime, so the x axis (lifetime CPMr) matches the y axis
+ * (lifetime cost per conversion). */
+const CONFIDENCE_REACH_DEFAULT_WINDOW = 'lifetime';
+function confidenceReachWindow(){ return CONFIDENCE_REACH_DEFAULT_WINDOW; }
 /* Latest reach row per ad for one window, limited to the ads in this tab's
  * scope. Reads only the client's reach mart and the dashboard's own table. */
 function confidenceReachSQL(win){
@@ -709,6 +931,8 @@ function _confEsc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
 /* Build the reach chart model from the per-ad rows (which carry the SQL
  * verdict) and the reach rows. Joined in the browser on ad_id. */
 function confidenceReachView(rows, reachRows, mode){
+  /* Every ad with spend should have a lifetime row, so an ad without one is
+   * counted as missing. */
   const byAd = {};
   (reachRows || []).forEach(r => { const id = _confStr(r.ad_id); if (id != null) byAd[String(id)] = r; });
   const pts = [], missing = [];
@@ -723,9 +947,11 @@ function confidenceReachView(rows, reachRows, mode){
     const d = _confStr(rr.as_of_date);
     if (d && (!asOf || String(d) > asOf)) asOf = String(d);
     const conv = Number(_confStr(r[mode.convCol])) || 0;
+    const verdict = _confStr(r.verdict) || 'No baseline';
+    const live = confidenceIsLive(r);
     pts.push({ x: cpmr, y: conv > 0 ? spend / conv : null, _cpa: conv > 0 ? spend / conv : null, _noConv: !(conv > 0),
       label: _confStr(r.ad_name), _key: key, _spend: spend, _reach: Number(_confStr(rr.reach)) || 0,
-      _verdict: _confStr(r.verdict) || 'No baseline',
+      _verdict: verdict, _live: live, _mismatch: scaleCutLookFlag(live, verdict),
       _cell: confidenceKey(r.conf_group == null ? '' : _confStr(r.conf_group), _confStr(r.conf_segment)) });
   });
   /* The medians are over the selected cell's ads with reach (every ad with
@@ -752,29 +978,33 @@ function confidenceReachView(rows, reachRows, mode){
   const radius = c => (c.raw && c.raw._r) || 4;
   const datasets = Object.keys(groups).filter(k => groups[k].length).map(k => ({
     label: k, data: groups[k], backgroundColor: CONFIDENCE_QUADRANT_COLOR[k] + '55', borderColor: CONFIDENCE_QUADRANT_COLOR[k], borderWidth: 1.5,
+    ...confidenceStatusStyle(CONFIDENCE_QUADRANT_COLOR[k] + '55', CONFIDENCE_QUADRANT_COLOR[k], 1.5),
     pointRadius: radius, pointHoverRadius: c => radius(c) + 2 }));
   if (marked.length) datasets.push({ label: CONFIDENCE_REACH_MARK_LABEL, data: marked, pointStyle: 'triangle',
-    backgroundColor: CONFIDENCE_COLORS.cut + '99', borderColor: '#000000', borderWidth: 1.5, pointRadius: c => Math.max(7, radius(c)), pointHoverRadius: c => Math.max(7, radius(c)) + 2 });
+    backgroundColor: CONFIDENCE_COLORS.cut + '99', borderColor: '#000000', borderWidth: 1.5,
+    ...confidenceStatusStyle(CONFIDENCE_COLORS.cut + '99', '#000000', 1.5),
+    pointRadius: c => Math.max(7, radius(c)), pointHoverRadius: c => Math.max(7, radius(c)) + 2 });
   const maxX = Math.max(1, Math.ceil(Math.max(0, ...pts.map(p => p.x), quad ? quad.median : 0) * 1.1));
   return { mode, datasets, maxX, maxY, quad, missing, asOf, median: medianCpmr, points: pts };
 }
 
-function renderConfidenceReachNotes(view, win, reachRows){
+function renderConfidenceReachNotes(view){
   const note = document.getElementById('sc-reach-note');
   const miss = document.getElementById('sc-reach-missing');
   if (!note || !miss) return;
-  if (!win || !view){ note.textContent = ''; miss.innerHTML = ''; return; }
-  note.textContent = `Using the ${CONFIDENCE_REACH_WINDOW_LABEL[win]} reach window` + (view.asOf ? ` (as of ${view.asOf})` : '')
-    + '. Reach is Meta-reported, so read it as an index. Cost per conversion stays lifetime.';
+  if (!view){ note.textContent = ''; miss.innerHTML = ''; return; }
+  note.textContent = 'Using lifetime reach' + (view.asOf ? ` (as of ${view.asOf})` : '') + '. Cost per conversion is lifetime too.'
+    + ' Reach is Meta-reported, so read it as an index.';
+  /* One line with a count; the names are in the table. */
   const shown = adSearchFilter(view.missing, m => m._key);
   miss.innerHTML = shown.length
-    ? `No reach data yet (${shown.length}): ` + shown.map(m => _confEsc(m.name)).join(', ')
+    ? `<span id="sc-reach-missing-count">${shown.length} ${shown.length === 1 ? 'ad has' : 'ads have'} no reach data yet.</span>`
     : '';
 }
 
 function confidenceReachTooltip(pt, setLabel, mode){
   const lines = [pt.label || setLabel, `Cost per 1,000 reached: ${fmt$(pt.x)}`, `Reach: ${fmtNum(pt._reach)}`, `Spend: ${fmt$(pt._spend)}`,
-    pt._noConv ? 'No conversions yet' : `${mode.label}: ${fmt$(pt._cpa)}`, `Verdict: ${pt._verdict}`];
+    pt._noConv ? 'No conversions yet' : `${mode.label}: ${fmt$(pt._cpa)}`, `Verdict: ${pt._verdict}`].concat(confidenceStatusTooltip(pt));
   if (pt._quadrant) lines.push(`Quadrant: ${pt._quadrant}`);
   if (pt._newPeople) lines.push(CONFIDENCE_REACH_MARK_NOTE);
   return lines;
@@ -793,9 +1023,10 @@ function confidenceReachChart(view){
     plugins: [confidenceQuadrantPlugin()] });
 }
 
-/* Tinted quadrants, dotted median lines with their values, corner labels, the
- * faint target line and the "cheaper reach" note. Drawn from
- * confidenceQuadState before the bubbles, so the ad search never removes them. */
+/* Tinted quadrants, dotted median lines with their values, the faint target
+ * line and the "cheaper reach" note are drawn from confidenceQuadState before
+ * the bubbles, so the ad search never removes them. The corner labels are
+ * drawn after the bubbles. */
 function confidenceQuadrantPlugin(){
   return { id: 'confidence-quadrants', beforeDatasetsDraw(chart){
     const st = confidenceQuadState;
@@ -827,11 +1058,20 @@ function confidenceQuadrantPlugin(){
     g.fillStyle = '#4a4a4a';
     g.fillText('median ' + fmt$(st.median), x + 4, a.bottom - 6);
     g.fillText('median ' + fmt$(st.medianCpa), a.left + 4, y - 4);
+    g.restore();
+  },
+  /* Corner labels go on top of the bubbles, on a light panel, so a crowded
+   * corner never hides them. */
+  afterDatasetsDraw(chart){
+    const g = chart.ctx, a = chart.chartArea;
+    if (!confidenceQuadState || !a) return;
+    g.save();
     const corner = (title, sub, col, left, top) => {
       g.font = 'bold 10px Archivo, sans-serif';
       const w = Math.max(g.measureText(title).width, (g.font = '10px Archivo, sans-serif', g.measureText(sub).width));
       const tx = left ? a.left + 6 : a.right - w - 6;
       const ty = top ? a.top + 14 : a.bottom - 34;
+      g.fillStyle = 'rgba(255, 255, 255, 0.85)'; g.fillRect(tx - 3, ty - 11, w + 6, 27);
       g.fillStyle = col; g.font = 'bold 10px Archivo, sans-serif'; g.fillText(title, tx, ty);
       g.font = '10px Archivo, sans-serif'; g.fillText(sub, tx, ty + 12);
     };
@@ -850,12 +1090,20 @@ function _confTargetField(id, label, value, conv){
 
 /* Fill the baseline panel for the selected Product x Campaign type and wire the
  * target inputs. Edits are session-only and re-grade this tab. */
-function renderConfidenceBaselinePanel(rows){
+/* "Target $X per plan and $Y per sub, from your last 90 days (Meta-reported). Edit" */
+let scaleCutTargetsOpen = false;
+function scaleCutTargetsLineHTML(cfg, t){
+  const unit = label => String(label || '').replace(/^cost /i, '').trim();
+  const parts = [];
+  if (t.kill != null) parts.push(`${fmt$(t.kill)} ${_confEsc(unit(cfg.killLabel))}`);
+  if (t.scale != null) parts.push(`${fmt$(t.scale)} ${_confEsc(unit(cfg.scaleLabel))}`);
+  return `<span id="sc-targets-text">Target ${parts.join(' and ')}, from your last ${cfg.baselineDays} days (Meta-reported).</span> <button type="button" class="f10-ctl f10-ctl-link" id="sc-targets-edit-btn" aria-expanded="${scaleCutTargetsOpen ? 'true' : 'false'}" aria-controls="sc-targets-edit">Edit</button>`;
+}
+function renderConfidenceBaselinePanel(){
   const cfg = confidenceLinesConfig();
   const body = document.getElementById('sc-baseline-body');
   if (!cfg || !body) return;
   const unmatched = document.getElementById('sc-baseline-unmatched');
-  const verdicts = document.getElementById('sc-baseline-verdicts');
   const resetBtn = document.getElementById('cl-reset');
   const uSpend = confidenceUnmatchedSpend();
   if (unmatched) unmatched.innerHTML = uSpend > 0
@@ -863,18 +1111,31 @@ function renderConfidenceBaselinePanel(rows){
     : '';
   const key = confidenceSelectedKey();
   const t = key ? getConfidenceTargets(key) : null;
+  const line = document.getElementById('sc-targets-line');
+  const edit = document.getElementById('sc-targets-edit');
+  const setLine = html => { if (line) line.innerHTML = html; };
   if (!key){
-    body.innerHTML = '<span class="tc-note">Pick a product and campaign type to see its baseline.</span>';
-    if (verdicts) verdicts.innerHTML = '';
+    setLine('<span class="tc-note">Pick a product and campaign type to see its targets.</span>');
+    body.innerHTML = '';
+    if (edit) edit.hidden = true;
     if (resetBtn) resetBtn.style.display = 'none';
     return;
   }
   if (!t || (t.kill == null && t.scale == null)){
-    body.innerHTML = '<span class="tc-note" id="cl-not-enough">Not enough data for a baseline</span>';
-    if (verdicts) verdicts.innerHTML = '';
+    setLine('<span class="tc-note" id="cl-not-enough">Not enough data for a baseline</span>');
+    body.innerHTML = '';
+    if (edit) edit.hidden = true;
     if (resetBtn) resetBtn.style.display = 'none';
     return;
   }
+  setLine(scaleCutTargetsLineHTML(cfg, t));
+  const editBtn = document.getElementById('sc-targets-edit-btn');
+  if (editBtn) editBtn.addEventListener('click', () => {
+    scaleCutTargetsOpen = !scaleCutTargetsOpen;
+    if (edit) edit.hidden = !scaleCutTargetsOpen;
+    editBtn.setAttribute('aria-expanded', scaleCutTargetsOpen ? 'true' : 'false');
+  });
+  if (edit) edit.hidden = !scaleCutTargetsOpen;
   body.innerHTML = `<div class="tc-grid">${_confTargetField('cl-target-kill', cfg.killLabel, t.kill, t.killConv)}${_confTargetField('cl-target-scale', cfg.scaleLabel, t.scale, t.scaleConv)}</div>`;
   if (resetBtn) resetBtn.style.display = '';
   [['cl-target-kill', 'kill'], ['cl-target-scale', 'scale']].forEach(([id, which]) => {
@@ -885,10 +1146,6 @@ function renderConfidenceBaselinePanel(rows){
       else { const cur = getConfidenceTargets(key); el.value = cur && cur[which] != null ? Math.round(cur[which] * 100) / 100 : ''; }
     });
   });
-  if (verdicts){
-    const c = confidenceVerdictCounts(rows);
-    verdicts.innerHTML = `<span class="tc-note" id="cl-verdict-counts">At these targets: <strong>${c.Scale}</strong> Scale, <strong>${c.Testing}</strong> Testing, <strong>${c.Cut}</strong> Cut${t.edited ? ' (edited for this session)' : ''}.</span>`;
-  }
 }
 
 /* ── Scale & Cut tab loader ── */
@@ -902,7 +1159,14 @@ function renderScaleCutCounts(){
   const st = scaleCutState;
   const rows = st ? adSearchFilter(st.rows, r => adSearchKey(r.ad_name, r.campaign_name, r.adset_name)) : [];
   const c = confidenceVerdictCounts(rows);
-  [['sc-count-scale', c.Scale], ['sc-count-testing', c.Testing], ['sc-count-cut', c.Cut]].forEach(([id, n]) => {
+  const m = { pausedTesting: 0, liveCut: 0 };
+  rows.forEach(r => {
+    const x = scaleCutMismatch(confidenceIsLive(r), _confStr(r.verdict));
+    if (x === SCALE_CUT_MISMATCH.pausedTesting) m.pausedTesting++;
+    if (x === SCALE_CUT_MISMATCH.liveCut) m.liveCut++;
+  });
+  [['sc-count-scale', c.Scale], ['sc-count-testing', c.Testing], ['sc-count-cut', c.Cut],
+    ['sc-count-paused-testing', m.pausedTesting], ['sc-count-live-cut', m.liveCut]].forEach(([id, n]) => {
     const el = document.getElementById(id);
     if (el) el.textContent = String(n);
   });
@@ -910,7 +1174,8 @@ function renderScaleCutCounts(){
 onAdSearch('scalecut', () => {
   if (!scaleCutState) return;
   renderScaleCutCounts();
-  renderConfidenceReachNotes(scaleCutState.reachView, scaleCutState.reachWin, scaleCutState.reachRows);
+  renderConfidenceReachNotes(scaleCutState.reachView);
+  renderScaleCutFlow();
 });
 
 function renderScaleCutTable(rows, mode){
@@ -921,9 +1186,287 @@ function renderScaleCutTable(rows, mode){
     const spend = Number(_confStr(r.lifetime_spend)) || 0;
     const conv = Number(_confStr(r[mode.convCol])) || 0;
     const name = _confEsc(_confStr(r.ad_name)), camp = _confEsc(_confStr(r.campaign_name));
-    return `<tr ${adNameAttr(r.ad_name, r.campaign_name, r.adset_name)}><td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;" title="${name}">${name}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${camp}">${camp}</td><td>${_confEsc(_confStr(r.conf_segment))}</td><td>${fmt$(spend)}</td><td>${fmtNum(conv)}</td><td>${conv > 0 ? fmt$(spend / conv) : '-'}</td>${confidenceVerdictCell(r.verdict)}</tr>`;
+    return `<tr ${adNameAttr(r.ad_name, r.campaign_name, r.adset_name)}><td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;" title="${name}">${name}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${camp}">${camp}</td><td>${_confEsc(_confStr(r.conf_segment))}</td><td>${fmt$(spend)}</td><td>${fmtNum(conv)}</td><td>${conv > 0 ? fmt$(spend / conv) : '-'}</td>${confidenceStatusCell(r)}${confidenceVerdictCell(r.verdict)}</tr>`;
   }), 20);
   hideEl('sc-table-loading'); showEl('sc-table');
+}
+
+function confidenceStatusCell(r){
+  const live = confidenceIsLive(r);
+  const flag = scaleCutMismatch(live, _confStr(r.verdict));
+  return `<td>${confidenceStatusText(live)}${flag ? ` <span class="sc-mismatch-badge" title="${flag}">${flag}</span>` : ''}</td>`;
+}
+
+/* ── Maturity playback ──
+ * Frames run from the range start to the last day in the data. Each frame
+ * shows every ad launched by that day at its running spend and cost per
+ * conversion, coloured by its SQL verdict as of that day. The last frame is
+ * the lifetime view. The axes and the lines stay at the segment target. */
+const scaleCutPlay = { frames: [], index: 0, timer: null, byAd: {}, fixed: null };
+function _scaleCutFrameDates(from, to){
+  const out = [];
+  if (!from || !to || from > to) return out;
+  for (let d = from; d <= to && out.length < 4000; d = _isoAddDays(d, 1)) out.push(d);
+  return out;
+}
+function scaleCutHistoryIndex(dailyRows){
+  const byAd = {};
+  (dailyRows || []).forEach(r => {
+    const id = String(_confStr(r.ad_id));
+    (byAd[id] = byAd[id] || []).push({ day: String(_confStr(r.day)), spend: Number(_confStr(r.cum_spend)) || 0,
+      kill: Number(_confStr(r.cum_kill)) || 0, scale: Number(_confStr(r.cum_scale)) || 0, verdict: _confStr(r.day_verdict) });
+  });
+  Object.keys(byAd).forEach(k => byAd[k].sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0)));
+  return byAd;
+}
+/* One ad's row for a playback date: its latest history row on or before it.
+ * Before launch the row holds the first day and is marked _unlaunched. */
+function scaleCutFrameRow(r, h, date, trails, mode){
+  let last = -1;
+  for (let i = 0; i < h.length && h[i].day <= date; i++) last = i;
+  const e = h[Math.max(0, last)];
+  const row = Object.assign({}, r, { lifetime_spend: e.spend, kill_conv: e.kill, scale_conv: e.scale, verdict: e.verdict });
+  if (last < 0) return Object.assign(row, { _unlaunched: true });
+  if (trails && mode){
+    row._trail = h.slice(0, last + 1).map(t => {
+      const conv = mode.which === 'scale' ? t.scale : t.kill;
+      return { x: Math.max(t.spend, mode.logMin), y: Math.min(conv > 0 ? t.spend / conv : scaleCutPlay.fixed.maxY, scaleCutPlay.fixed.maxY) };
+    });
+  }
+  return row;
+}
+/* The rows for one playback date. Ads not yet launched are left out. */
+function scaleCutFrameRows(rows, byAd, date, trails, mode){
+  const out = [];
+  (rows || []).forEach(r => {
+    const h = byAd[String(_confStr(r.ad_id))];
+    if (!h || !h.length) return;
+    const row = scaleCutFrameRow(r, h, date, trails, mode);
+    if (!row._unlaunched) out.push(row);
+  });
+  return out;
+}
+/* ── Playback dots ──
+ * While playing, every ad with history holds one slot in a single dataset, in
+ * the same order on every frame. Each frame updates the points in place and
+ * Chart.js tweens each dot from where it was, so nothing jumps from the axis.
+ * Colour and fill come from each point's own verdict and live status. Ads not
+ * yet launched (or with no spend yet) sit at their first-day position with
+ * radius 0. The last frame goes back to the grouped static view. */
+const SCALE_CUT_PLAY_MODE = 'sc-play';
+function scaleCutFrameMs(){
+  const sp = document.getElementById('sc-play-speed');
+  return 200 / Math.max(1, Number(sp && sp.value) || 1);
+}
+function scaleCutDotColor(p){ return CONFIDENCE_VERDICT_COLOR[p && p._verdict] || CONFIDENCE_VERDICT_COLOR['No baseline']; }
+function scaleCutDotHidden(p){ return !!(p && (p._hide || p._searchOut)); }
+function scaleCutPlayDataset(){
+  const r = c => (c.raw && c.raw._r) || 3;
+  return { label: 'Ads', data: [], _scaleCutPlay: true, borderWidth: 1,
+    backgroundColor: c => scaleCutDotColor(c.raw) + 'cc', borderColor: c => scaleCutDotColor(c.raw),
+    pointBackgroundColor: c => (c.raw && c.raw._live === false) ? '#ffffff' : scaleCutDotColor(c.raw) + 'cc',
+    pointBorderColor: c => scaleCutDotColor(c.raw),
+    pointBorderWidth: c => (c.raw && c.raw._live === false) ? 1.5 : 1,
+    pointRadius: c => scaleCutDotHidden(c.raw) ? 0 : r(c),
+    pointHoverRadius: c => scaleCutDotHidden(c.raw) ? 0 : r(c) + 2,
+    pointHitRadius: c => scaleCutDotHidden(c.raw) ? 0 : 1 };
+}
+/* One point per ad with history, in rows order. y is never 0: no conversions
+ * or off the chart sits at the top edge, like the static view. */
+function scaleCutPlayPoints(rows, byAd, date, trails, mode, fixed){
+  const out = [];
+  (rows || []).forEach(r => {
+    const id = String(_confStr(r.ad_id)), h = byAd[id];
+    if (!h || !h.length) return;
+    const row = scaleCutFrameRow(r, h, date, trails, mode);
+    const p = confidenceLinesPoint(row, mode, true);
+    p._adId = id;
+    p._hide = !!row._unlaunched || !(p._spend > 0);
+    if (p._hide) p._trail = null;
+    p._clamped = false;
+    if (!(p.y > 0) || p.y > fixed.maxY){ p.y = fixed.maxY; p._clamped = true; }
+    p._r = 2.5 + 3.5 * Math.sqrt(fixed.maxSpend > 0 ? Math.min(1, p._spend / fixed.maxSpend) : 0);
+    out.push(p);
+  });
+  return out;
+}
+function renderScaleCutPlayFrame(chart, st, date, trails){
+  const cur = chart.data.datasets;
+  let ds = cur.length === 1 && cur[0] && cur[0]._scaleCutPlay ? cur[0] : null;
+  const fresh = !ds;
+  if (fresh){ ds = scaleCutPlayDataset(); chart.data.datasets = [ds]; }
+  const pts = scaleCutPlayPoints(st.rows, scaleCutPlay.byAd, date, trails, st.mode, scaleCutPlay.fixed);
+  pts.forEach((p, k) => {
+    if (ds.data[k] && ds.data[k]._adId === p._adId) Object.assign(ds.data[k], p); else ds.data[k] = p;
+  });
+  ds.data.length = pts.length;
+  const tokens = adSearchTokens(adSearchTerm);
+  ds.data.forEach(p => { p._searchOut = !!tokens.length && !adSearchMatches(String(p._key || ''), tokens); });
+  chart._adSearch = { apply: keep => ds.data.forEach(p => { p._searchOut = !keep(p._key); }) };
+  _adSearchCharts['sc-lines'] = chart;
+  if (fresh){ chart.update('none'); return; }
+  const tr = chart.options && chart.options.transitions && chart.options.transitions[SCALE_CUT_PLAY_MODE];
+  if (tr && tr.animation) tr.animation.duration = Math.round(0.9 * scaleCutFrameMs());
+  chart.update(SCALE_CUT_PLAY_MODE);
+}
+/* The last frame is today's view: the grouped static datasets, with trails
+ * ending at each ad's lifetime position when Trails is on. */
+function renderScaleCutLastFrame(chart, st, date, trails){
+  const frameRows = trails
+    ? scaleCutFrameRows(st.rows, scaleCutPlay.byAd, date, true, st.mode).concat(st.rows.filter(r => !scaleCutPlay.byAd[String(_confStr(r.ad_id))]))
+    : st.rows;
+  if (trails){
+    /* Lifetime position for the last dot; the trail ends there. */
+    const life = {};
+    st.rows.forEach(r => { life[String(_confStr(r.ad_id))] = r; });
+    frameRows.forEach((r, k) => {
+      const l = life[String(_confStr(r.ad_id))];
+      if (l && r._trail) frameRows[k] = Object.assign({}, l, { _trail: r._trail });
+    });
+  }
+  const view = confidenceLinesView(frameRows, st.mode, Object.assign({}, scaleCutPlay.fixed, { noMismatch: false }));
+  /* Coming from a playback frame, swap in the static view without animating. */
+  const fromPlay = chart.data.datasets.some(d => d && d._scaleCutPlay);
+  chart.data.datasets = view.datasets;
+  followAdSearch('sc-lines', chart, null, fromPlay ? 'none' : undefined);
+}
+function renderScaleCutFrame(i){
+  const st = scaleCutState, chart = scaleCutLinesChart, n = scaleCutPlay.frames.length;
+  if (!st || !chart || !n) return;
+  const idx = Math.max(0, Math.min(n - 1, Math.floor(Number(i) || 0)));
+  scaleCutPlay.index = idx;
+  const date = scaleCutPlay.frames[idx];
+  const trailsEl = document.getElementById('sc-trails');
+  const trails = !!(trailsEl && trailsEl.checked);
+  const isLast = idx === n - 1;
+  if (isLast) renderScaleCutLastFrame(chart, st, date, trails);
+  else renderScaleCutPlayFrame(chart, st, date, trails);
+  const slider = document.getElementById('sc-play-date');
+  if (slider){ slider.max = String(n - 1); slider.value = String(idx); }
+  const label = document.getElementById('sc-play-label');
+  if (label) label.textContent = isLast ? `${fmtDate(date)} (today's view)` : fmtDate(date);
+}
+function stopScaleCutPlay(){
+  if (scaleCutPlay.timer != null) clearTimeout(scaleCutPlay.timer);
+  scaleCutPlay.timer = null;
+  const btn = document.getElementById('sc-play');
+  if (btn) btn.textContent = 'Play';
+}
+function startScaleCutPlay(){
+  const n = scaleCutPlay.frames.length;
+  if (!n) return;
+  if (scaleCutPlay.index >= n - 1) renderScaleCutFrame(0);
+  const btn = document.getElementById('sc-play');
+  if (btn) btn.textContent = 'Pause';
+  if (window.F10A) F10A.track('filter_changed', { filter: 'playback', value: 'play' });
+  const tick = () => {
+    if (scaleCutPlay.index >= scaleCutPlay.frames.length - 1){ stopScaleCutPlay(); return; }
+    renderScaleCutFrame(scaleCutPlay.index + 1);
+    scaleCutPlay.timer = setTimeout(tick, scaleCutFrameMs());
+  };
+  scaleCutPlay.timer = setTimeout(tick, scaleCutFrameMs());
+}
+function resetScaleCutPlay(){
+  stopScaleCutPlay();
+  Object.assign(scaleCutPlay, { frames: [], index: 0, byAd: {}, fixed: null });
+  const slider = document.getElementById('sc-play-date');
+  if (slider){ slider.max = '0'; slider.value = '0'; }
+  const label = document.getElementById('sc-play-label');
+  if (label) label.textContent = '';
+  const cap = document.getElementById('sc-play-cap');
+  if (cap) cap.textContent = '';
+}
+function setupScaleCutPlay(dailyRows, view, range, adsInRange){
+  const byAd = scaleCutHistoryIndex(dailyRows);
+  let last = null;
+  Object.keys(byAd).forEach(k => { const d = byAd[k][byAd[k].length - 1].day; if (!last || d > last) last = d; });
+  const end = _isoDate(confidenceWindowEnd());
+  if (end && (!last || end > last)) last = end;
+  const first = range ? range.from : null;
+  Object.assign(scaleCutPlay, { byAd, frames: _scaleCutFrameDates(first, last), fixed: { maxY: view.maxY, maxSpend: view.maxSpend } });
+  scaleCutPlay.index = Math.max(0, scaleCutPlay.frames.length - 1);
+  const slider = document.getElementById('sc-play-date');
+  if (slider){ slider.max = String(Math.max(0, scaleCutPlay.frames.length - 1)); slider.value = String(scaleCutPlay.index); }
+  const label = document.getElementById('sc-play-label');
+  if (label) label.textContent = scaleCutPlay.frames.length ? `${fmtDate(scaleCutPlay.frames[scaleCutPlay.index])} (today's view)` : '';
+  const cap = document.getElementById('sc-play-cap');
+  if (cap) cap.textContent = adsInRange > SCALE_CUT_PLAY_CAP
+    ? `Playback shows the top ${SCALE_CUT_PLAY_CAP} of ${fmtNum(adsInRange)} ads by spend. Narrow the launch range to see them all.` : '';
+}
+
+/* ── New ad flow ──
+ * One row per launch week (weeks start Monday), newest first. "Now" counts
+ * use today's verdict; days and spend to first verdict use each ad's history.
+ * Follows Product, Campaign type, the launch range and the ad search. */
+function _mondayOf(iso){
+  const d = new Date(iso + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+  return d.toISOString().slice(0, 10);
+}
+function _medianAllowZero(vals){
+  const v = vals.filter(x => x != null && Number.isFinite(x) && x >= 0).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const mid = Math.floor(v.length / 2);
+  return v.length % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2;
+}
+function scaleCutFlowRows(rows, flowRows){
+  const byAd = {};
+  (flowRows || []).forEach(f => { byAd[String(_confStr(f.ad_id))] = f; });
+  const weeks = {};
+  (rows || []).forEach(r => {
+    const launch = _isoDate(_confStr(r.launch_date));
+    if (!launch) return;
+    const wk = _mondayOf(launch);
+    const w = weeks[wk] = weeks[wk] || { week: wk, ads: 0, scale: 0, testing: 0, cut: 0, ungraded: 0, cutSpend: 0, days: [], spend: [] };
+    w.ads++;
+    const v = _confStr(r.verdict);
+    if (v === 'Scale') w.scale++; else if (v === 'Testing') w.testing++; else if (v === 'Cut') w.cut++; else w.ungraded++;
+    if (v === 'Cut') w.cutSpend += Number(_confStr(r.lifetime_spend)) || 0;
+    const f = byAd[String(_confStr(r.ad_id))];
+    if (f && _confStr(f.first_verdict_date) != null){
+      const dd = Number(_confStr(f.days_to_verdict));
+      const sp = Number(_confStr(f.spend_to_verdict));
+      if (Number.isFinite(dd)) w.days.push(dd);
+      if (Number.isFinite(sp)) w.spend.push(sp);
+    }
+  });
+  return Object.keys(weeks).sort().reverse().map(k => {
+    const w = weeks[k];
+    return { week: w.week, ads: w.ads, scale: w.scale, testing: w.testing, cut: w.cut, ungraded: w.ungraded,
+      withVerdict: w.ads ? (w.scale + w.cut) / w.ads : 0, cutSpend: w.cutSpend,
+      medianDays: _medianAllowZero(w.days), medianSpend: _medianAllowZero(w.spend) };
+  });
+}
+function renderScaleCutFlow(){
+  const body = document.getElementById('sc-flow-body');
+  const st = scaleCutState;
+  if (!body || !st) return;
+  if (st.flowError){ body.innerHTML = '<tr><td colspan="9" class="tc-note">Could not load the flow table.</td></tr>'; return; }
+  if (!st.flowRows){ body.innerHTML = '<tr><td colspan="9" class="tc-note">Loading&hellip;</td></tr>'; return; }
+  const rows = adSearchFilter(st.rows, r => adSearchKey(r.ad_name, r.campaign_name, r.adset_name));
+  const out = scaleCutFlowRows(rows, st.flowRows);
+  if (!out.length){ body.innerHTML = '<tr><td colspan="9" class="tc-note">No ads launched in this range.</td></tr>'; return; }
+  body.innerHTML = out.map(w => `<tr><td>${fmtDate(w.week)}</td><td>${fmtNum(w.ads)}</td><td>${fmtNum(w.scale)}</td><td>${fmtNum(w.testing)}</td><td>${fmtNum(w.cut)}</td>`
+    + `<td>${fmtPct(w.withVerdict * 100)}</td><td>${fmt$(w.cutSpend)}</td><td>${w.medianDays == null ? '-' : fmtNum(w.medianDays)}</td><td>${w.medianSpend == null ? '-' : fmt$(w.medianSpend)}</td></tr>`).join('');
+}
+
+/* Run the playback and flow queries together. Errors leave a note and keep the
+ * lifetime view; nothing reaches the console as an uncaught error. */
+async function loadScaleCutHistory(seq, rows, view, range){
+  const st = scaleCutState;
+  let daily = [], flow = null, flowError = false;
+  try {
+    const res = await Promise.all([
+      runQuery(scaleCutPlaybackSQL(range)).catch(err => { console.warn('Playback data error:', err); return []; }),
+      runQuery(scaleCutFlowSQL(range)).catch(err => { console.warn('Flow data error:', err); flowError = true; return null; }),
+    ]);
+    daily = res[0] || []; flow = res[1];
+  } catch (err){ console.warn('Scale & Cut history error:', err); flowError = true; }
+  if (seq !== _scaleCutSeq || st !== scaleCutState) return;
+  st.flowRows = flow || (flowError ? null : []);
+  st.flowError = flowError;
+  renderScaleCutFlow();
+  setupScaleCutPlay(daily, view, range, rows.length);
 }
 
 function showScaleCutReachEmpty(){
@@ -932,20 +1475,22 @@ function showScaleCutReachEmpty(){
   hideEl('sc-reach-loading'); hideEl('sc-reach-wrapper');
   if (scaleCutReachChart){ scaleCutReachChart.destroy(); scaleCutReachChart = null; }
   confidenceQuadState = null;
-  renderConfidenceReachNotes(null, null, null);
+  renderConfidenceReachNotes(null);
 }
 
 async function loadScaleCut(){
   if (!confidenceLinesEnabled()) return;
   ensureConfidenceControls();
   const seq = ++_scaleCutSeq;
+  resetScaleCutPlay();
   try {
     await loadConfidenceBaseline();
     if (seq !== _scaleCutSeq) return;
-    const rows = await runQuery(scaleCutSQL());
+    const range = scaleCutLaunchRange();
+    const rows = await runQuery(scaleCutSQL(range));
     if (seq !== _scaleCutSeq) return;
     const mode = confidenceScatterMode(rows);
-    renderConfidenceBaselinePanel(rows);
+    renderConfidenceBaselinePanel();
 
     const view = confidenceLinesView(rows, mode);
     confidenceCurveState = confidenceCurveFor(mode, view.maxSpend);
@@ -957,12 +1502,14 @@ async function loadScaleCut(){
     scaleCutLinesChart = confidenceLinesChart(view);
     followAdSearch('sc-lines', scaleCutLinesChart);
 
-    scaleCutState = { rows, mode, reachView: null, reachWin: null, reachRows: null };
-    renderScaleCutTable(rows, mode);
+    scaleCutState = { rows, mode, range, reachView: null, reachRows: null, flowRows: null, flowError: false };
+    renderScaleCutTable(scaleCutLookRows(rows), mode);
     renderScaleCutCounts();
+    renderScaleCutFlow();
+    scaleCutState.history = loadScaleCutHistory(seq, rows, view, range);
 
     if (!confidenceReachEnabled()){ showScaleCutReachEmpty(); return; }
-    const win = confidenceReachWindow(confidenceDashboardDays());
+    const win = confidenceReachWindow();
     const empty = document.getElementById('sc-reach-empty');
     if (empty) empty.style.display = 'none';
     showEl('sc-reach-loading'); hideEl('sc-reach-wrapper');
@@ -979,8 +1526,8 @@ async function loadScaleCut(){
     if (seq !== _scaleCutSeq) return;
     if (!reachRows || !reachRows.length){ showScaleCutReachEmpty(); return; }
     const rview = confidenceReachView(rows, reachRows, mode);
-    Object.assign(scaleCutState, { reachView: rview, reachWin: win, reachRows });
-    renderConfidenceReachNotes(rview, win, reachRows);
+    Object.assign(scaleCutState, { reachView: rview, reachRows });
+    renderConfidenceReachNotes(rview);
     hideEl('sc-reach-loading'); showEl('sc-reach-wrapper');
     if (scaleCutReachChart) scaleCutReachChart.destroy();
     scaleCutReachChart = confidenceReachChart(rview);

@@ -1342,7 +1342,8 @@ change is a **Scale & Cut** tab after Ad Production. Ad Production itself
 renders and queries exactly as v1.31.0 did, whatever Campaign type is picked.
 `test/confidence-baseline.test.js` pins both: the layout without config and the
 Ad Production SQL are hashed against v1.31.0, and with config the layout must
-equal the plain layout once the Scale & Cut nav link and panel are taken out.
+equal the plain layout once the Scale & Cut nav link, the panel, the
+Scale & Cut filter bar and the Movement Map lens select are taken out.
 
 ```js
 const CONFIDENCE_LINES = {
@@ -1377,31 +1378,55 @@ every report groups by) and set `SEGMENT_EXPR: 'campaign_type'`. Keep the inline
 
 The tab has, top to bottom:
 
-- A **Campaign type** dropdown. It lists the distinct `SEGMENT_EXPR` values
-  (Unmatched shows as "Unmatched (check naming)") and scopes only this tab's
-  queries, through `scaleCutScopeWhere()`. Every other tab keeps using
-  `scopeWhere()`, which has no campaign type clause. Product / Group and the
-  status filters still apply as usual.
-- A **Your last 90 days (Meta-reported)** baseline panel. One baseline query
-  per window end: Meta-reported spend, kill and scale conversions and cost per
-  each, for every group x campaign type, over the `BASELINE_DAYS` that end the
-  day before the window end. For 90 days and a window ending 2026-10-31 that is
-  `date_start BETWEEN '2026-08-01' AND '2026-10-30'`, `GROUP BY 1, 2`. The group
-  is the per-product thresholds column, else the first `GROUP_FILTERS` column,
-  else one account-wide group. Once a single product and campaign type are
-  picked the panel shows the cost per kill and cost per scale targets as
-  editable inputs, and how many ads grade Scale, Testing and Cut. Editing a
-  target re-grades the tab for this session only; **Reset to baseline** or a
-  reload puts the baseline back. A cell with fewer than 50 conversions shows
-  "Not enough data for a baseline" and gets no input and no line (kill and
-  scale are checked separately). When window spend sits on `'Unmatched'`
-  campaigns, the panel says how much so the names or the mapping can be fixed.
+- **One filter bar.** On Scale & Cut the global bar gains, in order after
+  Product: **Campaign type**, **Launched** and **Judge on**, then Search. It
+  shows only on this tab (`applyScaleCutControlsVisibility()`), and the Ad
+  status dropdown is hidden on this tab only. Every control uses the shared
+  `.f10-ctl` style (30px high, same border, font and radius), which the
+  Movement Map lens select also uses.
+  - **Campaign type** lists the distinct `SEGMENT_EXPR` values (Unmatched
+    shows as "Unmatched (check naming)") and scopes only this tab's queries,
+    through `scaleCutScopeWhere()`. Every other tab keeps using `scopeWhere()`,
+    which has no campaign type clause.
+  - **Launched** is a preset: last 30, 60 or 90 days (default 90), or
+    **Custom**. The from and to dates show inline only on Custom. It picks
+    which ads show, by launch date (the first day with spend), ending on the
+    dashboard window end. The range only filters ads (a `HAVING` on the launch
+    date). Spend, conversions and verdicts are still counted from each ad's
+    launch. Ads that never spent do not show.
+  - **Judge on** is a two-button switch: the kill conversion (Plans for Mosh)
+    or the scale conversion (Subs for Mosh). It sets `confidenceYMode`, which
+    drives both charts and the table. It replaces the old Y axis select.
+- **A targets line** in place of the baseline panel: "Target $X per plan and
+  $Y per subscription, from your last 90 days (Meta-reported)." with an
+  **Edit** link. Edit opens the target inputs and **Reset to baseline**. The
+  baseline query is unchanged: Meta-reported spend, kill and scale
+  conversions for every group x campaign type, over the `BASELINE_DAYS` that
+  end the day before the window end (`GROUP BY 1, 2`). Editing a target
+  re-grades the tab for this session only. A cell with fewer than 50
+  conversions shows "Not enough data for a baseline" on the line and gets no
+  Edit, input or line. With Product or Campaign type on All the line asks you
+  to pick both. Spend on `'Unmatched'` campaigns is still called out.
 - Two charts side by side: **Kill and scale lines** and **Reach cost** (below).
+  Each card's note (for example "Cut line is exact. Switch Judge on to
+  Subscriptions to see the exact Scale line." and the lifetime reach note)
+  uses the same small grey caption style as the card subtitle.
+  One legend shows the Scale, Testing and Cut chips with their counts, plus
+  "Filled = live, hollow = paused". One playback bar (play, slider, speed,
+  trails) sits under both charts and moves both.
+- **Needs a look**: two toggle buttons, "N paused while Testing" and "N live in
+  Cut". Turning one on rings the matching ads on both charts and filters the
+  table to them (`scaleCutLookRows()`); turning it off shows every ad again.
+  Rings are off by default.
 - An **Ads by verdict** table: one row per ad with lifetime spend, conversions,
-  cost per conversion and a sortable **Verdict** column. The Verdict header
+  cost per conversion, a **Status** column (Live or Paused, plus a small
+  "Paused while Testing" or "Live in Cut" badge only on those mismatches) and a sortable
+  **Verdict** column. With the default config the Verdict header
   hover reads "Judged against your last 90 days for this product and campaign
-  type, using Meta-reported results, at 90% confidence." (the day count and
-  confidence come from the config).
+  type, using Meta-reported results, at 90% confidence." The day count and the
+  percent come from the config, so `CONFIDENCE: 0.8` reads "at 80%
+  confidence."
+- A **New ad flow** table (below).
 
 **Verdict, computed once in SQL.** The tab sends one per-ad query
 (`scaleCutSQL()`). A `per_ad_conf` CTE adds `kill_target` and `scale_target`
@@ -1420,15 +1445,34 @@ type on All, each ad is still judged against its own cell.
 #### Kill and scale lines chart
 
 - X axis is lifetime spend per ad on a log scale. Y axis is cost per kill
-  conversion or cost per scale conversion, picked with the **Y axis** select.
+  conversion or cost per scale conversion, picked with **Judge on**.
   Ads with none of that conversion yet sit on the top edge.
 - For the selected product and campaign type it draws the **CUT** curve and the
   **SCALE** curve from that cell's target, with the area above CUT and below
   SCALE shaded, a **target** pill on the target line and a **TESTING** label in
-  the band between. Each curve point comes from `confidenceBounds(k, conf)`:
+  the band between. The zone labels read "90% sure it misses target" under
+  CUT and "90% sure it beats target" under SCALE at the default confidence;
+  the percent is the configured `CONFIDENCE`, so 0.8 shows "80% sure". Each curve point comes from `confidenceBounds(k, conf)`:
   an ad with k conversions turns Cut once its spend passes target x the kill
   bound, and stays Scale while its spend is under target x the scale bound.
-- Dots are coloured by the SQL verdict and sized by spend.
+- Dots are coloured by the SQL verdict and sized by spend. A filled dot is
+  live in Meta and a hollow dot is paused.
+- **Live or paused.** Each ad's status is `is_active` from its newest row with
+  a value (`ARRAY_AGG(is_active IGNORE NULLS ORDER BY date_start DESC LIMIT
+  1)`). It can lag Meta by up to a day. Two legend counts flag a mismatch
+  between Meta and the verdict: **Paused while Testing** (switched off before
+  the test finished) and **Live in Cut** (still spending after it graded Cut).
+  An ad with no status is never flagged.
+- **Maturity playback.** Play steps the chart one day at a time from the
+  first launch in the range to the window end, at 1x, 2x or 4x, or drag the
+  slider. Each frame places every ad that had launched by that day at its
+  running spend and cost per conversion since launch, coloured by its verdict
+  as of that day. The day verdict comes from SQL (`scaleCutPlaybackSQL()`),
+  using the same `confidenceVerdictSQL` over running sums and today's targets.
+  **Trails** draws each ad's path so far. Playback loads at most the top 600
+  ads by lifetime spend; above that the note reads "Playback shows the top 600
+  of N ads by spend. Narrow the launch range to see them all." The last frame
+  is today's view.
 - With Product / Group or Campaign type on All there is no single target, so
   only the dots show and the note reads "Pick a product and campaign type to
   see the lines".
@@ -1460,10 +1504,12 @@ chart). Bubbles are sized by reach and coloured by quadrant.
   rows, the card shows "Reach data is not loaded yet." Without `REACH_TABLE`
   no reach query runs at all. If the query fails the error is logged and the
   card says "Could not load reach data."
-- **Reach window.** The mart holds 28 day, 90 day and lifetime reach. The chart
-  reads the one closest to the dashboard window: up to 59 days reads 28 day,
-  up to 180 days reads 90 day, longer reads lifetime. A note under the chart
-  names the window and its as-of date.
+- **Layout.** The chart comes first in the card, at the same fixed height as
+  the Kill and scale lines chart (340px). The notes sit under it.
+- **Lifetime reach.** The chart always uses lifetime reach, which matches the
+  y axis (lifetime cost per conversion). The note reads "Using lifetime reach
+  (as of {date}). Cost per conversion is lifetime too." The launch date range
+  picks which ads show.
 - **Quadrants.** Dotted lines sit at the median CPMr and the median cost per
   conversion of the ads with reach in the selected cell (all ads with reach
   when Product or Campaign type is All), with their values labelled. The
@@ -1471,15 +1517,17 @@ chart). Bubbles are sized by reach and coloured by quadrant.
   The cell's target shows as a faint dashed line for reference; it does not
   split the quadrants. The corner labels are Efficient growth (cheap reach,
   low cost), Reach play (cheap reach, high cost), Precision (dear reach, low
-  cost) and Cut candidate (dear reach, high cost). Ties count as the cheap or
+  cost) and Cut candidate (dear reach, high cost). They are drawn on top of
+  the bubbles on a light panel so they stay readable. Ties count as the cheap or
   low side. An ad with no conversions reads as high cost.
 - **Marker.** A Cut ad that lands in Reach play is drawn as a triangle, and
   its hover note says it may be bringing in new people. Check it before
   switching it off.
-- **No reach row.** Ads with no reach row for the window are listed under the
-  chart and not plotted.
+- **No reach data yet.** An ad with spend and no lifetime reach row is not
+  plotted. These show as one line with a count, for example "12 ads have no
+  reach data yet." Names are not listed; the Ads by verdict table has them.
 - **Query.** One query against `` `{PROJECT}.{DATASET}.{REACH_TABLE}` ``,
-  filtered to `is_latest` and the chosen `` `window` `` (backticked, it is a
+  filtered to `is_latest` and `` `window` = 'lifetime' `` (backticked, it is a
   reserved word) and to the ads in the tab's scope. It never reads raw
   `all_clients_*` or staging tables.
 
@@ -1487,9 +1535,6 @@ Limits of the reach chart:
 
 - Reach is Meta-reported, so treat CPMr as an index for comparing ads, not
   as a measure of incremental reach.
-- The X axis uses the chosen reach window while the Y axis stays lifetime
-  cost per conversion, so a recent ad and an old ad are not on exactly the
-  same footing.
 - CPMr may sort ads by placement (for example Reels against Feed) as much as
   by creative. This has not been measured because the mart has not run on
   live data yet. Compare the CPMr spread inside ad sets with the spread
@@ -1501,12 +1546,57 @@ Helpers: `confidenceLinesConfig`, `confidenceBaselineSQL(endIso)`,
 `confidenceVerdictSQL(...)`, `confidenceCurvePoints(...)` and
 `scaleCutScopeWhere(lead)` in `f10-utils.js`; `loadScaleCut()`,
 `scaleCutSQL()`, `confidenceCurveFor(mode, maxSpend)`,
-`confidenceLinesView(rows, mode)`, `confidenceReachWindow(days)`,
-`confidenceReachSQL(win)`, `confidenceReachView(rows, reachRows, mode)`,
-`confidenceQuadrant(p, medianCpmr, medianCpa)` and
-`confidenceQuadrantPlugin()` in `f10-monthly.js`. Tests:
-`test/confidence-baseline.test.js`, `test/confidence-production.test.js` and
-`test/confidence-reach.test.js`.
+`confidenceLinesView(rows, mode)`, `confidenceReachWindow()` (always
+`'lifetime'`), `confidenceReachSQL(win)`,
+`confidenceReachView(rows, reachRows, mode)`,
+`renderConfidenceReachNotes(view)`,
+`confidenceQuadrant(p, medianCpmr, medianCpa)`,
+`confidenceQuadrantPlugin()`, `scaleCutLaunchRange()`,
+`scaleCutPlaybackSQL(range)`, `scaleCutFlowSQL(range)`,
+`scaleCutMismatch(live, verdict)`, `scaleCutHistoryIndex(dailyRows)`,
+`scaleCutFrameRows(rows, byAd, date, trails, mode)` and
+`scaleCutFlowRows(rows, flowRows)` in `f10-monthly.js`; `mapLensHTML()` in
+`f10-layout.js`; `mapOlderSQL(end)` and `mapOlderView(rows)` in
+`f10-weekly.js`. Tests: `test/confidence-baseline.test.js`,
+`test/confidence-production.test.js`, `test/confidence-reach.test.js` and
+`test/scale-cut-round2.test.js`.
+
+#### New ad flow table
+
+One row per launch week (Monday start), newest first, for the ads in the
+launch range. Columns: Ads launched, Now Scale, Now Testing, Now Cut, % with
+a verdict, Spend on ads now Cut, Median days to first verdict and Median spend
+to first verdict. The "Now" columns are today's verdicts, so the weekly rows
+add up to the ads in the range (ads with No baseline count toward Ads launched
+only). Days and spend to first verdict come from each ad's own daily history
+(`scaleCutFlowSQL()`, the same running verdict as playback, with no 600 ad
+cap). Ads with no verdict yet are left out of the medians.
+
+#### Older ads lens (Movement Map)
+
+With `CONFIDENCE_LINES` set, the Movement Map gets a **Lens** select: All ads
+(the default, unchanged) or **Older ads (launched over 90 days ago)**. The
+older lens plots ads launched more than 90 days before the window end that
+spent in the last 14 days. X is spend in the last 14 days. Y is recent cost
+per conversion as a % of the ad's lifetime cost per conversion (100% means the
+same as lifetime). An ad is **Wearing out** when `confidenceVerdictSQL` grades
+its last 14 days Cut against its own lifetime cost per conversion at the
+configured confidence; otherwise it is **Holding up**. The lens note names that
+percent ("at 90% confidence" by default, "at 80% confidence" with
+`CONFIDENCE: 0.8`). Ads with no recent
+conversions sit on the top edge as triangles. Ads with no lifetime conversions
+have no baseline and are left off. Without `CONFIDENCE_LINES` the Movement Map
+markup and behaviour are unchanged.
+
+#### Removed in round 2
+
+- The Reach window select (Last 90 days and Last 28 days). The shorter windows
+  mixed recent reach with lifetime cost per conversion, and the launch date
+  range now does the job of focusing on recent ads.
+- The "Show names" list under the reach chart. The Ads by verdict table
+  already lists every ad, so the list repeated it.
+- The "At these targets: N Scale, N Testing, N Cut" line in the baseline
+  panel. The same counts are on the chart legend chips.
 
 ### Limits of the confidence lines
 
@@ -1522,9 +1612,12 @@ Released in v1.34.0 (v1.33.0 put this on Ad Production; v1.34.0 moved it to its 
   product and campaign type is the trailing 90 day Meta-reported cost per
   conversion. If the whole account got worse over those 90 days, the bar is
   lower too. Edit the target in the panel when the business target differs.
-- **90% confidence, one ad at a time.** Each ad is tested on its own. Across
-  a page of many ads a few will grade Scale or Cut by chance, so treat a
-  borderline call as a prompt to look, not a decision.
+- **Configured confidence (default 90%), one ad at a time.** Each ad is
+  tested on its own. Across a page of many ads a few will grade Scale or Cut
+  by chance, so treat a borderline call as a prompt to look, not a decision.
+  A lower confidence calls more ads sooner and wrongly more often: at 80% an
+  ad running exactly at target has up to a 1 in 5 chance of a Scale or Cut
+  call on each side, against 1 in 10 at 90%.
 - **Poisson assumption.** The test treats conversions as independent events
   at a steady rate. Bursty delivery, a learning phase or a tracking outage
   breaks that, and the verdict can be confidently wrong.

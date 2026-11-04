@@ -185,6 +185,10 @@ tbody tr:hover { background: rgba(75,0,15,0.03); }
 .badge-cut { background: color-mix(in srgb, var(--stabilo-red) 11%, transparent); color: color-mix(in srgb, var(--stabilo-red) 58%, #000); border: 1px solid var(--stabilo-red); }
 .cl-toggles { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; margin:6px 0 4px; font-size:12px; }
 .cl-lines-note:empty { display:none; }
+/* Card notes use the card subtitle caption style. */
+.chart-card .cl-lines-note { font-size:12px; color:#727272; line-height:1.4; }
+/* Status column: a small badge only on a live or paused mismatch. */
+.sc-mismatch-badge { display:inline-block; margin-left:6px; padding:1px 6px; border-radius:10px; font-size:11px; line-height:1.4; white-space:nowrap; background:rgba(240,140,0,0.12); color:#8a5000; border:1px solid #f08c00; }
 /* confidence-lines US-007: the reach window label and the No reach data yet list */
 .cl-reach-mark { color: var(--negative, #c0392b); font-weight: 600; }
 /* Scale & Cut tab cards: subtitle, legend chips with swatches, reach no-data note. */
@@ -197,7 +201,17 @@ tbody tr:hover { background: rgba(75,0,15,0.03); }
 .cl-sw-cut { background:#fa023c; }
 .cl-sw-reach { background:#f08c00; }
 .cl-sw-prec { background:#4a90e2; }
+/* Scale & Cut round 2: live (filled) and paused (hollow) dots, mismatch ring,
+ * launch range and playback controls. */
+.cl-sw-live { background:#555; }
+.cl-sw-paused { background:transparent; border:1.5px solid #555; box-sizing:border-box; }
+.cl-sw-flag { background:transparent; border:2px solid #f08c00; box-sizing:border-box; }
+.sc-launch-range input[type=date] { font:inherit; font-size:12px; }
+.sc-play input[type=range] { flex:1 1 160px; min-width:120px; }
+#sc-play-label { font-variant-numeric:tabular-nums; min-width:80px; }
 .cl-reach-empty { padding:40px 0; text-align:center; }
+/* Reach cost card: the notes sit under the chart. */
+.cl-reach-note, .cl-reach-missing { margin-top:8px; }
 
 /* Creative Score bands (US-002). Reuse the existing palette bands so the score
  * badge shares one colour system with the classification badges: strong mirrors
@@ -285,3 +299,21 @@ tbody tr:hover { background: rgba(75,0,15,0.03); }
 .comp-foot a { color: var(--young-blood); font-weight: 600; text-decoration: none; white-space: nowrap; }
 .comp-foot a:hover { color: var(--stabilo-red); }
 .comp-pager { display: flex; gap: 12px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
+
+/* Shared control style (Scale & Cut filter bar, playback bar, targets line,
+ * Needs a look and the Movement Map lens). Same height, border, radius, font
+ * and label style as the Product and Group selects in the controls bar. */
+.f10-ctl { font-family: inherit; font-size: 12px; line-height: 1.2; height: 30px; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--paper-dark); border-radius: 4px; background: var(--white); color: var(--ink); cursor: pointer; }
+button.f10-ctl { font-weight: 500; padding: 6px 10px; }
+button.f10-ctl:hover, button.f10-ctl.active { border-color: var(--young-blood); color: var(--young-blood); }
+.f10-ctl-link { height: auto; padding: 2px 8px; }
+.sc-controls .seg button { height: 28px; }
+.sc-controls .seg button.active { background: var(--young-blood); color: var(--on-brand); }
+.sc-custom[hidden], .sc-targets-edit[hidden] { display: none; }
+.sc-targets { margin: 4px 0 14px; font-size: 13px; }
+.sc-targets-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.sc-targets-edit { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin: 8px 0; }
+.sc-play { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 14px 0 4px; font-size: 12px; }
+.sc-play input[type=range] { flex: 1 1 240px; }
+.sc-look { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0 4px; font-size: 12px; }
+.cl-toggles .f10-ctl { margin: 0; }
