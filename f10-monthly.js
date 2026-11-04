@@ -80,6 +80,7 @@ function loadMonthlyTab(tab){
   if(tab === 'decay')      loadDecay();
   if(tab === 'age')        loadAge();
   if(tab === 'production') loadProduction();
+  if(tab === 'scalecut')   loadScaleCut();
   if(tab === 'powerlaw')   loadPowerLaw();
   if(tab === 'creative')   loadCreativeEffectiveness();
 }
@@ -329,6 +330,662 @@ async function loadProduction(){
       return `<tr ${adNameAttr(r.ad_name, r.campaign_name, r.adset_name)}><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adset_name}">${r.adset_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmt$(r.lifetime_spend)}</td><td>${r[mCol]&&Number(r[mCol])>0?fmtMetricCell(r[mCol]):'–'}</td><td>${fmtNum(r.total_conversions)}</td><td class="num">${cr.hold!=null?fmtPct(cr.hold,2):'–'}</td><td class="num">${cr.completion!=null?fmtPct(cr.completion,2):'–'}</td><td class="num">${cr.outboundCtr!=null?fmtPct(cr.outboundCtr,2):'–'}</td><td>${r.creative_link?`<a class="preview-link" data-ad-id="${r.ad_id}" href="${r.creative_link}" target="_blank">Preview</a>`:'–'}</td><td><span class="badge ${badgeClass}">${cls}</span></td><td>${creativeScoreBadge(r.creative_score)}</td></tr>`; }));
     hideEl('scatter-table-loading'); showEl('scatter-table');
   } catch(err){ console.error('Production error:',err); }
+}
+
+/* ── Scale & Cut tab (confidence-lines US-002, US-003, US-007, reworked in US-008) ──
+ * Everything below is inert unless CONFIDENCE_LINES is configured: the layout
+ * has no #tab-scalecut, the nav has no Scale & Cut link and loadMonthlyTab()
+ * never calls loadScaleCut(). Ad Production does not call in here at all. */
+let confidenceControlsWired = false;
+let confidenceSegmentsLoaded = false;
+let _confidenceBaselinePromise = null;
+let _confidenceBaselinePromiseEnd = null;
+
+/* Populate the Campaign type dropdown once and wire its change, the Reset to
+ * baseline button and the y axis toggle. Campaign type only scopes this tab. */
+function ensureConfidenceControls(){
+  if (confidenceControlsWired || !confidenceLinesEnabled()) return;
+  const sel = document.getElementById('ctrl-segment');
+  const reset = document.getElementById('cl-reset');
+  if (!sel || !reset) return;
+  confidenceControlsWired = true;
+  sel.addEventListener('change', () => {
+    setSegmentSelection(sel.value);
+    if (window.F10A) F10A.track('filter_changed', { filter: 'campaign_type', value: sel.value });
+    delete loadedTabs.scalecut;
+    if (activeTab === 'scalecut') loadMonthlyTab('scalecut');
+  });
+  reset.addEventListener('click', () => {
+    resetConfidenceTargets(confidenceSelectedKey());
+    loadScaleCut();
+  });
+  const yEl = document.getElementById('cl-y-mode');
+  if (yEl) yEl.addEventListener('change', () => { confidenceYMode = yEl.value === 'scale' ? 'scale' : 'kill'; loadScaleCut(); });
+  loadConfidenceSegments(sel);
+}
+
+async function loadConfidenceSegments(sel){
+  if (confidenceSegmentsLoaded) return;
+  const cfg = confidenceLinesConfig();
+  if (!cfg) return;
+  confidenceSegmentsLoaded = true;
+  try {
+    const rows = await runQuery(`SELECT DISTINCT (${cfg.segmentExpr}) AS segment FROM \`${PROJECT}.${DATASET}.${TABLE}\` WHERE (${cfg.segmentExpr}) IS NOT NULL ORDER BY 1`);
+    const opts = rows.map(r => _confStr(r.segment)).filter(v => v != null && v !== '');
+    sel.innerHTML = `<option value="${GROUP_ALL}">All campaign types</option>` + opts.map(v => {
+      const label = v === CONFIDENCE_UNMATCHED_SEGMENT ? 'Unmatched (check naming)' : v;
+      return `<option value="${escapeHtmlAttr(v)}"${v === segmentSelection ? ' selected' : ''}>${escapeHtmlAttr(label)}</option>`;
+    }).join('');
+    sel.value = segmentSelection;
+  } catch (err) { confidenceSegmentsLoaded = false; console.error('Campaign type list error:', err); }
+}
+function escapeHtmlAttr(v){ return String(v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+/* The window end the dashboard is showing: the end-date control, else the
+ * latest date in the mart. */
+function confidenceWindowEnd(){
+  const el = document.getElementById('ctrl-enddate');
+  if (el && el.value) return el.value;
+  return (typeof MAXDATE !== 'undefined' && MAXDATE) ? MAXDATE : null;
+}
+
+/* Run the baseline query once per window end; later calls reuse the result. */
+async function loadConfidenceBaseline(){
+  const end = confidenceWindowEnd();
+  if (!end) return false;
+  if (confidenceBaselineEnd() === end) return true;
+  if (_confidenceBaselinePromise && _confidenceBaselinePromiseEnd === end) return _confidenceBaselinePromise;
+  const sql = confidenceBaselineSQL(end);
+  if (!sql) return false;
+  _confidenceBaselinePromiseEnd = end;
+  _confidenceBaselinePromise = runQuery(sql).then(rows => { setConfidenceBaseline(rows, end); return true; })
+    .finally(() => { _confidenceBaselinePromise = null; _confidenceBaselinePromiseEnd = null; });
+  return _confidenceBaselinePromise;
+}
+
+/* Count rows by their SQL verdict column. */
+function confidenceVerdictCounts(rows){
+  const out = { Scale: 0, Testing: 0, Cut: 0, ungraded: 0 };
+  (rows || []).forEach(r => {
+    const v = _confStr(r.verdict);
+    if (v && out[v] !== undefined) out[v]++; else out.ungraded++;
+  });
+  return out;
+}
+
+/* ── Verdict (computed once, in SQL) ──
+ * A per_ad_conf CTE attaches each ad's own group x segment kill and scale
+ * targets (session edits included) and confidenceVerdictSQL grades it. The
+ * table, the counts and both charts read that column; nothing here recomputes
+ * a verdict. */
+let confidenceYMode = 'kill';
+let confidenceCurveState = null;
+const CONFIDENCE_VERDICT_BADGE = { Scale: 'badge-scale', Testing: 'badge-testing', Cut: 'badge-cut' };
+const CONFIDENCE_COLORS = {
+  scale: '#2f9e44', testing: '#9e9e9e', cut: CHART_NEGATIVE, none: '#d6d6d6',
+  efficient: '#2f9e44', reach: '#f08c00', precision: CHART_SECONDARY,
+};
+const CONFIDENCE_VERDICT_COLOR = { Scale: CONFIDENCE_COLORS.scale, Testing: CONFIDENCE_COLORS.testing, Cut: CONFIDENCE_COLORS.cut, 'No baseline': CONFIDENCE_COLORS.none };
+
+/* CASE over every baseline cell that has a usable target for which ('kill' or
+ * 'scale'). NULL when no cell has one. */
+function confidenceTargetCaseSQL(which){
+  const whens = Object.keys(_confidenceBaseline.rows).map(k => {
+    const b = _confidenceBaseline.rows[k];
+    const t = getConfidenceTargets(k);
+    if (!t || !(t[which] > 0)) return null;
+    return `WHEN IFNULL(conf_group, '') = ${sqlQuote(b.group == null ? '' : b.group)} AND conf_segment = ${sqlQuote(b.segment)} THEN ${_sqlNum(t[which])}`;
+  }).filter(Boolean);
+  return whens.length ? `CASE ${whens.join(' ')} END` : 'CAST(NULL AS FLOAT64)';
+}
+function confidenceScatterCTE(){
+  if (!confidenceLinesConfig()) return '';
+  return `,
+    per_ad_conf AS (
+      SELECT *, ${confidenceTargetCaseSQL('kill')} AS kill_target, ${confidenceTargetCaseSQL('scale')} AS scale_target FROM per_ad
+    )`;
+}
+/* Scale is tested first inside confidenceVerdictSQL, so sub evidence outranks
+ * lead evidence when an ad qualifies for both. NULL when the ad's cell has no
+ * baseline. */
+function confidenceVerdictSelect(){
+  const cfg = confidenceLinesConfig();
+  if (!cfg) return '';
+  return `,
+      IF(kill_target IS NULL AND scale_target IS NULL, CAST(NULL AS STRING), ${confidenceVerdictSQL('lifetime_spend', 'kill_conv', 'kill_target', { conf: cfg.confidence, scaleConvCol: 'scale_conv', scaleTargetCol: 'scale_target' })}) AS verdict`;
+}
+function confidenceVerdictCell(v){
+  const s = _confStr(v);
+  if (!s || !CONFIDENCE_VERDICT_BADGE[s]) return '<td><span class="tc-note">No baseline</span></td>';
+  return `<td><span class="badge ${CONFIDENCE_VERDICT_BADGE[s]}">${s}</span></td>`;
+}
+/* The per-ad query for the tab: one row per ad in scope (Product, Campaign
+ * type, status), with its SQL verdict. */
+function scaleCutSQL(){
+  if (!confidenceLinesConfig()) return null;
+  return `WITH per_ad AS (
+      SELECT ad_id, ANY_VALUE(ad_name) AS ad_name, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(adset_name) AS adset_name,
+        ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend ${confidenceAdSelect()}
+      FROM \`${PROJECT}.${DATASET}.${TABLE}\`${scaleCutScopeWhere('WHERE')}
+      GROUP BY 1
+    )${confidenceScatterCTE()}
+    SELECT * ${confidenceVerdictSelect()} FROM per_ad_conf ORDER BY lifetime_spend DESC`;
+}
+
+/* Chart mode for the selected cell: which cost per conversion the y axis
+ * shows and the target the lines are drawn from. Spend is always on a log axis. */
+function confidenceScatterMode(rows){
+  const cfg = confidenceLinesConfig();
+  if (!cfg) return null;
+  const which = confidenceYMode === 'scale' ? 'scale' : 'kill';
+  const key = confidenceSelectedKey();
+  const t = key ? getConfidenceTargets(key) : null;
+  const minPos = Math.min(Infinity, ...(rows || []).map(r => Number(_confStr(r.lifetime_spend)) || 0).filter(v => v > 0));
+  const logMin = isFinite(minPos) ? Math.min(100, Math.max(1, Math.pow(10, Math.floor(Math.log10(minPos))))) : 100;
+  return {
+    cfg, which, key, log: true,
+    target: t ? t[which] : null,
+    label: which === 'scale' ? cfg.scaleLabel : cfg.killLabel,
+    convCol: which === 'scale' ? 'scale_conv' : 'kill_conv',
+    logMin,
+  };
+}
+/* Top of the cost per conversion axis: about 4x target, or 4x the median cost
+ * per conversion when no target applies. Outliers clamp to this edge. */
+function confidenceYMax(target, cpas){
+  if (target > 0) return Math.ceil(target * 4);
+  const med = confidenceMedian(cpas || []);
+  return med ? Math.ceil(med * 4) : 100;
+}
+function confidenceLogMax(maxSpend){
+  const top = Math.pow(10, Math.ceil(Math.log10(Math.max(1, Number(maxSpend) || 0))));
+  return Math.max(100000, top);
+}
+function confidenceLogTicks(min, max){
+  const out = [];
+  for (let v = min; v <= max * 1.0001; v *= 10) out.push(v);
+  return out;
+}
+function confidenceShortMoney(v){
+  if (v >= 1e6) return '$' + (v / 1e6) + 'M';
+  if (v >= 1e3) return '$' + (v / 1e3) + 'k';
+  return '$' + v;
+}
+
+/* The Scale and Cut curves for one target. Each curve passes through the
+ * points where an ad with K conversions changes verdict: it is Cut once spend
+ * passes target x the kill bound for K, and Scaled while spend stays under
+ * target x the scale bound for K. Cost per conversion at that spend is
+ * spend / K. The Cut curve falls towards the target as spend grows and the
+ * Scale curve rises towards it. */
+function confidenceCurveFor(mode, maxSpend){
+  if (!mode || !mode.key || !(mode.target > 0)) return null;
+  const conf = mode.cfg.confidence, tg = mode.target;
+  const hi = Math.max(mode.logMin, Number(maxSpend) || 0) * 1.5;
+  const cut = [], scale = [];
+  for (let k = 1; k <= 5000; k++){
+    const b = confidenceBounds(k, conf);
+    const sk = tg * b.kill, ss = tg * b.scale;
+    if (sk <= hi * 10) cut.push({ spend: sk, cpa: sk / k, conv: k });
+    if (ss <= hi * 10) scale.push({ spend: ss, cpa: ss / k, conv: k });
+    if (sk > hi * 10 && ss > hi * 10) break;
+  }
+  return { key: mode.key, which: mode.which, target: tg, conf, cut, scale };
+}
+function renderConfidenceLinesNote(mode){
+  const el = document.getElementById('sc-lines-note');
+  if (!el) return;
+  if (!mode) { el.textContent = ''; return; }
+  if (!mode.key) { el.textContent = 'Pick a product and campaign type to see the lines'; return; }
+  if (!(mode.target > 0)) { el.textContent = 'Not enough data for a baseline, so no lines'; return; }
+  const cfg = mode.cfg;
+  if (cfg.killConvExpr !== cfg.scaleConvExpr){
+    el.textContent = mode.which === 'kill'
+      ? `The Cut line is exact here. Scale is judged on ${cfg.scaleLabel.toLowerCase()}, so switch the y axis to see the exact Scale line.`
+      : `The Scale line is exact here. Cut is judged on ${cfg.killLabel.toLowerCase()}, so switch the y axis to see the exact Cut line.`;
+  } else el.textContent = '';
+}
+
+/* Draws the shading, both curves, the target line and the labels from
+ * confidenceCurveState before the dots, so the dots sit on top and the ad
+ * search filter (which only touches the dot datasets) never removes them. */
+function confidenceLinesPlugin(){
+  return { id: 'confidence-lines', beforeDatasetsDraw(chart){
+    const st = confidenceCurveState;
+    if (!st) return;
+    const g = chart.ctx, xA = chart.scales.x, yA = chart.scales.y, a = chart.chartArea;
+    if (!a) return;
+    const px = p => ({ x: xA.getPixelForValue(p.spend), y: Math.max(a.top, yA.getPixelForValue(p.cpa)) });
+    const cut = st.cut.map(px), scale = st.scale.map(px);
+    const pct = Math.round(st.conf * 100);
+    g.save();
+    g.beginPath(); g.rect(a.left, a.top, a.right - a.left, a.bottom - a.top); g.clip();
+    if (cut.length){
+      g.fillStyle = 'rgba(250, 2, 60, 0.08)';
+      g.beginPath(); g.moveTo(cut[0].x, a.top);
+      cut.forEach(p => g.lineTo(p.x, p.y));
+      g.lineTo(a.right + 10, cut[cut.length - 1].y); g.lineTo(a.right + 10, a.top); g.closePath(); g.fill();
+      g.strokeStyle = CONFIDENCE_COLORS.cut; g.lineWidth = 2;
+      g.beginPath(); g.moveTo(cut[0].x, a.top); cut.forEach(p => g.lineTo(p.x, p.y)); g.lineTo(a.right + 10, cut[cut.length - 1].y); g.stroke();
+    }
+    if (scale.length){
+      g.fillStyle = 'rgba(47, 158, 68, 0.10)';
+      g.beginPath(); g.moveTo(scale[0].x, a.bottom);
+      scale.forEach(p => g.lineTo(p.x, p.y));
+      g.lineTo(a.right + 10, scale[scale.length - 1].y); g.lineTo(a.right + 10, a.bottom); g.closePath(); g.fill();
+      g.strokeStyle = CONFIDENCE_COLORS.scale; g.lineWidth = 2;
+      g.beginPath(); g.moveTo(scale[0].x, a.bottom); scale.forEach(p => g.lineTo(p.x, p.y)); g.lineTo(a.right + 10, scale[scale.length - 1].y); g.stroke();
+    }
+    const ty = yA.getPixelForValue(st.target);
+    g.setLineDash([5, 4]); g.strokeStyle = '#727272'; g.lineWidth = 1.5;
+    g.beginPath(); g.moveTo(a.left, ty); g.lineTo(a.right, ty); g.stroke(); g.setLineDash([]);
+    g.font = '10px Archivo, sans-serif';
+    const pill = 'target ' + fmt$(st.target);
+    const pw = g.measureText(pill).width + 12;
+    g.fillStyle = '#ffffff'; g.strokeStyle = '#727272'; g.lineWidth = 1;
+    const pxl = a.right - pw - 6, pyl = ty - 8;
+    g.beginPath();
+    if (g.roundRect) g.roundRect(pxl, pyl, pw, 16, 8); else g.rect(pxl, pyl, pw, 16);
+    g.fill(); g.stroke();
+    g.fillStyle = '#4a4a4a'; g.fillText(pill, pxl + 6, pyl + 11);
+    g.font = 'bold 11px Archivo, sans-serif'; g.fillStyle = CONFIDENCE_COLORS.cut;
+    g.fillText('CUT', a.right - 150, a.top + 14);
+    g.font = '10px Archivo, sans-serif'; g.fillText(pct + '% sure it misses target', a.right - 150, a.top + 27);
+    g.font = 'bold 11px Archivo, sans-serif'; g.fillStyle = CONFIDENCE_COLORS.scale;
+    g.fillText('SCALE', a.right - 150, a.bottom - 22);
+    g.font = '10px Archivo, sans-serif'; g.fillText(pct + '% sure it beats target', a.right - 150, a.bottom - 9);
+    g.font = 'bold 11px Archivo, sans-serif'; g.fillStyle = '#727272';
+    g.fillText('TESTING', a.left + 6, a.top + 14);
+    g.font = '10px Archivo, sans-serif'; g.fillText('keep spending', a.left + 6, a.top + 27);
+    g.restore();
+  } };
+}
+
+/* Build the lines chart model from the SQL rows. Dots are coloured by the SQL
+ * verdict, sized gently by spend and clamped to the top edge when their cost
+ * per conversion is off the chart or they have no conversions yet. */
+function confidenceLinesView(rows, mode){
+  const pts = [];
+  (rows || []).forEach(r => {
+    const spend = Number(_confStr(r.lifetime_spend)) || 0;
+    if (!(spend > 0)) return;
+    const conv = Number(_confStr(r[mode.convCol])) || 0;
+    pts.push({ x: Math.max(spend, mode.logMin), y: conv > 0 ? spend / conv : null, _cpa: conv > 0 ? spend / conv : null,
+      _conv: conv, _spend: spend, label: _confStr(r.ad_name), _verdict: _confStr(r.verdict) || 'No baseline',
+      _key: adSearchKey(r.ad_name, r.campaign_name, r.adset_name) });
+  });
+  const maxSpend = Math.max(0, ...pts.map(p => p._spend));
+  const maxY = confidenceYMax(mode.target, pts.map(p => p._cpa).filter(v => v != null));
+  pts.forEach(p => {
+    if (p.y == null || p.y > maxY){ p.y = maxY; p._clamped = true; }
+    p._r = 2.5 + 3.5 * Math.sqrt(maxSpend > 0 ? p._spend / maxSpend : 0);
+  });
+  const groups = { Scale: [], Testing: [], Cut: [], 'No baseline': [] };
+  pts.forEach(p => (groups[p._verdict] || groups['No baseline']).push(p));
+  const datasets = Object.keys(groups).filter(k => groups[k].length).map(k => ({
+    label: k, data: groups[k], backgroundColor: CONFIDENCE_VERDICT_COLOR[k] + 'cc', borderColor: CONFIDENCE_VERDICT_COLOR[k], borderWidth: 1,
+    pointRadius: c => (c.raw && c.raw._r) || 3, pointHoverRadius: c => ((c.raw && c.raw._r) || 3) + 2 }));
+  return { mode, datasets, maxY, minX: mode.logMin, maxX: confidenceLogMax(maxSpend), maxSpend };
+}
+function confidenceLinesTooltip(pt, mode){
+  return [pt.label || '', `Spend: ${fmt$(pt._spend)}`, `${confidenceConvNoun(mode.label)}: ${fmtNum(pt._conv)}`,
+    pt._cpa == null ? `${mode.label}: no conversions yet` : `${mode.label}: ${fmt$(pt._cpa)}`, `Verdict: ${pt._verdict}`];
+}
+function confidenceLinesChart(view){
+  const mode = view.mode;
+  return new Chart(document.getElementById('sc-lines-chart'), { type: 'scatter', data: { datasets: view.datasets },
+    options: { responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { type: 'logarithmic', min: view.minX, max: view.maxX, title: { display: true, text: 'Spend per ad (log)', font: { size: 11 } },
+          afterBuildTicks: ax => { ax.ticks = confidenceLogTicks(view.minX, view.maxX).map(v => ({ value: v })); },
+          ticks: { callback: v => confidenceShortMoney(v) } },
+        y: { min: 0, max: view.maxY, title: { display: true, text: mode.label, font: { size: 11 } }, ticks: { callback: v => fmt$(v) } } },
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: c => confidenceLinesTooltip(c.raw, mode) } } } },
+    plugins: [confidenceLinesPlugin()] });
+}
+
+/* ── Reach cost chart (confidence-lines US-007, reworked in US-008) ──
+ * With CONFIDENCE_LINES.REACH_TABLE set, each ad's Meta-reported cost per
+ * 1,000 people reached (CPMr) is read from the ad_window_reach mart in the
+ * client's own marts dataset and plotted against the same cost per conversion
+ * as the lines chart. Dotted lines at the segment's median CPMr and median cost
+ * per conversion split it into four quadrants. The target is drawn as a faint
+ * reference line. A Cut ad in Reach play gets a marker: cheap reach may mean it
+ * is finding new people that last-click conversions do not credit. Without
+ * REACH_TABLE, or with no reach rows, no chart is drawn and no reach query runs. */
+let confidenceQuadState = null;
+const CONFIDENCE_REACH_WINDOW_LABEL = { last_28d: '28 day', last_90d: '90 day', lifetime: 'lifetime' };
+const CONFIDENCE_QUADRANTS = { efficient: 'Efficient growth', reach: 'Reach play', precision: 'Precision', cut: 'Cut candidate' };
+const CONFIDENCE_QUADRANT_COLOR = {
+  'Efficient growth': CONFIDENCE_COLORS.efficient, 'Reach play': CONFIDENCE_COLORS.reach,
+  'Precision': CONFIDENCE_COLORS.precision, 'Cut candidate': CONFIDENCE_COLORS.cut };
+const CONFIDENCE_REACH_MARK_LABEL = 'Cut, may be bringing in new people';
+const CONFIDENCE_REACH_MARK_NOTE = 'Cut on cost per conversion, but it reaches people cheaply, so it may be bringing in new people. Check before switching it off.';
+
+function confidenceReachEnabled(){ const cfg = confidenceLinesConfig(); return !!(cfg && cfg.reachTable); }
+/* The dashboard window length in days, from the window control. */
+function confidenceDashboardDays(){
+  const el = document.getElementById('ctrl-length');
+  const n = el ? parseInt(el.value, 10) : NaN;
+  return n > 0 ? n : null;
+}
+/* The reach window closest to the dashboard window: up to 59 days reads the
+ * 28 day window, up to 180 days the 90 day window, anything longer (or no
+ * window control) the lifetime row. */
+function confidenceReachWindow(days){
+  if (!(days > 0)) return 'lifetime';
+  if (days <= 59) return 'last_28d';
+  if (days <= 180) return 'last_90d';
+  return 'lifetime';
+}
+/* Latest reach row per ad for one window, limited to the ads in this tab's
+ * scope. Reads only the client's reach mart and the dashboard's own table. */
+function confidenceReachSQL(win){
+  const cfg = confidenceLinesConfig();
+  if (!cfg || !cfg.reachTable || !CONFIDENCE_REACH_WINDOW_LABEL[win]) return null;
+  return `SELECT CAST(ad_id AS STRING) AS ad_id, spend, impressions, reach, cpmr, as_of_date
+    FROM \`${PROJECT}.${DATASET}.${cfg.reachTable}\`
+    WHERE is_latest AND \`window\` = ${sqlQuote(win)}
+      AND CAST(ad_id AS STRING) IN (SELECT DISTINCT CAST(ad_id AS STRING) FROM \`${PROJECT}.${DATASET}.${TABLE}\`${scaleCutScopeWhere('WHERE')})`;
+}
+function confidenceMedian(vals){
+  const v = vals.filter(x => x > 0).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const mid = Math.floor(v.length / 2);
+  return v.length % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2;
+}
+/* Ties count as the low side. An ad with no conversions has no cost per
+ * conversion yet, so it reads as the high side. The y split is the median
+ * cost per conversion, not the target. */
+function confidenceQuadrant(p, medianCpmr, medianCpa){
+  const lowX = p.x <= medianCpmr;
+  const lowY = !p._noConv && p._cpa != null && p._cpa <= medianCpa;
+  if (lowX) return lowY ? CONFIDENCE_QUADRANTS.efficient : CONFIDENCE_QUADRANTS.reach;
+  return lowY ? CONFIDENCE_QUADRANTS.precision : CONFIDENCE_QUADRANTS.cut;
+}
+function _confEsc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+/* Build the reach chart model from the per-ad rows (which carry the SQL
+ * verdict) and the reach rows. Joined in the browser on ad_id. */
+function confidenceReachView(rows, reachRows, mode){
+  const byAd = {};
+  (reachRows || []).forEach(r => { const id = _confStr(r.ad_id); if (id != null) byAd[String(id)] = r; });
+  const pts = [], missing = [];
+  let asOf = null;
+  (rows || []).forEach(r => {
+    const spend = Number(_confStr(r.lifetime_spend)) || 0;
+    if (!(spend > 0)) return;
+    const key = adSearchKey(r.ad_name, r.campaign_name, r.adset_name);
+    const rr = byAd[String(_confStr(r.ad_id))];
+    const cpmr = rr ? Number(_confStr(rr.cpmr)) : NaN;
+    if (!(cpmr > 0)){ missing.push({ name: r.ad_name, _key: key }); return; }
+    const d = _confStr(rr.as_of_date);
+    if (d && (!asOf || String(d) > asOf)) asOf = String(d);
+    const conv = Number(_confStr(r[mode.convCol])) || 0;
+    pts.push({ x: cpmr, y: conv > 0 ? spend / conv : null, _cpa: conv > 0 ? spend / conv : null, _noConv: !(conv > 0),
+      label: _confStr(r.ad_name), _key: key, _spend: spend, _reach: Number(_confStr(rr.reach)) || 0,
+      _verdict: _confStr(r.verdict) || 'No baseline',
+      _cell: confidenceKey(r.conf_group == null ? '' : _confStr(r.conf_group), _confStr(r.conf_segment)) });
+  });
+  /* The medians are over the selected cell's ads with reach (every ad with
+   * reach when Product or Campaign type is All), before any ad search, so a
+   * search never moves the lines. */
+  const cellPts = mode.key ? pts.filter(p => p._cell === mode.key) : pts;
+  const medianCpmr = confidenceMedian(cellPts.map(p => p.x));
+  const medianCpa = confidenceMedian(cellPts.map(p => p._cpa).filter(v => v != null));
+  const quad = (medianCpmr != null && medianCpa != null)
+    ? { median: medianCpmr, medianCpa, target: mode.target > 0 ? mode.target : null } : null;
+  const maxY = confidenceYMax(mode.target, pts.map(p => p._cpa).filter(v => v != null));
+  const maxReach = Math.max(0, ...pts.map(p => p._reach));
+  const groups = {};
+  Object.values(CONFIDENCE_QUADRANTS).forEach(q => { groups[q] = []; });
+  const marked = [];
+  pts.forEach(p => {
+    p._r = 3 + 9 * Math.sqrt(maxReach > 0 ? p._reach / maxReach : 0);
+    if (p.y == null || p.y > maxY){ p.y = maxY; p._clamped = true; }
+    if (!quad){ groups[CONFIDENCE_QUADRANTS.efficient].push(p); return; }
+    p._quadrant = confidenceQuadrant(p, quad.median, quad.medianCpa);
+    if (p._verdict === 'Cut' && p._quadrant === CONFIDENCE_QUADRANTS.reach){ p._newPeople = true; marked.push(p); return; }
+    groups[p._quadrant].push(p);
+  });
+  const radius = c => (c.raw && c.raw._r) || 4;
+  const datasets = Object.keys(groups).filter(k => groups[k].length).map(k => ({
+    label: k, data: groups[k], backgroundColor: CONFIDENCE_QUADRANT_COLOR[k] + '55', borderColor: CONFIDENCE_QUADRANT_COLOR[k], borderWidth: 1.5,
+    pointRadius: radius, pointHoverRadius: c => radius(c) + 2 }));
+  if (marked.length) datasets.push({ label: CONFIDENCE_REACH_MARK_LABEL, data: marked, pointStyle: 'triangle',
+    backgroundColor: CONFIDENCE_COLORS.cut + '99', borderColor: '#000000', borderWidth: 1.5, pointRadius: c => Math.max(7, radius(c)), pointHoverRadius: c => Math.max(7, radius(c)) + 2 });
+  const maxX = Math.max(1, Math.ceil(Math.max(0, ...pts.map(p => p.x), quad ? quad.median : 0) * 1.1));
+  return { mode, datasets, maxX, maxY, quad, missing, asOf, median: medianCpmr, points: pts };
+}
+
+function renderConfidenceReachNotes(view, win, reachRows){
+  const note = document.getElementById('sc-reach-note');
+  const miss = document.getElementById('sc-reach-missing');
+  if (!note || !miss) return;
+  if (!win || !view){ note.textContent = ''; miss.innerHTML = ''; return; }
+  note.textContent = `Using the ${CONFIDENCE_REACH_WINDOW_LABEL[win]} reach window` + (view.asOf ? ` (as of ${view.asOf})` : '')
+    + '. Reach is Meta-reported, so read it as an index. Cost per conversion stays lifetime.';
+  const shown = adSearchFilter(view.missing, m => m._key);
+  miss.innerHTML = shown.length
+    ? `No reach data yet (${shown.length}): ` + shown.map(m => _confEsc(m.name)).join(', ')
+    : '';
+}
+
+function confidenceReachTooltip(pt, setLabel, mode){
+  const lines = [pt.label || setLabel, `Cost per 1,000 reached: ${fmt$(pt.x)}`, `Reach: ${fmtNum(pt._reach)}`, `Spend: ${fmt$(pt._spend)}`,
+    pt._noConv ? 'No conversions yet' : `${mode.label}: ${fmt$(pt._cpa)}`, `Verdict: ${pt._verdict}`];
+  if (pt._quadrant) lines.push(`Quadrant: ${pt._quadrant}`);
+  if (pt._newPeople) lines.push(CONFIDENCE_REACH_MARK_NOTE);
+  return lines;
+}
+
+function confidenceReachChart(view){
+  confidenceQuadState = view.quad;
+  const mode = view.mode;
+  return new Chart(document.getElementById('sc-reach-chart'), { type: 'scatter', data: { datasets: view.datasets },
+    options: { responsive: true, maintainAspectRatio: false, layout: { padding: { bottom: 12 } },
+      scales: {
+        x: { title: { display: true, text: 'Cost per 1,000 reached', font: { size: 11 } }, min: 0, max: view.maxX, ticks: { callback: v => fmt$(v) } },
+        y: { title: { display: true, text: mode.label, font: { size: 11 } }, min: 0, max: view.maxY, ticks: { callback: v => fmt$(v) } } },
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: c => confidenceReachTooltip(c.raw, c.dataset.label, mode) } } } },
+    plugins: [confidenceQuadrantPlugin()] });
+}
+
+/* Tinted quadrants, dotted median lines with their values, corner labels, the
+ * faint target line and the "cheaper reach" note. Drawn from
+ * confidenceQuadState before the bubbles, so the ad search never removes them. */
+function confidenceQuadrantPlugin(){
+  return { id: 'confidence-quadrants', beforeDatasetsDraw(chart){
+    const st = confidenceQuadState;
+    const g = chart.ctx, a = chart.chartArea;
+    if (!a) return;
+    g.save();
+    g.font = '10px Archivo, sans-serif'; g.fillStyle = '#727272';
+    g.fillText('cheaper reach', a.left, chart.height - 4);
+    if (!st){ g.restore(); return; }
+    const x = Math.min(a.right, Math.max(a.left, chart.scales.x.getPixelForValue(st.median)));
+    const y = Math.min(a.bottom, Math.max(a.top, chart.scales.y.getPixelForValue(st.medianCpa)));
+    const tint = (col, x0, y0, x1, y1) => { g.fillStyle = col; g.fillRect(x0, y0, x1 - x0, y1 - y0); };
+    tint('rgba(240, 140, 0, 0.07)', a.left, a.top, x, y);
+    tint('rgba(250, 2, 60, 0.07)', x, a.top, a.right, y);
+    tint('rgba(47, 158, 68, 0.07)', a.left, y, x, a.bottom);
+    tint('rgba(74, 144, 226, 0.07)', x, y, a.right, a.bottom);
+    if (st.target > 0){
+      const ty = chart.scales.y.getPixelForValue(st.target);
+      if (ty >= a.top && ty <= a.bottom){
+        g.setLineDash([5, 4]); g.strokeStyle = 'rgba(114, 114, 114, 0.45)'; g.lineWidth = 1;
+        g.beginPath(); g.moveTo(a.left, ty); g.lineTo(a.right, ty); g.stroke(); g.setLineDash([]);
+        g.fillStyle = 'rgba(114, 114, 114, 0.8)'; g.fillText('target ' + fmt$(st.target), a.right - 80, ty - 4);
+      }
+    }
+    g.setLineDash([2, 3]); g.strokeStyle = '#727272'; g.lineWidth = 1.2;
+    g.beginPath(); g.moveTo(x, a.top); g.lineTo(x, a.bottom); g.stroke();
+    g.beginPath(); g.moveTo(a.left, y); g.lineTo(a.right, y); g.stroke();
+    g.setLineDash([]);
+    g.fillStyle = '#4a4a4a';
+    g.fillText('median ' + fmt$(st.median), x + 4, a.bottom - 6);
+    g.fillText('median ' + fmt$(st.medianCpa), a.left + 4, y - 4);
+    const corner = (title, sub, col, left, top) => {
+      g.font = 'bold 10px Archivo, sans-serif';
+      const w = Math.max(g.measureText(title).width, (g.font = '10px Archivo, sans-serif', g.measureText(sub).width));
+      const tx = left ? a.left + 6 : a.right - w - 6;
+      const ty = top ? a.top + 14 : a.bottom - 34;
+      g.fillStyle = col; g.font = 'bold 10px Archivo, sans-serif'; g.fillText(title, tx, ty);
+      g.font = '10px Archivo, sans-serif'; g.fillText(sub, tx, ty + 12);
+    };
+    corner('REACH PLAY', 'cheap reach, higher CPA', CONFIDENCE_COLORS.reach, true, true);
+    corner('CUT CANDIDATE', 'pricey reach, higher CPA', CONFIDENCE_COLORS.cut, false, true);
+    corner('EFFICIENT GROWTH', 'cheap reach, lower CPA', CONFIDENCE_COLORS.efficient, true, false);
+    corner('PRECISION', 'pricey reach, lower CPA', CONFIDENCE_COLORS.precision, false, false);
+    g.restore();
+  } };
+}
+
+function _confTargetField(id, label, value, conv){
+  if (value == null) return `<div class="tc-field"><label>${label}</label><span class="tc-note">Not enough data for a baseline (${fmtNum(conv)} conversions, needs ${CONFIDENCE_MIN_CONVERSIONS}).</span></div>`;
+  return `<div class="tc-field"><label for="${id}">${label}</label><input type="number" id="${id}" min="0" step="any" value="${Math.round(value * 100) / 100}" /></div>`;
+}
+
+/* Fill the baseline panel for the selected Product x Campaign type and wire the
+ * target inputs. Edits are session-only and re-grade this tab. */
+function renderConfidenceBaselinePanel(rows){
+  const cfg = confidenceLinesConfig();
+  const body = document.getElementById('sc-baseline-body');
+  if (!cfg || !body) return;
+  const unmatched = document.getElementById('sc-baseline-unmatched');
+  const verdicts = document.getElementById('sc-baseline-verdicts');
+  const resetBtn = document.getElementById('cl-reset');
+  const uSpend = confidenceUnmatchedSpend();
+  if (unmatched) unmatched.innerHTML = uSpend > 0
+    ? `<div class="tc-note" id="cl-unmatched-flag">${fmt$(uSpend)} of spend in this window is on campaigns whose names match no campaign type. Pick "Unmatched (check naming)" in Campaign type to see them, then fix the names or the mapping.</div>`
+    : '';
+  const key = confidenceSelectedKey();
+  const t = key ? getConfidenceTargets(key) : null;
+  if (!key){
+    body.innerHTML = '<span class="tc-note">Pick a product and campaign type to see its baseline.</span>';
+    if (verdicts) verdicts.innerHTML = '';
+    if (resetBtn) resetBtn.style.display = 'none';
+    return;
+  }
+  if (!t || (t.kill == null && t.scale == null)){
+    body.innerHTML = '<span class="tc-note" id="cl-not-enough">Not enough data for a baseline</span>';
+    if (verdicts) verdicts.innerHTML = '';
+    if (resetBtn) resetBtn.style.display = 'none';
+    return;
+  }
+  body.innerHTML = `<div class="tc-grid">${_confTargetField('cl-target-kill', cfg.killLabel, t.kill, t.killConv)}${_confTargetField('cl-target-scale', cfg.scaleLabel, t.scale, t.scaleConv)}</div>`;
+  if (resetBtn) resetBtn.style.display = '';
+  [['cl-target-kill', 'kill'], ['cl-target-scale', 'scale']].forEach(([id, which]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('change', () => {
+      if (setConfidenceTarget(key, which, el.value)) loadScaleCut();
+      else { const cur = getConfidenceTargets(key); el.value = cur && cur[which] != null ? Math.round(cur[which] * 100) / 100 : ''; }
+    });
+  });
+  if (verdicts){
+    const c = confidenceVerdictCounts(rows);
+    verdicts.innerHTML = `<span class="tc-note" id="cl-verdict-counts">At these targets: <strong>${c.Scale}</strong> Scale, <strong>${c.Testing}</strong> Testing, <strong>${c.Cut}</strong> Cut${t.edited ? ' (edited for this session)' : ''}.</span>`;
+  }
+}
+
+/* ── Scale & Cut tab loader ── */
+let scaleCutLinesChart = null;
+let scaleCutReachChart = null;
+let scaleCutState = null;
+let _scaleCutSeq = 0;
+
+/* Legend chip counts follow the ad search, like the dots. */
+function renderScaleCutCounts(){
+  const st = scaleCutState;
+  const rows = st ? adSearchFilter(st.rows, r => adSearchKey(r.ad_name, r.campaign_name, r.adset_name)) : [];
+  const c = confidenceVerdictCounts(rows);
+  [['sc-count-scale', c.Scale], ['sc-count-testing', c.Testing], ['sc-count-cut', c.Cut]].forEach(([id, n]) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = String(n);
+  });
+}
+onAdSearch('scalecut', () => {
+  if (!scaleCutState) return;
+  renderScaleCutCounts();
+  renderConfidenceReachNotes(scaleCutState.reachView, scaleCutState.reachWin, scaleCutState.reachRows);
+});
+
+function renderScaleCutTable(rows, mode){
+  const th1 = document.getElementById('sc-th-conv'), th2 = document.getElementById('sc-th-cpa');
+  if (th1) th1.textContent = confidenceConvNoun(mode.label);
+  if (th2) th2.textContent = mode.label;
+  renderPagedTable('sc-table-body', rows.map(r => {
+    const spend = Number(_confStr(r.lifetime_spend)) || 0;
+    const conv = Number(_confStr(r[mode.convCol])) || 0;
+    const name = _confEsc(_confStr(r.ad_name)), camp = _confEsc(_confStr(r.campaign_name));
+    return `<tr ${adNameAttr(r.ad_name, r.campaign_name, r.adset_name)}><td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;" title="${name}">${name}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${camp}">${camp}</td><td>${_confEsc(_confStr(r.conf_segment))}</td><td>${fmt$(spend)}</td><td>${fmtNum(conv)}</td><td>${conv > 0 ? fmt$(spend / conv) : '-'}</td>${confidenceVerdictCell(r.verdict)}</tr>`;
+  }), 20);
+  hideEl('sc-table-loading'); showEl('sc-table');
+}
+
+function showScaleCutReachEmpty(){
+  const empty = document.getElementById('sc-reach-empty');
+  if (empty) empty.style.display = '';
+  hideEl('sc-reach-loading'); hideEl('sc-reach-wrapper');
+  if (scaleCutReachChart){ scaleCutReachChart.destroy(); scaleCutReachChart = null; }
+  confidenceQuadState = null;
+  renderConfidenceReachNotes(null, null, null);
+}
+
+async function loadScaleCut(){
+  if (!confidenceLinesEnabled()) return;
+  ensureConfidenceControls();
+  const seq = ++_scaleCutSeq;
+  try {
+    await loadConfidenceBaseline();
+    if (seq !== _scaleCutSeq) return;
+    const rows = await runQuery(scaleCutSQL());
+    if (seq !== _scaleCutSeq) return;
+    const mode = confidenceScatterMode(rows);
+    renderConfidenceBaselinePanel(rows);
+
+    const view = confidenceLinesView(rows, mode);
+    confidenceCurveState = confidenceCurveFor(mode, view.maxSpend);
+    renderConfidenceLinesNote(mode);
+    const sub = document.getElementById('sc-lines-sub');
+    if (sub) sub.textContent = 'Spend (log) against ' + mode.label.toLowerCase();
+    hideEl('sc-lines-loading'); showEl('sc-lines-wrapper');
+    if (scaleCutLinesChart) scaleCutLinesChart.destroy();
+    scaleCutLinesChart = confidenceLinesChart(view);
+    followAdSearch('sc-lines', scaleCutLinesChart);
+
+    scaleCutState = { rows, mode, reachView: null, reachWin: null, reachRows: null };
+    renderScaleCutTable(rows, mode);
+    renderScaleCutCounts();
+
+    if (!confidenceReachEnabled()){ showScaleCutReachEmpty(); return; }
+    const win = confidenceReachWindow(confidenceDashboardDays());
+    const empty = document.getElementById('sc-reach-empty');
+    if (empty) empty.style.display = 'none';
+    showEl('sc-reach-loading'); hideEl('sc-reach-wrapper');
+    let reachRows;
+    try { reachRows = await runQuery(confidenceReachSQL(win)); }
+    catch (err){
+      if (seq !== _scaleCutSeq) return;
+      console.error('Reach data error:', err);
+      showScaleCutReachEmpty();
+      const note = document.getElementById('sc-reach-note');
+      if (note) note.textContent = 'Could not load reach data.';
+      return;
+    }
+    if (seq !== _scaleCutSeq) return;
+    if (!reachRows || !reachRows.length){ showScaleCutReachEmpty(); return; }
+    const rview = confidenceReachView(rows, reachRows, mode);
+    Object.assign(scaleCutState, { reachView: rview, reachWin: win, reachRows });
+    renderConfidenceReachNotes(rview, win, reachRows);
+    hideEl('sc-reach-loading'); showEl('sc-reach-wrapper');
+    if (scaleCutReachChart) scaleCutReachChart.destroy();
+    scaleCutReachChart = confidenceReachChart(rview);
+    followAdSearch('sc-reach', scaleCutReachChart);
+  } catch (err){ console.error('Scale & Cut error:', err); }
 }
 
 /* ── Ad Power Law ── */
