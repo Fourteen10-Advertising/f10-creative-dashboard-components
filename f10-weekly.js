@@ -410,10 +410,12 @@ function renderBoard(movers, c){
  * than 90 days before the window end that spent in the last 14 days. x is that
  * recent spend, y is recent cost per conversion as a % of the ad's lifetime
  * cost per conversion (100% = as good as ever), bubble size is recent spend.
- * "Wearing out" is the SQL verdict Cut from confidenceVerdictSQL at 90%: recent
+ * "Wearing out" is the SQL verdict Cut from confidenceVerdictSQL at the
+ * configured CONFIDENCE_LINES.CONFIDENCE (90% by default): recent
  * conversions are below the lifetime rate by more than chance explains. */
 const MAP_OLDER_DAYS = 90, MAP_RECENT_DAYS = 14;
 const MAP_WEAR_COLOR = '#f08c00', MAP_OK_COLOR = '#4a90e2';
+function mapOlderConfidence(){ const c = confidenceLinesConfig(); return c ? c.confidence : 0.9; }
 function _mapIsoAdd(iso, n){ const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
 function mapOlderSQL(end){
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(end || ''))) return null;
@@ -432,7 +434,7 @@ function mapOlderSQL(end){
     )
     SELECT ad_id, ad_name, campaign_name, CAST(launch_date AS STRING) AS launch_date, life_spend, life_conv, recent_spend, recent_conv,
       SAFE_DIVIDE(life_spend, NULLIF(life_conv, 0)) AS lifetime_cpa,
-      ${confidenceVerdictSQL('recent_spend', 'recent_conv', 'SAFE_DIVIDE(life_spend, NULLIF(life_conv, 0))', { conf: 0.9 })} = 'Cut' AS wearing_out
+      ${confidenceVerdictSQL('recent_spend', 'recent_conv', 'SAFE_DIVIDE(life_spend, NULLIF(life_conv, 0))', { conf: mapOlderConfidence() })} = 'Cut' AS wearing_out
     FROM older_ads
     WHERE recent_spend > 0
     ORDER BY recent_spend DESC`;
@@ -488,7 +490,7 @@ async function renderMapOlder(c){
   }
   const v = mapOlderView(rows);
   if (note) note.textContent = `Ads launched more than ${MAP_OLDER_DAYS} days before ${fmtDate(end)} that spent in the last ${MAP_RECENT_DAYS} days: ${v.pts.length}, of which ${v.wearing} wearing out. `
-    + 'y is recent cost per conversion as a % of the ad\'s lifetime cost per conversion (100% = same as lifetime). Wearing out means recent conversions are below the lifetime rate at 90% confidence. Triangles have no recent conversions.';
+    + 'y is recent cost per conversion as a % of the ad\'s lifetime cost per conversion (100% = same as lifetime). Wearing out means recent conversions are below the lifetime rate at ' + Math.round(mapOlderConfidence() * 100) + '% confidence. Triangles have no recent conversions.';
   if (!v.pts.length){ document.getElementById('map-wrapper').innerHTML = '<div class="no-data">No older ads spent in the last ' + MAP_RECENT_DAYS + ' days.</div>'; return; }
   document.getElementById('map-wrapper').innerHTML = '<canvas id="map-chart"></canvas>';
   charts.map = new Chart(document.getElementById('map-chart'), { type: 'bubble', data: { datasets: v.datasets },

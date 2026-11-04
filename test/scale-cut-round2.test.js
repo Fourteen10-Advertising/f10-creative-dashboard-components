@@ -203,6 +203,14 @@ test('older lens SQL: launched over 90 days before the end, spend in the last 14
   assert.ok(sql.includes('WHERE recent_spend > 0'));
   assert.strictEqual(sb.mapOlderSQL(''), null);
 });
+test('older lens uses the configured confidence, not a fixed 90%', () => {
+  const at95 = boot(Object.assign({}, CONFIG, { CONFIDENCE: 0.95 })).sb;
+  assert.strictEqual(at95.mapOlderConfidence(), 0.95);
+  const sql = at95.mapOlderSQL('2026-10-31');
+  assert.ok(sql.includes(at95.confidenceVerdictSQL('recent_spend', 'recent_conv', 'SAFE_DIVIDE(life_spend, NULLIF(life_conv, 0))', { conf: 0.95 }) + " = 'Cut' AS wearing_out"));
+  assert.ok(!sql.includes(at95.confidenceVerdictSQL('recent_spend', 'recent_conv', 'SAFE_DIVIDE(life_spend, NULLIF(life_conv, 0))', { conf: 0.9 })));
+  assert.strictEqual(boot(CONFIG).sb.mapOlderConfidence(), 0.9);
+});
 test('older lens view: wearing out vs holding up, no-conversion ads at the top edge', () => {
   const { sb } = boot(CONFIG);
   const v = sb.mapOlderView([
