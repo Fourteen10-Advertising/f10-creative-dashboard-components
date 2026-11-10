@@ -13,7 +13,14 @@
  *     CONV_EXPR:   'conversions',            // optional; defaults to 'conversions'
  *     REVENUE_EXPR:'revenue',                // optional; ROAS mode only, defaults to REVENUE_EXPR
  *     THRESHOLDS:  { HR_SPEND: 4000, HR_CPA: 90, ... }, // optional Ad Production bands
+ *     METRIC:      'CP2S',                   // optional; grade on cost per 2s view instead of CPA/ROAS
  *   };
+ *
+ * TIKTOK.METRIC (optional) is for a TikTok account with no conversions to grade on,
+ * e.g. brand Reach/Traffic. 'CP2S' (cost per 2-second view, lower is better) becomes
+ * the default weekly metric and the Ad Production / Power Law / Decay / Age /
+ * Creative Score metric, classified against THRESHOLDS HR/OB/SO_METRIC (ceilings)
+ * with the usual HR/OB/SO_SPEND floors. It overrides TARGET_METRIC for TikTok only.
  *
  * The section is metric-aware (US ROAS work): when TARGET_METRIC='roas' the
  * dropdown, Ad Production classification, scatter, tables and copy all switch to
@@ -44,7 +51,13 @@
    * Referenced ONLY in ROAS mode, so CPA-mode TikTok marts are never queried for a
    * revenue column. Never sum raw conversion_value (hard policy). */
   const ttRevExpr = () => (TIKTOK.REVENUE_EXPR || (typeof revenueExpr === 'function' ? revenueExpr() : 'revenue'));
-  const ttIsRoas  = () => (typeof targetMetric === 'function') && targetMetric() === 'roas';
+  /* Custom TikTok target metric key ('CP2S') or null. When set it wins over the
+   * global CPA/ROAS target for this section, so ROAS-only paths stay off. */
+  const ttCustom  = () => ttTargetMetricKey();
+  const ttIsRoas  = () => !ttCustom() && (typeof targetMetric === 'function') && targetMetric() === 'roas';
+  /* Decimal places for the lifetime metric column: 2 for CPA/ROAS (unchanged),
+   * 4 for a sub-dollar custom metric so $0.061 is not rounded to $0.06. */
+  const ttMetricDp = () => (ttCustom() ? 4 : 2);
 
   /* ── Ad Age bucketing ──
    * Meta's Ad Age tab reads a PRECOMPUTED `creative_age` label column off the Meta
@@ -71,7 +84,7 @@
          + ` ELSE '${TT_AGE_BUCKETS[2]}' END`;
   };
   const TT_TH = Object.assign(
-    { HR_SPEND: 5000, HR_CPA: 70, OB_SPEND: 1000, OB_CPA: 100, SO_SPEND: 500, SO_CPA: 140, HR_ROAS: 4, OB_ROAS: 2, SO_ROAS: 1 },
+    { HR_SPEND: 5000, HR_CPA: 70, OB_SPEND: 1000, OB_CPA: 100, SO_SPEND: 500, SO_CPA: 140, HR_ROAS: 4, OB_ROAS: 2, SO_ROAS: 1, HR_METRIC: 0.06, OB_METRIC: 0.08, SO_METRIC: 0.10 },
     TIKTOK.THRESHOLDS || {}
   );
   /* Metric-aware SQL fragments built from the TikTok thresholds (TT_TH) — the
@@ -79,15 +92,26 @@
    * own. ttLifetimeMetricSQL mirrors lifetimeMetricSQL (CPA = spend/conv,
    * ROAS = gated revenue/spend); ttClassificationCaseSQL mirrors
    * classificationCaseSQL's polarity rules but against TT_TH. */
-  const ttLifetimeMetricSQL = (spendExpr, convExpr) => ttIsRoas()
+  const ttLifetimeMetricSQL = (spendExpr, convExpr) => ttCustom()
+    ? `SAFE_DIVIDE(${spendExpr}, NULLIF(SUM(${METRICS[ttCustom()].den}), 0))`
+    : ttIsRoas()
     ? `SAFE_DIVIDE(SUM(${ttRevExpr()}), NULLIF(${spendExpr}, 0))`
     : `SAFE_DIVIDE(${spendExpr}, NULLIF(${convExpr}, 0))`;
-  const ttLifetimeMetricCol = () => ttIsRoas() ? 'lifetime_roas' : 'lifetime_cpa';
+  const ttLifetimeMetricCol = () => ttCustom() ? 'lifetime_metric' : ttIsRoas() ? 'lifetime_roas' : 'lifetime_cpa';
   /* Mirrors classificationCaseSQL against TT_TH, including FULL_COVERAGE_TIERS.
    * It has to honour the same flag: the tab's chart buckets come from the shared
    * classificationTiers(), so a TikTok CASE still emitting 'Unclassified' while
    * the flag was on would produce a tier with no bucket to land in. */
   function ttClassificationCaseSQL(spendCol, metricCol){
+    /* Custom metric: lower is better, same shape as CPA against HR/OB/SO_METRIC. */
+    if (ttCustom()){
+      const hrC = `WHEN ${spendCol} >= ${TT_TH.HR_SPEND} AND ${metricCol} > 0 AND ${metricCol} < ${TT_TH.HR_METRIC} THEN 'Home Run'`;
+      const obC = `WHEN ${spendCol} >= ${TT_TH.OB_SPEND} AND ${metricCol} > 0 AND ${metricCol} < ${TT_TH.OB_METRIC} THEN 'On Base'`;
+      if (typeof fullCoverageTiers === 'function' && fullCoverageTiers()){
+        return `CASE ${hrC} ${obC} WHEN ${spendCol} >= ${TT_TH.SO_SPEND} THEN 'Strike Out' WHEN ${spendCol} > 0 THEN 'Testing' ELSE 'Zero Spend' END`;
+      }
+      return `CASE ${hrC} ${obC} WHEN ${spendCol} >= ${TT_TH.SO_SPEND} AND ${metricCol} > ${TT_TH.SO_METRIC} THEN 'Strike Out' ELSE 'Unclassified' END`;
+    }
     const roas = ttIsRoas();
     const hr = roas
       ? `WHEN ${spendCol} >= ${TT_TH.HR_SPEND} AND ${metricCol} > ${TT_TH.HR_ROAS} THEN 'Home Run'`
@@ -130,6 +154,8 @@
          Meta, so its ceilings are lower; this stops TikTok being capped and
          centres a real TikTok video near 0.5. */
       qualityCeil:    { hook: 11, hold: 1.9, ctr: 0.4, completion: 0.3 },
+      /* Custom metric: grade efficiency on its own bands, not the CPA globals. */
+      ...(ttCustom() ? { lowerBands: { hr: TT_TH.HR_METRIC, ob: TT_TH.OB_METRIC, so: TT_TH.SO_METRIC, hrSpend: TT_TH.HR_SPEND } } : {}),
     };
   }
 
@@ -166,7 +192,7 @@
   function ttControls() {
     const length = parseInt((document.getElementById('tt-ctrl-length') || {}).value || '7', 10);
     const end = (document.getElementById('tt-ctrl-enddate') || {}).value || TT_MAXDATE;
-    const metricKey = (document.getElementById('tt-ctrl-metric') || {}).value || (ttIsRoas() ? 'ROAS' : 'CPA');
+    const metricKey = (document.getElementById('tt-ctrl-metric') || {}).value || ttCustom() || (ttIsRoas() ? 'ROAS' : 'CPA');
     const minSpend = Number((document.getElementById('tt-ctrl-minspend') || {}).value) || 0;
     return { length, end, metricKey, metric: METRICS[metricKey], floorMode: 'fixed', fixedSpend: minSpend };
   }
@@ -200,7 +226,8 @@
         SUM(IF(${inPri}, spend, 0))              AS pri_spend,
         SUM(IF(${inPri}, impressions, 0))        AS pri_impressions,
         SUM(IF(${inPri}, clicks, 0))             AS pri_clicks,
-        SUM(IF(${inPri}, ${ttConv()}, 0))        AS pri_conv${revSel}
+        SUM(IF(${inPri}, ${ttConv()}, 0))        AS pri_conv,
+        SUM(IF(${inPri}, video_watched_2s, 0))   AS pri_hook${revSel}
       FROM ${ttTable()}
       WHERE date_start BETWEEN '${priStart}' AND '${curEnd}'
       GROUP BY ad_id
@@ -224,7 +251,7 @@
           video_watched_2s: Number(r.cur_hook) || 0, video_watched_6s: Number(r.cur_hold) || 0,
           video_views_p100: Number(r.cur_p100) || 0, video_play_actions: Number(r.cur_plays) || 0,
         },
-        pri: { spend: ps, impressions: Number(r.pri_impressions) || 0, clicks: Number(r.pri_clicks) || 0, conv: Number(r.pri_conv) || 0, conv_cost_num: ps, revenue: Number(r.pri_revenue) || 0 },
+        pri: { spend: ps, impressions: Number(r.pri_impressions) || 0, clicks: Number(r.pri_clicks) || 0, conv: Number(r.pri_conv) || 0, conv_cost_num: ps, revenue: Number(r.pri_revenue) || 0, video_watched_2s: Number(r.pri_hook) || 0 },
       };
     });
     return { ads, curStart, curEnd, priStart, priEnd };
@@ -276,6 +303,8 @@
     all.forEach((a) => {
       ['spend', 'impressions', 'clicks', 'conv', 'conv_cost_num', 'revenue'].forEach((k) => { tot.cur[k] += a.cur[k]; tot.pri[k] += a.pri[k]; });
       curImpr += a.cur.impressions; curHook += a.cur.video_watched_2s || 0; curHold += a.cur.video_watched_6s || 0;
+      tot.cur.video_watched_2s = (tot.cur.video_watched_2s || 0) + (a.cur.video_watched_2s || 0);
+      tot.pri.video_watched_2s = (tot.pri.video_watched_2s || 0) + (a.pri.video_watched_2s || 0);
     });
     const mCur = metricValue(tot.cur, m), mPri = metricValue(tot.pri, m);
     const hookCur = curImpr > 0 ? (curHook / curImpr) * 100 : null;
@@ -307,7 +336,10 @@
     const holdCard  = { label: 'Hold rate (6s)', val: holdCur != null ? fmtPct(holdCur, 2) : '–', d: `<div class="scorecard-delta delta-flat">attention</div>` };
     /* ROAS leads with the revenue story (Spend, Revenue, blended ROAS, Conversions)
      * then the TikTok attention tiles; CPA keeps the legacy six-card order. */
-    const cards = ttIsRoas()
+    const viewsCard = { label: '2s views', val: fmtNum(tot.cur.video_watched_2s || 0), d: deltaHtml(tot.cur.video_watched_2s || 0, tot.pri.video_watched_2s || 0, false) };
+    const cards = ttCustom()
+      ? [ spendCard, imprCard, viewsCard, blendCard, hookCard, holdCard ]
+      : ttIsRoas()
       ? [ spendCard, { label: 'Revenue', val: fmt$(tot.cur.revenue), d: deltaHtml(tot.cur.revenue, tot.pri.revenue, false) }, blendCard, convCard, hookCard, holdCard ]
       : [ spendCard, convCard, imprCard, blendCard, hookCard, holdCard ];
     document.getElementById('tt-summary-scorecards').innerHTML = cards.map((c2) =>
@@ -448,7 +480,7 @@
           DATE_DIFF(COALESCE(MAX(date_start), CURRENT_DATE()), MIN(min_date), DAY) AS active_days,
           ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend,
           ROUND(SUM(${ttConv()}), 0) AS total_conversions,
-          ROUND(${perAdMetricSQL}, 2) AS ${mCol},
+          ROUND(${perAdMetricSQL}, ${ttMetricDp()}) AS ${mCol},
           SUM(impressions) AS impressions, SUM(clicks) AS clicks,
           SUM(video_watched_2s) AS video_watched_2s, SUM(video_watched_6s) AS video_watched_6s,
           SUM(video_views_p100) AS video_views_p100, SUM(video_play_actions) AS video_play_actions
@@ -461,14 +493,18 @@
      * SUM(conversions) in CPA mode; the alias stays `avg_cpa` so downstream stays
      * put. period_revenue is selected ONLY in ROAS mode. */
     const rollupRevSel = isRoas ? `, ROUND(SUM(${ttRevExpr()}), 2) AS period_revenue` : '';
-    const rollupAvgSQL = isRoas
+    const custom = ttCustom();
+    const rollupCustomSel = custom ? `, SUM(${METRICS[custom].den}) AS period_den` : '';
+    const rollupAvgSQL = custom
+      ? `ROUND(SAFE_DIVIDE(SUM(period_spend), NULLIF(SUM(period_den), 0)), 4)`
+      : isRoas
       ? `ROUND(SAFE_DIVIDE(SUM(period_revenue), NULLIF(SUM(period_spend), 0)), 2)`
       : `ROUND(SAFE_DIVIDE(SUM(period_spend), NULLIF(SUM(total_conversions), 0)), 0)`;
     const monthlySQL = `
       WITH unique_ads AS (
         SELECT ad_id, MIN(min_date) AS launch_date, ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend,
-          ROUND(${perAdMetricSQL}, 2) AS ${mCol},
-          ROUND(SUM(spend), 2) AS period_spend, ROUND(SUM(${ttConv()}), 0) AS total_conversions${rollupRevSel}
+          ROUND(${perAdMetricSQL}, ${ttMetricDp()}) AS ${mCol},
+          ROUND(SUM(spend), 2) AS period_spend, ROUND(SUM(${ttConv()}), 0) AS total_conversions${rollupRevSel}${rollupCustomSel}
         FROM ${ttTable()}${adSearchWhere('WHERE', 'adgroup_name')} GROUP BY 1 ),
       classified AS ( SELECT *, ${ttClassificationCaseSQL('lifetime_spend', mCol)} AS classification FROM unique_ads )
       SELECT FORMAT_DATE('%b %Y', launch_date) AS launch_month, DATE_TRUNC(launch_date, MONTH) AS launch_month_sort,
@@ -515,14 +551,17 @@
       const maxSpend = topSpend > TT_TH.HR_SPEND ? topSpend + 1000 : TT_TH.HR_SPEND * 1.2;
       /* Y-axis max from the ACTIVE metric's values. Floor keeps the axis sane when
        * data is sparse: 100 ($) in CPA mode, HR_ROAS (x) in ROAS mode. */
-      const yFloor = isRoas ? TT_TH.HR_ROAS : 100;
-      const maxY = Math.ceil(Math.max(...scatterData.filter((r) => Number(r[mCol]) > 0).map((r) => Number(r[mCol]) || 0), yFloor) * 1.2);
+      const yFloor = ttCustom() ? TT_TH.SO_METRIC : isRoas ? TT_TH.HR_ROAS : 100;
+      const yTop = Math.max(...scatterData.filter((r) => Number(r[mCol]) > 0).map((r) => Number(r[mCol]) || 0), yFloor) * 1.2;
+      /* A sub-dollar custom metric would ceil to $1 and flatten every point. */
+      const maxY = ttCustom() ? +yTop.toFixed(3) : Math.ceil(yTop);
+      const mDef = ttMetricDef();
       ttCharts.scatter = new Chart(document.getElementById('tt-scatter-chart'), {
         type: 'scatter', data: { datasets: scatterDatasets },
         options: {
           responsive: true, maintainAspectRatio: false,
-          scales: { x: { title: { display: true, text: 'Lifetime Spend ($)', font: { size: 11 } }, min: 0, max: maxSpend, ticks: { callback: (v) => fmt$(v) } }, y: { title: { display: true, text: `Lifetime ${targetMetricDef().label} (${isRoas ? 'x' : '$'})`, font: { size: 11 } }, min: 0, max: maxY, ticks: { callback: (v) => fmtMetricCell(v) } } },
-          plugins: { legend: { position: 'top', labels: { font: { size: 11 } } }, tooltip: { callbacks: { label: (ctx) => { const pt = ctx.raw; const mLine = isRoas ? `${targetMetricDef().label}: ${fmtMetricCell(pt.y)}` : `CPA: ${pt.y > 0 ? fmt$(pt.y) : 'N/A'}`; return [`${ctx.dataset.label}`, `Spend: ${fmt$(pt.x)}`, mLine]; } } } },
+          scales: { x: { title: { display: true, text: 'Lifetime Spend ($)', font: { size: 11 } }, min: 0, max: maxSpend, ticks: { callback: (v) => fmt$(v) } }, y: { title: { display: true, text: `Lifetime ${mDef.label} (${isRoas ? 'x' : '$'})`, font: { size: 11 } }, min: 0, max: maxY, ticks: { callback: (v) => ttFmtMetricCell(v) } } },
+          plugins: { legend: { position: 'top', labels: { font: { size: 11 } } }, tooltip: { callbacks: { label: (ctx) => { const pt = ctx.raw; const mLine = ttCustom() ? `${mDef.label}: ${pt.y > 0 ? ttFmtMetricCell(pt.y) : 'N/A'}` : isRoas ? `${targetMetricDef().label}: ${fmtMetricCell(pt.y)}` : `CPA: ${pt.y > 0 ? fmt$(pt.y) : 'N/A'}`; return [`${ctx.dataset.label}`, `Spend: ${fmt$(pt.x)}`, mLine]; } } } },
         },
       });
       followAdSearch('tt-scatter', ttCharts.scatter);
@@ -547,7 +586,7 @@
         const cls = r.classification; const badgeClass = cls === 'Home Run' ? 'badge-hr' : cls === 'On Base' ? 'badge-ob' : cls === 'Strike Out' ? 'badge-so' : 'badge-un';
         const ce = { impressions: Number(r.impressions) || 0, clicks: Number(r.clicks) || 0, video_watched_2s: Number(r.video_watched_2s) || 0, video_watched_6s: Number(r.video_watched_6s) || 0, video_views_p100: Number(r.video_views_p100) || 0, video_play_actions: Number(r.video_play_actions) || 0 };
         const cr = creativeRates(ce, PROFILE); registerAdMetrics(r.ad_id, ce, PROFILE, creativeScoreHover(r.creative_score, { spend: r.lifetime_spend, metric: r[mCol], hook: cr.hook, hold: cr.hold, ctr: cr.ctr, completion: cr.completion, hasVideo: cr.hasVideo, activeDays: r.active_days }, ttScoreOpts()));
-        return `<tr ${adNameAttr(r.ad_name, r.campaign_name, r.adgroup_name)}><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adgroup_name}">${r.adgroup_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmt$(r.lifetime_spend)}</td><td>${Number(r[mCol]) > 0 ? fmtMetricCell(r[mCol]) : '–'}</td><td>${fmtNum(r.total_conversions)}</td><td class="num">${cr.hook != null ? fmtPct(cr.hook, 2) : '–'}</td><td class="num">${cr.hold != null ? fmtPct(cr.hold, 2) : '–'}</td><td class="num">${cr.completion != null ? fmtPct(cr.completion, 2) : '–'}</td><td>${r.creative_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="tiktok" href="${r.creative_link}" target="_blank">Preview</a>` : '–'}</td><td><span class="badge ${badgeClass}">${cls}</span></td><td>${creativeScoreBadge(r.creative_score)}</td></tr>`;
+        return `<tr ${adNameAttr(r.ad_name, r.campaign_name, r.adgroup_name)}><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name}">${r.ad_name}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name}">${r.campaign_name}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adgroup_name}">${r.adgroup_name}</td><td>${fmtDate(r.launch_date)}</td><td>${fmt$(r.lifetime_spend)}</td><td>${Number(r[mCol]) > 0 ? ttFmtMetricCell(r[mCol]) : '–'}</td><td>${fmtNum(r.total_conversions)}</td><td class="num">${cr.hook != null ? fmtPct(cr.hook, 2) : '–'}</td><td class="num">${cr.hold != null ? fmtPct(cr.hold, 2) : '–'}</td><td class="num">${cr.completion != null ? fmtPct(cr.completion, 2) : '–'}</td><td>${r.creative_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="tiktok" href="${r.creative_link}" target="_blank">Preview</a>` : '–'}</td><td><span class="badge ${badgeClass}">${cls}</span></td><td>${creativeScoreBadge(r.creative_score)}</td></tr>`;
       }));
       hideEl('tt-scatter-table-loading'); showEl('tt-scatter-table');
     } catch (err) { console.error('TikTok production error:', err); }
@@ -569,7 +608,7 @@
         SELECT ad_id, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(adgroup_name) AS adgroup_name, ANY_VALUE(ad_name) AS ad_name,
           MIN(min_date) AS launch_date, MAX(date_start) AS last_spend_date, ANY_VALUE(creative_link) AS preview_link,
           ROUND(SUM(spend), 2) AS period_spend,
-          ROUND(${ttLifetimeMetricSQL('SUM(spend)', `SUM(${ttConv()})`)}, 2) AS ${mCol}
+          ROUND(${ttLifetimeMetricSQL('SUM(spend)', `SUM(${ttConv()})`)}, ${ttMetricDp()}) AS ${mCol}
         FROM ${ttTable()}
         WHERE date_start >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
         GROUP BY 1
@@ -605,7 +644,7 @@
       });
       followAdSearch('tt-powerlaw', ttCharts.powerlaw, data.map((r) => adSearchKey(r.ad_name, r.campaign_name, r.adgroup_name)));
       renderPagedTable('tt-powerlaw-table-body', data.map((r) =>
-        `<tr ${adNameAttr(r.ad_name, r.campaign_name, r.adgroup_name)}><td class="rank-num">${r.rank_num}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name || ''}">${r.campaign_name || '–'}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adgroup_name || ''}">${r.adgroup_name || '–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name || ''}">${r.ad_name || '–'}</td><td>${fmtDate(r.launch_date)}</td><td>${fmtDate(r.last_spend_date)}</td><td>${r.preview_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="tiktok" href="${r.preview_link}" target="_blank">Preview</a>` : '–'}</td><td>${fmt$(r.spend)}</td><td>${fmtPct(r.spend_pct, 2)}</td><td>${fmtPct(r.rolling_pct, 2)}</td><td>${Number(r[mCol]) > 0 ? fmtMetricCell(r[mCol]) : '–'}</td></tr>`));
+        `<tr ${adNameAttr(r.ad_name, r.campaign_name, r.adgroup_name)}><td class="rank-num">${r.rank_num}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name || ''}">${r.campaign_name || '–'}</td><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${r.adgroup_name || ''}">${r.adgroup_name || '–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name || ''}">${r.ad_name || '–'}</td><td>${fmtDate(r.launch_date)}</td><td>${fmtDate(r.last_spend_date)}</td><td>${r.preview_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="tiktok" href="${r.preview_link}" target="_blank">Preview</a>` : '–'}</td><td>${fmt$(r.spend)}</td><td>${fmtPct(r.spend_pct, 2)}</td><td>${fmtPct(r.rolling_pct, 2)}</td><td>${Number(r[mCol]) > 0 ? ttFmtMetricCell(r[mCol]) : '–'}</td></tr>`));
       ttHide('tt-powerlaw-table-loading'); ttShow('tt-powerlaw-table');
     } catch (err) { console.error('TikTok power law error:', err); const el = document.getElementById('tt-powerlaw-table-loading'); if (el) el.innerHTML = 'Error loading data: ' + err.message; }
   }
@@ -624,13 +663,17 @@
     /* Cohort efficiency: CPA (SUM(spend)/SUM(conv), 0 dp) or, in ROAS mode, cohort
        ROAS (SUM(revenue)/SUM(spend), 2 dp). The alias stays `cpa` so the render and
        grand-total plumbing matches the Meta tab. */
-    const cohortMetricSQL = isRoas
+    const custom = ttCustom();
+    const denSel = custom ? `, SUM(${METRICS[custom].den}) AS ad_den` : '';
+    const cohortMetricSQL = custom
+      ? `ROUND(SAFE_DIVIDE(SUM(ad_spend), NULLIF(SUM(ad_den), 0)), 4)`
+      : isRoas
       ? `ROUND(SAFE_DIVIDE(SUM(revenue), NULLIF(SUM(ad_spend), 0)), 2)`
       : `ROUND(SAFE_DIVIDE(SUM(ad_spend), NULLIF(SUM(ad_conversions), 0)), 0)`;
     const summarySQL = `
       WITH per_ad AS (
         SELECT ad_id, MIN(min_date) AS launch_date, MAX(date_start) AS last_active_date,
-          SUM(spend) AS ad_spend, SUM(${ttConv()}) AS ad_conversions${revSel}
+          SUM(spend) AS ad_spend, SUM(${ttConv()}) AS ad_conversions${revSel}${denSel}
         FROM ${ttTable()}${adSearchWhere('WHERE', 'adgroup_name')} GROUP BY 1 )
       SELECT FORMAT_DATE('%b %Y', launch_date) AS launch_month, DATE_TRUNC(launch_date, MONTH) AS launch_month_sort,
         COUNT(DISTINCT ad_id) AS ads_launched,
@@ -654,7 +697,7 @@
       let totalAds = 0, totalSpend = 0;
       const rows = summary.map((r) => {
         totalAds += Number(r.ads_launched) || 0; totalSpend += Number(r.total_spend) || 0;
-        return `<tr><td>${r.launch_month}</td><td>${fmtNum(r.ads_launched)}</td><td>${r.avg_days_running != null ? r.avg_days_running + 'd' : '–'}</td><td>${fmt$(r.total_spend)}</td><td>${r.cpa && Number(r.cpa) > 0 ? fmtMetricCell(r.cpa) : '–'}</td></tr>`;
+        return `<tr><td>${r.launch_month}</td><td>${fmtNum(r.ads_launched)}</td><td>${r.avg_days_running != null ? r.avg_days_running + 'd' : '–'}</td><td>${fmt$(r.total_spend)}</td><td>${r.cpa && Number(r.cpa) > 0 ? ttFmtMetricCell(r.cpa) : '–'}</td></tr>`;
       });
       renderPagedTable('tt-decay-summary-body', rows, 20, `<tr style="font-weight:600; background:var(--paper);"><td>Grand Total</td><td>${fmtNum(totalAds)}</td><td>–</td><td>${fmt$(totalSpend)}</td><td>–</td></tr>`);
       ttHide('tt-decay-summary-loading'); ttShow('tt-decay-summary-table');
@@ -694,7 +737,7 @@
       SELECT ad_id, ANY_VALUE(campaign_name) AS campaign_name, ANY_VALUE(adgroup_name) AS adgroup_name, ANY_VALUE(ad_name) AS ad_name,
         MIN(min_date) AS launch_date, MAX(date_start) AS last_spend, ANY_VALUE(creative_link) AS preview_link,
         ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend,
-        ROUND(${ttLifetimeMetricSQL('ANY_VALUE(lifetime_spend)', `SUM(${ttConv()})`)}, 2) AS ${mCol},
+        ROUND(${ttLifetimeMetricSQL('ANY_VALUE(lifetime_spend)', `SUM(${ttConv()})`)}, ${ttMetricDp()}) AS ${mCol},
         ROUND(SUM(${ttConv()}), 0) AS total_conversions
       FROM ${ttTable()} GROUP BY 1 ORDER BY lifetime_spend DESC`;
     return { ageSQL, tableSQL };
@@ -722,7 +765,7 @@
         options: { responsive: true, maintainAspectRatio: true, scales: { x: { stacked: true, ticks: { font: { size: 10 }, maxRotation: 45 } }, y: { stacked: true, max: 100, ticks: { callback: (v) => v + '%' } } }, plugins: { legend: { position: 'top', labels: { font: { size: 11 } } }, tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${ctx.raw}%` } } } },
       });
       renderPagedTable('tt-age-table-body', tableData.map((r) =>
-        `<tr ${adNameAttr(r.ad_name, r.campaign_name, r.adgroup_name)}><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name || ''}">${r.campaign_name || '–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.adgroup_name || ''}">${r.adgroup_name || '–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name || ''}">${r.ad_name || '–'}</td><td>${fmtDate(r.launch_date)}</td><td>${fmtDate(r.last_spend)}</td><td>${r.preview_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="tiktok" href="${r.preview_link}" target="_blank">Preview</a>` : '–'}</td><td>${fmt$(r.lifetime_spend)}</td><td>${Number(r[mCol]) > 0 ? fmtMetricCell(r[mCol]) : '–'}</td><td>${fmtNum(r.total_conversions)}</td></tr>`));
+        `<tr ${adNameAttr(r.ad_name, r.campaign_name, r.adgroup_name)}><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${r.campaign_name || ''}">${r.campaign_name || '–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.adgroup_name || ''}">${r.adgroup_name || '–'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${r.ad_name || ''}">${r.ad_name || '–'}</td><td>${fmtDate(r.launch_date)}</td><td>${fmtDate(r.last_spend)}</td><td>${r.preview_link ? `<a class="preview-link" data-ad-id="${r.ad_id}" data-platform="tiktok" href="${r.preview_link}" target="_blank">Preview</a>` : '–'}</td><td>${fmt$(r.lifetime_spend)}</td><td>${Number(r[mCol]) > 0 ? ttFmtMetricCell(r[mCol]) : '–'}</td><td>${fmtNum(r.total_conversions)}</td></tr>`));
       ttHide('tt-age-table-loading'); ttShow('tt-age-table');
     } catch (err) { console.error('TikTok age error:', err); const el = document.getElementById('tt-age-table-loading'); if (el) el.innerHTML = 'Error loading data: ' + err.message; }
   }
@@ -744,7 +787,7 @@
           SUM(video_views_p25) AS video_views_p25, SUM(video_views_p50) AS video_views_p50, SUM(video_views_p75) AS video_views_p75, SUM(video_views_p100) AS video_views_p100,
           ROUND(ANY_VALUE(lifetime_spend), 2) AS lifetime_spend,
           ROUND(SUM(${ttConv()}), 0) AS total_conversions,
-          ROUND(${ttLifetimeMetricSQL('ANY_VALUE(lifetime_spend)', `SUM(${ttConv()})`)}, 2) AS ${ttLifetimeMetricCol()},
+          ROUND(${ttLifetimeMetricSQL('ANY_VALUE(lifetime_spend)', `SUM(${ttConv()})`)}, ${ttMetricDp()}) AS ${ttLifetimeMetricCol()},
           DATE_DIFF(COALESCE(MAX(date_start), CURRENT_DATE()), MIN(min_date), DAY) AS active_days
         FROM ${ttTable()}
         WHERE date_start >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)

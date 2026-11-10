@@ -195,7 +195,7 @@ lives in `test/review-list-bundles.test.js`.
 | `REVENUE_EXPR` | no | SQL expression for the mart's **gated** revenue column (default `'revenue'`). Only consumed in ROAS mode. Never sum raw `conversion_value` |
 | `GROUP_FILTERS` | no | Array of `{ col, label }` segment dropdowns (default none) |
 | `THRESHOLDS` | no | Ad Production threshold overrides (see below) |
-| `TIKTOK` | no | Optional TikTok channel section: `{ DATASET?, TABLE, CONV_EXPR?, REVENUE_EXPR?, THRESHOLDS?, AGE_BUCKET_EXPR? }`. `TABLE` is required — no `TABLE`, no TikTok nav group. `DATASET` defaults to the dashboard's `DATASET`, `CONV_EXPR` to `'conversions'`, thresholds to `HR 5000/$70 · OB 1000/$100 · SO 500/$140` (ROAS bands `4`/`2`/`1`). All **eight** tabs appear automatically; only `AGE_BUCKET_EXPR` is new and it is optional (see [Secondary-channel tab parity](#secondary-channel-tab-parity-tiktok--linkedin)) |
+| `TIKTOK` | no | Optional TikTok channel section: `{ DATASET?, TABLE, CONV_EXPR?, REVENUE_EXPR?, THRESHOLDS?, AGE_BUCKET_EXPR?, METRIC? }`. `METRIC: 'CP2S'` grades a no-conversion TikTok account on cost per 2s view (see [TikTok target metric](#tiktok-target-metric-tiktokmetric)). `TABLE` is required — no `TABLE`, no TikTok nav group. `DATASET` defaults to the dashboard's `DATASET`, `CONV_EXPR` to `'conversions'`, thresholds to `HR 5000/$70 · OB 1000/$100 · SO 500/$140` (ROAS bands `4`/`2`/`1`). All **eight** tabs appear automatically; only `AGE_BUCKET_EXPR` is new and it is optional (see [Secondary-channel tab parity](#secondary-channel-tab-parity-tiktok--linkedin)) |
 | `LINKEDIN` | no | Optional LinkedIn channel section. Two mutually exclusive modes — a per-client mart (optionally with per-column `*_EXPR` overrides for a mart that does not publish the contract verbatim), or the shared `all_clients_linkedin_ads` dataset scoped by `ACCOUNT_URN`. Defining the object at all is the gate (no `TABLE` required). All **eight** tabs appear automatically; the only new optional key is `AGE_BUCKET_EXPR`. See [LinkedIn channel](#linkedin-channel) and [Secondary-channel tab parity](#secondary-channel-tab-parity-tiktok--linkedin) |
 | `YOUTUBE` | no | Optional YouTube video tab: `{ DATASET?, TABLE, NETWORK?, FORMAT_REGEX?, NON_SKIPPABLE_REGEX?, DEFAULT_DAYS? }`. `TABLE` is required. Needs the `f10-youtube.js` script tag before `f10-layout.js`. See [YouTube video tab](#youtube-video-tab) |
 | `CREATIVE_SCORE_CONFIG` | no | Creative Score weights, maturity target, per-rate quality ceilings and band cutoffs (see [Creative Score column](#creative-score-column)) |
@@ -211,6 +211,45 @@ lives in `test/review-list-bundles.test.js`.
 | `THRESHOLDS_BY_GROUP` | no | Per-product Ad Production thresholds, e.g. grade SMSF ads on a different cost scale than Trade (see [Per-product thresholds](#per-product-thresholds)) |
 | `CONFIDENCE_LINES` | no | Adds a **Scale & Cut** tab after Ad Production: Campaign type dropdown, an editable trailing cost-per-conversion baseline, kill and scale lines, a reach cost chart and a per-ad Verdict table: `{ KILL_CONV_EXPR, SCALE_CONV_EXPR, SEGMENT_EXPR, BASELINE_DAYS?, CONFIDENCE?, REACH_TABLE? }`. Ad Production is unchanged. `REACH_TABLE` feeds the Reach cost chart (see [Reach cost chart](#reach-cost-chart-reach_table)). Off when absent (see [Scale & Cut tab](#scale--cut-tab-confidence_lines))
 | `REVIEW` | no | F10-internal Creative Review surface only. The bundle list is now **auto-discovered** via the `list-bundles` action, so this block no longer carries `BUNDLES` or `LIMIT` and is effectively optional/empty; it holds only optional overrides (`CLIENT` slug override, `ACTOR`, `FEEDBACK_FUNCTION`). Live client dashboards never define it (see [Creative review](#creative-review)) |
+
+## TikTok target metric (`TIKTOK.METRIC`)
+
+A TikTok account that runs brand Reach or Traffic has no conversions to grade on, so
+CPA is empty everywhere and every ad lands in Unclassified. `TIKTOK.METRIC` swaps the
+TikTok section's target metric for one that exists on those campaigns. The only value
+today is `'CP2S'`, cost per 2-second view (`spend / video_watched_2s`, lower is better).
+
+```js
+const TIKTOK = {
+  TABLE:     'tiktok_creative_reporting',
+  CONV_EXPR: '0',      // no real conversions on this account
+  METRIC:    'CP2S',
+  THRESHOLDS: { HR_SPEND: 1000, OB_SPEND: 500, SO_SPEND: 250,
+                HR_METRIC: 0.06, OB_METRIC: 0.08, SO_METRIC: 0.10 },
+};
+```
+
+With `METRIC` set, for the TikTok section only:
+
+- **Weekly Summary, Movement Board, Movement Map** default to cost per 2s view (it leads
+  the metric dropdown; CPA, CPC, CPM and CTR are still offered). The prior window carries
+  2s views, so the metric is comparable across windows and the Map can plot movement.
+  The Summary shows 2s views in place of Conversions.
+- **Ad Production** classifies each ad's lifetime cost per 2s view against
+  `HR_METRIC` / `OB_METRIC` / `SO_METRIC` (ceilings) with the usual
+  `HR_SPEND` / `OB_SPEND` / `SO_SPEND` floors. Defaults are `0.06` / `0.08` / `0.10`.
+  The benchmark copy, scatter axis, tooltip and tables name the metric.
+- **Power Law, Ad Decay, Ad Age, Creative Effectiveness** show cost per 2s view in their
+  metric column, and the **Creative Score** grades efficiency on the same bands
+  (`ttScoreOpts().lowerBands`) instead of the global CPA bands.
+- Values under $1 show up to 3 decimals ($0.061, $0.10). The lifetime column is rounded
+  to 4 dp in SQL so bands like $0.06 vs $0.08 are not lost to rounding.
+- `METRIC` overrides `TARGET_METRIC` for TikTok, so ROAS paths stay off. An unknown value
+  is ignored and the section stays on CPA/ROAS.
+
+Without `METRIC` the TikTok section is unchanged, apart from the weekly query also
+selecting the prior window's 2s views (an extra column nothing reads in CPA/ROAS mode).
+Tests: `test/tiktok-custom-metric.test.js`.
 
 ## Secondary-channel tab parity (TikTok + LinkedIn)
 

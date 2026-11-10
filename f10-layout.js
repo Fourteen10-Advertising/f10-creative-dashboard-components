@@ -228,6 +228,13 @@ function noiseFloorMultLabels(){
  * so CPA dashboards are unchanged; ROAS mode flips to the "floor to clear /
  * ceiling to fall under" wording. */
 function ttProdBenchmarkHTML(ttTh){
+  /* Custom TikTok metric (TIKTOK.METRIC): lower-is-better ceilings HR/OB/SO_METRIC. */
+  if (ttTargetMetricKey()){
+    const m = ttMetricDef(), f = (v) => fmtMetric(v, m);
+    return `<span class="bm-item"><strong>Home Run:</strong> Spend &ge; ${fmt$(ttTh.HR_SPEND)} &amp; ${m.label} &lt; ${f(ttTh.HR_METRIC)}</span>` +
+      `<span class="bm-item"><strong>On Base:</strong> Spend &ge; ${fmt$(ttTh.OB_SPEND)} &amp; ${m.label} &lt; ${f(ttTh.OB_METRIC)}</span>` +
+      `<span class="bm-item"><strong>Strike Out:</strong> Spend &ge; ${fmt$(ttTh.SO_SPEND)} &amp; ${m.label} &gt; ${f(ttTh.SO_METRIC)}</span>`;
+  }
   if (targetMetric() === 'roas'){
     return `<span class="bm-item"><strong>Home Run:</strong> Spend &ge; ${fmt$(ttTh.HR_SPEND)} &amp; ROAS &ge; ${fmtRatio(ttTh.HR_ROAS)}</span>` +
       `<span class="bm-item"><strong>On Base:</strong> Spend &ge; ${fmt$(ttTh.OB_SPEND)} &amp; ROAS &ge; ${fmtRatio(ttTh.OB_ROAS)}</span>` +
@@ -239,6 +246,14 @@ function ttProdBenchmarkHTML(ttTh){
 /* TikTok section markup (controls bar + four panels), rendered only when a
  * TIKTOK config object is present. Mirrors the Meta panels with tt- ids and the
  * TikTok metric columns (Hook 2s / Hold 6s). f10-tiktok.js drives these. */
+/* TikTok efficiency dropdown. With a custom TIKTOK.METRIC it leads (selected) and
+ * the legacy options follow unselected; otherwise it is the shared list unchanged. */
+function ttEfficiencyMetricOptionsHTML(){
+  const k = ttTargetMetricKey();
+  if (!k) return efficiencyMetricOptionsHTML();
+  return `<option value="${k}" selected>${METRICS[k].label}</option>` +
+    efficiencyMetricOptionsHTML().replace(' selected>', '>');
+}
 function ttControlsMarkup(){
   return `<div class="controls-bar" id="tt-controls-bar" style="display:none;">
       <div class="ctrl-groups">
@@ -250,7 +265,7 @@ function ttControlsMarkup(){
         </div>
         <div class="ctrl"><label>Current window ends</label><input type="date" id="tt-ctrl-enddate" /></div>
         <div class="ctrl"><label>Efficiency metric</label>
-          <select id="tt-ctrl-metric">${efficiencyMetricOptionsHTML()}</select>
+          <select id="tt-ctrl-metric">${ttEfficiencyMetricOptionsHTML()}</select>
         </div>
         <div class="ctrl"><label>Min spend ($)</label><input type="number" id="tt-ctrl-minspend" value="1" min="0" step="50" /></div>
       </div>
@@ -312,7 +327,7 @@ function ttPanelsMarkup(ttTh){
         <div class="table-scroll">
           <div id="tt-powerlaw-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="tt-powerlaw-table" style="display:none;">
-            <thead><tr><th>#</th><th>Campaign</th><th>Ad Group</th><th>Ad</th><th>Launch Date</th><th>Last Spend</th><th>Preview</th><th>Spend</th><th>Spend %</th><th>Rolling %</th><th>${targetMetricDef().label}</th></tr></thead>
+            <thead><tr><th>#</th><th>Campaign</th><th>Ad Group</th><th>Ad</th><th>Launch Date</th><th>Last Spend</th><th>Preview</th><th>Spend</th><th>Spend %</th><th>Rolling %</th><th>${ttMetricDef().label}</th></tr></thead>
             <tbody id="tt-powerlaw-table-body"></tbody>
           </table>
         </div>
@@ -321,7 +336,7 @@ function ttPanelsMarkup(ttTh){
 
     <!-- TIKTOK: AD PRODUCTION -->
     <div class="tab-panel tt-tab-panel" id="panel-tt-production">
-      <div class="insight-box"><strong>TikTok Ad Production:</strong> how many ads were launched and the share that become hits (lifetime spend &ge; the Home Run threshold ${targetMetric() === 'roas' ? 'at a strong ROAS' : 'at an efficient CPA'}). Aim for a 10&ndash;15% hit rate.<br/><br/><strong>Thresholds:</strong>
+      <div class="insight-box"><strong>TikTok Ad Production:</strong> how many ads were launched and the share that become hits (lifetime spend &ge; the Home Run threshold ${ttTargetMetricKey() ? 'at an efficient ' + ttMetricDef().label.toLowerCase() : targetMetric() === 'roas' ? 'at a strong ROAS' : 'at an efficient CPA'}). Aim for a 10&ndash;15% hit rate.<br/><br/><strong>Thresholds:</strong>
         <div class="benchmark">${ttProdBenchmarkHTML(ttTh)}</div>
       </div>
       ${targetMetric() === 'roas' ? '<div id="tt-production-revenue-guard"></div>\n      ' : ''}<div id="tt-production-scorecards-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
@@ -337,7 +352,7 @@ function ttPanelsMarkup(ttTh){
         </div>
       </div>
       <div class="two-col">
-        <div class="chart-card" style="margin-bottom:0;"><h3>Lifetime Spend vs ${targetMetricDef().label} &mdash; All Ads</h3>
+        <div class="chart-card" style="margin-bottom:0;"><h3>Lifetime Spend vs ${ttMetricDef().label} &mdash; All Ads</h3>
           <div id="tt-scatter-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <div class="chart-wrapper" id="tt-scatter-wrapper" style="display:none; height:320px;"><canvas id="tt-scatter-chart"></canvas></div>
         </div>
@@ -350,7 +365,7 @@ function ttPanelsMarkup(ttTh){
         <div class="table-scroll">
           <div id="tt-scatter-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="tt-scatter-table" style="display:none;">
-            <thead><tr><th>Ad</th><th>Campaign</th><th>Ad Group</th><th>Launch Date</th><th>Lifetime Spend</th><th>Lifetime ${targetMetricDef().label}</th><th>Conversions</th><th class="num">Hook %</th><th class="num">Hold %</th><th class="num">Compl. %</th><th>Preview</th><th>Classification</th><th>Creative Score</th></tr></thead>
+            <thead><tr><th>Ad</th><th>Campaign</th><th>Ad Group</th><th>Launch Date</th><th>Lifetime Spend</th><th>Lifetime ${ttMetricDef().label}</th><th>Conversions</th><th class="num">Hook %</th><th class="num">Hold %</th><th class="num">Compl. %</th><th>Preview</th><th>Classification</th><th>Creative Score</th></tr></thead>
             <tbody id="tt-scatter-table-body"></tbody>
           </table>
         </div>
@@ -364,7 +379,7 @@ function ttPanelsMarkup(ttTh){
         <div class="table-scroll">
           <div id="tt-decay-summary-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="tt-decay-summary-table" style="display:none;">
-            <thead><tr><th>Launch Month</th><th>Ads Launched</th><th>Avg Days Running</th><th>Spend</th><th>${targetMetricDef().label}</th></tr></thead>
+            <thead><tr><th>Launch Month</th><th>Ads Launched</th><th>Avg Days Running</th><th>Spend</th><th>${ttMetricDef().label}</th></tr></thead>
             <tbody id="tt-decay-summary-body"></tbody>
           </table>
         </div>
@@ -392,7 +407,7 @@ function ttPanelsMarkup(ttTh){
         <div class="table-scroll">
           <div id="tt-age-table-loading" class="loading"><div class="spinner"></div>Loading&hellip;</div>
           <table id="tt-age-table" style="display:none;">
-            <thead><tr><th>Campaign</th><th>Ad Group</th><th>Ad</th><th>Launch Date</th><th>Last Spend</th><th>Preview</th><th>Spend &darr;</th><th>${targetMetricDef().label}</th><th>Conversions</th></tr></thead>
+            <thead><tr><th>Campaign</th><th>Ad Group</th><th>Ad</th><th>Launch Date</th><th>Last Spend</th><th>Preview</th><th>Spend &darr;</th><th>${ttMetricDef().label}</th><th>Conversions</th></tr></thead>
             <tbody id="tt-age-table-body"></tbody>
           </table>
         </div>
@@ -401,7 +416,7 @@ function ttPanelsMarkup(ttTh){
 
     <!-- TIKTOK: CREATIVE EFFECTIVENESS -->
     <div class="tab-panel tt-tab-panel" id="panel-tt-creative">
-      <div class="insight-box"><strong>TikTok Creative Effectiveness:</strong> attention beyond ${targetMetricDef().label}. <strong>Hook rate</strong> is the share of impressions watched to 2 seconds (did the ad stop the scroll?); <strong>Hold rate</strong> reached 6 seconds; <strong>completion</strong> watched to the end; the <strong>retention curve</strong> (25 &rarr; 100%) shows where viewers drop off. Rates cover the last 90 days.</div>
+      <div class="insight-box"><strong>TikTok Creative Effectiveness:</strong> attention beyond ${ttMetricDef().label}. <strong>Hook rate</strong> is the share of impressions watched to 2 seconds (did the ad stop the scroll?); <strong>Hold rate</strong> reached 6 seconds; <strong>completion</strong> watched to the end; the <strong>retention curve</strong> (25 &rarr; 100%) shows where viewers drop off. Rates cover the last 90 days.</div>
       <div class="scorecard-grid" style="margin-bottom:16px;">
         <div class="scorecard highlight"><div class="scorecard-label">Avg Hook Rate (2s)</div><div class="scorecard-value" id="tt-creative-hook">&ndash;</div></div>
         <div class="scorecard"><div class="scorecard-label">Avg Hold Rate (6s)</div><div class="scorecard-value" id="tt-creative-hold">&ndash;</div></div>
@@ -924,7 +939,7 @@ function renderLayout(){
   const prodBenchmark = prodBenchmarkHTML();
 
   const hasTikTok = (typeof TIKTOK !== 'undefined' && TIKTOK && TIKTOK.TABLE);
-  const ttTh = Object.assign({ HR_SPEND:5000, HR_CPA:70, OB_SPEND:1000, OB_CPA:100, SO_SPEND:500, SO_CPA:140, HR_ROAS:4, OB_ROAS:2, SO_ROAS:1 }, (hasTikTok && TIKTOK.THRESHOLDS) || {});
+  const ttTh = Object.assign({ HR_SPEND:5000, HR_CPA:70, OB_SPEND:1000, OB_CPA:100, SO_SPEND:500, SO_CPA:140, HR_ROAS:4, OB_ROAS:2, SO_ROAS:1, HR_METRIC:0.06, OB_METRIC:0.08, SO_METRIC:0.10 }, (hasTikTok && TIKTOK.THRESHOLDS) || {});
   /* Full eight-tab parity with the Meta nav, split by the same two nav-section
    * dividers Meta uses (Weekly / Monthly) and in Meta's exact tab order, so a reader
    * moving between channels finds the same tabs in the same places. Both dividers are
