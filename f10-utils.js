@@ -129,7 +129,26 @@ const METRICS = {
    * ratio (e.g. '4.8x'). Revenue comes from the gated `revenue` agg field, never
    * raw conversion_value. */
   ROAS: { num: 'revenue',       den: 'spend',        scale: 1,    dir: 'higher', fmt: 'ratio', label: 'ROAS' },
+  /* Cost per 2-second view. TikTok-only, opt-in via TIKTOK.METRIC = 'CP2S' for a
+   * brand account with no conversions to grade on. `den` is both the agg field and
+   * the TikTok mart column. decimals: sub-$1 values show 3 dp ($0.061, not $0.06). */
+  CP2S: { num: 'spend',         den: 'video_watched_2s', scale: 1, dir: 'lower', fmt: 'money', label: 'Cost / 2s view', decimals: 3 },
 };
+
+/* ── TikTok target metric (TIKTOK.METRIC) ──
+ * A TikTok section can grade ads on a non-conversion metric instead of CPA/ROAS.
+ * Only metrics listed here are accepted; anything else (or no TIKTOK.METRIC) is
+ * null, which leaves the TikTok engine on the global CPA/ROAS target unchanged. */
+const TT_CUSTOM_METRICS = ['CP2S'];
+function ttTargetMetricKey(){
+  const k = (typeof TIKTOK !== 'undefined' && TIKTOK && TIKTOK.METRIC) ? String(TIKTOK.METRIC).toUpperCase() : null;
+  return k && TT_CUSTOM_METRICS.includes(k) ? k : null;
+}
+/* The TikTok section's target metric definition: the custom metric when set,
+ * otherwise the global CPA/ROAS definition (so default copy is unchanged). */
+function ttMetricDef(){ const k = ttTargetMetricKey(); return k ? METRICS[k] : targetMetricDef(); }
+/* TikTok table-cell formatter for the lifetime metric column. */
+function ttFmtMetricCell(v){ const k = ttTargetMetricKey(); return k ? fmtMetric(v, METRICS[k]) : fmtMetricCell(v); }
 
 /* Resolve the active target metric's METRICS entry (CPA by default). */
 function targetMetricDef(){ return targetMetric() === 'roas' ? METRICS.ROAS : METRICS.CPA; }
@@ -189,7 +208,11 @@ function fmtRatio(n, dp=1){ if(n==null||isNaN(n)||!isFinite(n)) return '–'; re
 function fmtMetric(v, m){
   if(v==null||isNaN(v)||!isFinite(v)) return '–';
   const f = m && m.fmt;
-  if(f==='money') return '$'+Number(v).toLocaleString('en-AU',{maximumFractionDigits: v<10?2:0});
+  if(f==='money'){
+    /* A metric with `decimals` (CP2S) shows sub-$1 values to that many places, at least 2 ($0.10, $0.061). */
+    if(m.decimals!=null && Math.abs(v)<1) return '$'+Number(v).toLocaleString('en-AU',{minimumFractionDigits: 2, maximumFractionDigits: m.decimals});
+    return '$'+Number(v).toLocaleString('en-AU',{maximumFractionDigits: v<10?2:0});
+  }
   if(f==='ratio') return fmtRatio(v);
   return Number(v).toFixed(2)+'%';
 }
@@ -1355,7 +1378,14 @@ function creativeScoreComponentsSQL(spendCol, metricCol, opts){
   const width = (a, b) => (a - b) || 1; /* band width, guarded against zero */
 
   let efficiency;
-  if (targetMetric() === 'roas'){
+  /* opts.lowerBands { hr, ob, so } grades a custom lower-is-better metric (e.g.
+   * TikTok cost per 2s view) against its own bands instead of the CPA globals. */
+  const lb = opts.lowerBands;
+  if (lb){
+    const upper = clamp01(`(${lb.ob} - ${metricCol}) / ${width(lb.ob, lb.hr)}`);
+    const lower = clamp01(`(${lb.so} - ${metricCol}) / ${width(lb.so, lb.ob)}`);
+    efficiency = `IFNULL(0.5 * ${upper} + 0.5 * ${lower}, 0)`;
+  } else if (targetMetric() === 'roas'){
     const upper = clamp01(`(${metricCol} - ${OB_ROAS}) / ${width(HR_ROAS, OB_ROAS)}`);
     const lower = clamp01(`(${metricCol} - ${SO_ROAS}) / ${width(OB_ROAS, SO_ROAS)}`);
     efficiency = `IFNULL(0.5 * ${upper} + 0.5 * ${lower}, 0)`;
@@ -1383,7 +1413,7 @@ function creativeScoreComponentsSQL(spendCol, metricCol, opts){
     ? clamp01(`IFNULL(${opts.activeDaysExpr}, 0) / ${cfg.maturityDays || 1}`)
     : '0.5';
 
-  const lnHrSpend = Math.log(1 + Math.max(0, HR_SPEND)) || 1;
+  const lnHrSpend = Math.log(1 + Math.max(0, (lb && lb.hrSpend != null) ? lb.hrSpend : HR_SPEND)) || 1;
   const confidence = `LEAST(1, GREATEST(${cfg.confidenceFloor}, LN(1 + ${spendCol}) / ${lnHrSpend}))`;
 
   const sumW = (cfg.wEfficiency + cfg.wQuality + cfg.wDurability) || 1;
@@ -1436,7 +1466,12 @@ function creativeScoreParts(vals, opts){
   const metric = (vals.metric == null) ? NaN : Number(vals.metric);
 
   let efficiency;
-  if (targetMetric() === 'roas'){
+  const lb = opts.lowerBands;
+  if (lb){
+    const upper = clamp01((lb.ob - metric) / width(lb.ob, lb.hr));
+    const lower = clamp01((lb.so - metric) / width(lb.so, lb.ob));
+    efficiency = ifnull(0.5 * upper + 0.5 * lower, 0);
+  } else if (targetMetric() === 'roas'){
     const upper = clamp01((metric - OB_ROAS) / width(HR_ROAS, OB_ROAS));
     const lower = clamp01((metric - SO_ROAS) / width(OB_ROAS, SO_ROAS));
     efficiency = ifnull(0.5 * upper + 0.5 * lower, 0);
@@ -1466,7 +1501,7 @@ function creativeScoreParts(vals, opts){
     : clamp01(ifnull(Number(vals.activeDays), 0) / (cfg.maturityDays || 1));
 
   const spend = Number.isFinite(Number(vals.spend)) ? Number(vals.spend) : 0;
-  const lnHrSpend = Math.log(1 + Math.max(0, HR_SPEND)) || 1;
+  const lnHrSpend = Math.log(1 + Math.max(0, (lb && lb.hrSpend != null) ? lb.hrSpend : HR_SPEND)) || 1;
   const confidence = Math.min(1, Math.max(cfg.confidenceFloor, Math.log(1 + spend) / lnHrSpend));
 
   const sumW = (cfg.wEfficiency + cfg.wQuality + cfg.wDurability) || 1;
