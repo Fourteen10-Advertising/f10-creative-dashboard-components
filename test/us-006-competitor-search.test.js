@@ -6,8 +6,9 @@
  * copy / link title / page name / link URL / CTA / vision on-screen text; every
  * matched ad reports which field matched. The action is now METADATA ONLY — it
  * returns no creatives and does no signing (the dashboard loads a matched page's
- * creatives lazily via the competitor-creatives action), so the creative_manifest
- * table is never queried here and no gs:// URI can leave the function. Empty/short
+ * creatives lazily via the competitor-creatives action). The creative_manifest is
+ * read only to map vision assets to their ad, never for gcs_uri, so no gs:// URI
+ * can leave the function. Empty/short
  * terms and a no-data client fail closed WITHOUT a full-scan query; and every
  * BigQuery job carries the maximumBytesBilled + jobTimeoutMs guardrails.
  *
@@ -104,11 +105,11 @@ function assertGuardrails(queries) {
   console.log('US-006 cross-competitor ad search action');
 
   // ── Scenario 1: a term that matches returns the ad metadata + matched_field ──
-  // (metadata-only: no creatives, no signing, no creative_manifest query)
+  // (metadata-only: no creatives, no signing, no gcs_uri selected)
   await check("term 'menopause' returns matching ad metadata + matched_field, no creatives", async () => {
     const router = (opts) => {
       const sql = opts.query;
-      assert.ok(!/creative_manifest/.test(sql), 'search must NOT query creative_manifest (metadata only)');
+      assert.ok(!/gcs_uri/.test(sql), 'search must NOT select gcs_uri (metadata only)');
       if (/competitor_vision_attributes|ad_snapshots/.test(sql)) {
         // the search snapshot query
         assert.strictEqual(opts.params.term, 'menopause', 'term param must be passed through');
@@ -147,7 +148,7 @@ function assertGuardrails(queries) {
   // ── Scenario 2: a term with no matches returns an empty set without error ──
   await check('a no-match term returns an empty result set without error', async () => {
     const router = (opts) => {
-      assert.ok(!/creative_manifest/.test(opts.query), 'search must never query creative_manifest');
+      assert.ok(!/gcs_uri/.test(opts.query), 'search must never select gcs_uri');
       return []; // snapshot query finds nothing
     };
     const { FakeBigQuery, queries } = makeFakeBigQuery(router);
