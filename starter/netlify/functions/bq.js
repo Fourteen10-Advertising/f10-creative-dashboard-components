@@ -751,10 +751,10 @@ async function queryCompetitorCreatives(body, credentials, cors) {
  *
  * Term search across this client's tracked competitor ads: ad copy
  * (ad_creative_bodies), link titles, page name, link URL, CTA type, and the
- * vision-extracted on-screen text (competitor_vision_attributes.on_screen_text).
- * Everything stays keyed by f10_client in the shared all_clients_adlib dataset,
- * so — like the competitor action — this single action serves every dashboard
- * with no per-client config; the client key arrives as body.client.
+ * vision-extracted on-screen text (adlib_competitor_vision_attributes.on_screen_text,
+ * mapped to its ad through adlib_creative_manifest). Everything is scoped to the
+ * client, so this single action serves every dashboard with no per-client config,
+ * like the competitor action. The client key arrives as body.client.
  *
  * Fails closed exactly like the competitor tab: a client with no competitor rows
  * (probe) and an empty / too-short term both return an empty set WITHOUT a full
@@ -823,7 +823,8 @@ async function queryCompetitorSearch(body, credentials, cors) {
 
     // Latest snapshot per ad, joined to the ad's vision on-screen text. The copy
     // arrays are flattened to text so CONTAINS_SUBSTR can search them; matched_fields
-    // records which fields hit. Everything is scoped WHERE f10_client = @client.
+    // records which fields hit. Everything is scoped to @client: f10_client on the
+    // snapshot/registry/manifest tables, client on the vision table.
     const [ads] = await runQuery(
       `
       WITH latest AS (
@@ -838,10 +839,17 @@ async function queryCompetitorSearch(body, credentials, cors) {
         WHERE rn = 1
       ),
       vision AS (
-        SELECT ad_archive_id, STRING_AGG(on_screen_text, ' ') AS on_screen_text
-        FROM \`${PROJECT}.${DATASET}.adlib_competitor_vision_attributes\`
-        WHERE f10_client = @client
-        GROUP BY ad_archive_id
+        -- The vision copy is keyed by (client, asset_id): it has no f10_client and
+        -- no ad id, and on_screen_text is ARRAY<STRING>. Map each asset to its ad
+        -- through the creative manifest (asset_key = asset_id) and keep only rows
+        -- whose analysis succeeded.
+        SELECT m.ad_archive_id,
+               STRING_AGG(ARRAY_TO_STRING(v.on_screen_text, ' '), ' ') AS on_screen_text
+        FROM \`${PROJECT}.${DATASET}.adlib_competitor_vision_attributes\` v
+        JOIN \`${PROJECT}.${DATASET}.adlib_creative_manifest\` m
+          ON m.asset_key = v.asset_id AND m.f10_client = @client
+        WHERE v.client = @client AND v.status = 'ok'
+        GROUP BY m.ad_archive_id
       ),
       joined AS (
         SELECT l.*,
